@@ -1,4 +1,5 @@
 import { activeControl } from '../bot-management/service.mjs';
+import { modelError } from '../../bot/src/agent/connections.mjs';
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
@@ -64,6 +65,27 @@ function outputPreview(output) {
     if (typeof output.error === 'string') return compactText(output.error, 240);
   }
   return null;
+}
+
+function extractSessionError(facts, status) {
+  const failed = ['failed', 'unknown', 'unsupported'].includes(status);
+  const exitCode = Number.isInteger(facts.exit_code) ? facts.exit_code
+    : Number.isInteger(facts.native?.exit_code) ? facts.native.exit_code
+    : Number.isInteger(facts.native?.exitCode) ? facts.native.exitCode
+    : Number.isInteger(facts.output?.exit_code) ? facts.output.exit_code : null;
+  const rawMsg = facts.error
+    || (typeof facts.output?.error === 'string' ? facts.output.error : null)
+    || (failed && typeof facts.output?.stderr === 'string' ? facts.output.stderr : null)
+    || (failed && typeof facts.output?.text === 'string' ? facts.output.text : null)
+    || (failed && typeof facts.output === 'string' ? facts.output : null);
+  const code = facts.code || (typeof facts.output?.code === 'string' ? facts.output.code : null);
+  if (!failed && !rawMsg && !code) return null;
+  const message = rawMsg ? modelError(rawMsg) : (exitCode != null ? `退出码 ${exitCode}` : code || `执行状态：${status}`);
+  return {
+    code: code || (exitCode != null ? `exit_${exitCode}` : status === 'unknown' ? 'execution_unknown' : 'execution_failed'),
+    message,
+    ...(exitCode != null ? { exit_code: exitCode } : {}),
+  };
 }
 
 function unconfirmedPiSubmission(call) {
@@ -253,7 +275,7 @@ export class Executions {
     const conversation = target.kind === 'conversation';
     const facts = conversation ? observation ?? this.platform.runtime.conversationSummary(record.id) : observation;
     const status = facts?.status || (conversation ? 'unknown' : record.status ?? 'idle');
-    const error = conversation && facts?.last_error;
+    const error = conversation ? facts?.last_error : (facts?.last_error || record.last_error || null);
     const sessionMeta = !conversation ? {
       ...(record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context) ? { origin_room: record.origin_room } : {}),
       ...(record.origin_message_id ? { origin_message_id: record.origin_message_id } : {}),
@@ -266,7 +288,7 @@ export class Executions {
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
-      status, ...(error ? { last_error: { code: error.code, message: error.message } } : {}), ...sessionMeta,
+      status, ...(error?.message || error?.code ? { last_error: { code: error.code || 'execution_failed', message: error.message || '', ...(error.exit_code != null ? { exit_code: error.exit_code } : {}) } } : {}), ...sessionMeta,
       control, control_version: control.control_version, input_revision: record.input_revision,
       can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked };
   }
@@ -706,7 +728,7 @@ export class Executions {
       const status = known ? 'failed' : 'unknown';
       const current = session && call.target && this.record(call.target);
       if (current?.latest_call_id === callId && call.result_ref?.kind !== 'event')
-        this.saveFacts(session.id, callId, { status, safe_to_disconnect: known });
+        this.saveFacts(session.id, callId, { status, safe_to_disconnect: known, code: error?.code, error: error?.message });
       if (known) {
         this.calls.bind(callId, { status: 'prepared', ...(call.result_ref?.kind !== 'event' && { submission_outcome: 'not_submitted' }) });
         this.calls.fail(callId, error);
@@ -743,11 +765,14 @@ export class Executions {
     } else if (facts.input_targets !== undefined && !facts.input_status) {
       waitingSummary = null;
     }
+    const nextError = extractSessionError(facts, status);
+    const clearError = ['completed', 'running', 'submitted', 'idle'].includes(status) && !nextError;
     const updated = this.store.save(sessionRecords, { id: sessionId, status, control, submitted_by: call.submitted_by,
       native: facts.native ? { ...session.native, ...facts.native } : session.native, input_targets: facts.input_targets ?? session.input_targets,
       pending_input: pendingInput,
       waiting_summary: waitingSummary,
       ...(preview && !facts.input_status ? { last_output_summary: preview } : {}),
+      ...(nextError ? { last_error: nextError } : clearError ? { last_error: null } : {}),
       safe_to_disconnect: facts.safe_to_disconnect,
       ...(session.authority_revoked && ended ? { revocation_stop: 'stopped' } : {}),
       updated_at: new Date().toISOString(),

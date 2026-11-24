@@ -35,7 +35,7 @@ struct TokenUsageView: View {
     @State private var detail: SummonJSONValue = .null
     @State private var loading = false
     @State private var errorMessage: String?
-    private let purposes = ["chat": "聊天", "activity": "快速任务说明", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
+    private let purposes = ["fast_read": "① 快读收件", "conversation": "② 群主对话", "pi_session": "③ 独立 Pi", "compression": "公开历史压缩", "chat": "聊天", "activity": "快速任务说明", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
     private let statuses = ["succeeded": "完成", "failed": "失败", "cancelled": "取消", "pending": "调用中", "unknown": "结果未知"]
     private var endpoint: String { store.settings.baseURL }
     private var requestKey: String { "\(endpoint):\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
@@ -142,7 +142,11 @@ struct TokenUsageView: View {
                 totalsRows(detail["totals"])
             }
             if (detail["totals"]["unreportedCalls"].int ?? 0) > 0 {
-                Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。")
+                Text("部分调用没有完整 Token 回执，缺失部分未计入缓存命中率分母。")
+                    .summonFont(.footnote).foregroundStyle(.secondary)
+            }
+            if let totalInput = detail["totals"]["inputTokens"].int, let knownInput = detail["totals"]["cacheKnownInputTokens"].int, totalInput > knownInput {
+                Text("其中 \((totalInput - knownInput).formatted()) 输入 Token 缺少完整缓存明细，已从命中率分母剥离。")
                     .summonFont(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text(selectedKind == nil ? "全部调用明细" : selectedName) }

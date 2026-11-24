@@ -31,11 +31,32 @@ export function createRedactor(config) {
     }
     return readable;
   }
+  function redactString(input) {
+    let text = input;
+    for (const secret of secrets) text = text.split(secret).join('[redacted]');
+    return text
+      .replace(/\b(Bearer|Basic)\s+[^\s,"'\\}]+/gi, '$1 [redacted]')
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted]')
+      .replace(/\b(?:sk-|xai-|ghp_|gho_|AIza)[a-zA-Z0-9_-]{12,}\b/g, '[redacted]')
+      .replace(/(["']?authorization["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic|Token|Digest)\s+)?[^\s,"'\\}]+/gi, '$1[redacted]')
+      .replace(/(["']?(?:access_token|refresh_token|api_key|apiKey|password|passwd|secret|cookie)["']?\s*[:=]\s*["']?)[^\s,"'\\}]+/gi, '$1[redacted]');
+  }
+  const sensitiveKeyPattern = /token|api[_-]?key|authorization|password|passwd|secret|cookie|credential|private[_-]?key|^(?:key|access|refresh)$/i;
+  const tokenMetricKeyPattern = /(?:^(?:input|output|total|prompt|completion|cached|cache[_-]?(?:hit|miss|known[_-]?input)?|reasoning|max|min|avg|reserve|context|remaining|used|billed)[_-]?tokens?$|token[_-]?(?:count|limit|budget|usage|window|rate|price|cost)$)/i;
+  function redactNode(value, key = '') {
+    if (key && sensitiveKeyPattern.test(key) && !tokenMetricKeyPattern.test(key) && (typeof value === 'string' || typeof value === 'number')) return '[redacted]';
+    if (typeof value === 'string') return redactString(value);
+    if (Array.isArray(value)) return value.map(item => redactNode(item, key));
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = redactNode(v, k);
+      return out;
+    }
+    return value;
+  }
   function redact(value) {
     if (value === undefined) return undefined;
-    let text = JSON.stringify(value);
-    for (const secret of secrets) text = text.split(JSON.stringify(secret).slice(1, -1)).join('[redacted]');
-    return JSON.parse(text.replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]'));
+    return redactNode(JSON.parse(JSON.stringify(value)));
   }
   const clean = value => { refresh(); return redact(value); };
   clean.error = (value, message = 'The Summon host could not complete this operation') => {

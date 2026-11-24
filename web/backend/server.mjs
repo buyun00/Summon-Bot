@@ -149,7 +149,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         });
         active.add(outgoing);
         outgoing.once('close', () => active.delete(outgoing));
-        outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '实例暂不可达' }); else res.destroy(); });
+        outgoing.once('error', error => { if (!res.headersSent) json(res, 502, { error: '实例暂不可达', code: error?.code || 'upstream_unreachable' }); else res.destroy(); });
         if (url.pathname !== '/api/stream') outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
         req.once('error', error => outgoing.destroy(error));
         res.once('close', () => outgoing.destroy());

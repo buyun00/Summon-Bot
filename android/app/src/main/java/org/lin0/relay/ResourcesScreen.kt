@@ -269,6 +269,29 @@ private fun ReferenceDetail(store: SummonStore, ref: SummonReference, close: () 
                 SelectionContainer { Text(detail["content"].stringValue) }
                 detail["mentions"].array.orEmpty().forEach { Text("@" + store.name(it.stringValue)) }
                 detail["attachments"].array.orEmpty().map(SummonAttachment::parse).forEach { Text(it.name) }
+            } else if (ref.kind == "call") {
+                val execStatus = detail["result"]["status"].string ?: detail["status"].string ?: "unknown"
+                val httpStatus = detail["result"]["status"].int
+                val exitCode = detail["result"]["exit_code"].int ?: detail["result"]["native"]["exit_code"].int ?: detail["result"]["output"]["exit_code"].int
+                val errCode = detail["result"]["code"].string ?: detail["result"]["output"]["code"].string
+                val errText = detail["result"]["error"].string ?: detail["result"]["output"]["error"].string
+                val outText = detail["result"]["output"].string ?: detail["result"]["output"]["text"].string ?: detail["result"]["output"]["message"].string
+                var showRaw by remember(ref) { mutableStateOf(false) }
+                Text("工具：${detail["tool"].string ?: "—"}", style = MaterialTheme.typography.titleSmall)
+                Text("状态：${summonStatus(execStatus)}")
+                if (httpStatus != null) Text("HTTP 状态：$httpStatus")
+                if (exitCode != null) Text("退出码：$exitCode")
+                detail["submitted_by"]["id"].string?.let { Text("发起者：${store.name(it)}") }
+                SummonReference.parse(detail["target"])?.let { Text("目标：${store.label(it)}") }
+                if (errCode != null || errText != null) {
+                    Text("错误信息：${listOfNotNull(errCode, errText).joinToString(" · ")}", color = LocalSummonPalette.current.warn)
+                }
+                if (!outText.isNullOrBlank()) {
+                    Text("结果摘要", style = MaterialTheme.typography.titleSmall)
+                    SelectionContainer { Text(outText.take(2000), fontFamily = FontFamily.Monospace) }
+                }
+                TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) "收起原始数据" else "查看原始数据") }
+                if (showRaw) SelectionContainer { Text(detail.pretty, fontFamily = FontFamily.Monospace) }
             } else SelectionContainer { Text(detail.pretty, fontFamily = FontFamily.Monospace) }
         } else if (error == null && store.protocolReady) CircularProgressIndicator()
     }

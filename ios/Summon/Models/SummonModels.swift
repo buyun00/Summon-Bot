@@ -105,9 +105,22 @@ struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var resume_ref: SummonJSONValue?
     var material_index_ref: SummonReference?
     var memory_items: [SummonJSONValue]?
+    var activity: String?
     var avatar: SummonAvatar?
 
-    var isPaused: Bool { enabled == false || control?["state"].string == "paused" }
+    var isPaused: Bool { enabled == false || control?["state"].string == "paused" || activity == "paused" }
+    var resolvedActivity: String {
+        if isPaused { return "paused" }
+        return activity ?? "idle"
+    }
+    var activityMotion: String {
+        switch resolvedActivity {
+        case "paused": "sleep"
+        case "working": "work"
+        case "error": "failed"
+        default: "idle"
+        }
+    }
     var resolvedAvatar: SummonAvatar { avatar ?? SummonAvatar.defaultAvatar(for: id) }
 }
 
@@ -231,6 +244,8 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var messages: [SummonMessage]
     var deliveries: [String: [SummonDelivery]]?
     var summaries: [String: [SummonMessageSummary]]?
+    var suspendedRuns: [SummonJSONValue]?
+    var messageStates: [String: SummonJSONValue]?
     var cursor: String?
 }
 

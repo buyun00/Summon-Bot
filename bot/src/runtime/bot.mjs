@@ -337,7 +337,9 @@ export class BotRuntime {
     const fastReadBatches = new Map();
     for (const route of pending) {
       if (route.run_id) continue;
-      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room') {
+      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room' &&
+          route.event.fallback_reason !== 'host_manual_fallback' &&
+          !route.match_sources?.some(source => source.kind === 'unanswered_fallback')) {
         const observation = this.platform.deliveries.roomObservation(bot.id, route.event.space.id);
         if (observation && route.event.sequence <= (observation.through?.sequence ?? 0) &&
             route.match_sources?.some(source => source.kind === 'room_base')) {
@@ -385,7 +387,8 @@ export class BotRuntime {
         fastReadBatches.get(roomId).push(route);
         continue;
       }
-      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room') {
+      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room' &&
+          route.event.fallback_reason !== 'host_manual_fallback') {
         const existingReply = this.findCompletedRoomReply(bot.id, route.event.space.id, route.event_id);
         if (existingReply) {
           const { event: _event, ...stored } = route;
@@ -1189,7 +1192,8 @@ export class BotRuntime {
     const instructions = session.instructions ?? '';
     const conversation = this.register(inbox, inbox.putConversation({ id: session.conversation_id || session.id,
       kind: 'pi', owner: session.owner, session_id: session.id, open_call_id: session.open_call_id || session.latest_call_id,
-      space: session.space, binding: { model, instructions, name: bot.name, revision: session.bot_revision,
+      space: session.space, ...(session.origin_room ? { origin_room: session.origin_room } : {}),
+      binding: { model, instructions, name: bot.name, revision: session.bot_revision,
         built_in_role: session.built_in_role ?? null,
         material_index_ref: bot.material_index_ref }, input_revision: session.input_revision || 0 }));
     return { inbox, bot, conversation };
@@ -1589,6 +1593,35 @@ export class BotRuntime {
       });
     }
     return results;
+  }
+
+  botActivityState(bot) {
+    if (!bot || bot.enabled === false) return 'paused';
+    const botId = bot.id;
+    for (const job of this.active.values()) {
+      if (job.inbox?.botId === botId) return 'working';
+    }
+    if (this.fastRead?.isActiveBot?.(botId)) return 'working';
+    const sessions = this.platform.store.list(sessionRecords);
+    for (const session of sessions) {
+      if (session.authority_revoked || session.control?.state !== 'active') continue;
+      if ((session.bot_id === botId || session.execution_actor?.id === botId || session.owner?.id === botId) &&
+          this.platform.isActiveSession(session)) {
+        return 'working';
+      }
+    }
+    const inbox = this.inboxes.get(botId);
+    if (inbox) {
+      let hasSuspended = false;
+      for (const conv of inbox.store.listRecords(R.conversation)) {
+        for (const run of inbox.runs(conv.id)) {
+          if (['running', 'waiting', 'retry'].includes(run.state)) return 'working';
+          if (run.state === 'suspended') hasSuspended = true;
+        }
+      }
+      if (hasSuspended) return 'error';
+    }
+    return 'idle';
   }
 
   suspendedRunsForRoom(roomId) {

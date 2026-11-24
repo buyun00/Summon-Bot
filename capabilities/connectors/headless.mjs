@@ -23,9 +23,13 @@ async function run({ executable, connector, settings, recipe, launchOptions, ext
   });
   child.stdin.on('error', () => {});
   child.stdin.end(stdin);
+  let stderrTail = '';
   const diagnostics = createInterface({ input: child.stderr, crlfDelay: Infinity });
   diagnostics.on('line', text => {
-    if (text.trim()) emit('progress', { text: text.slice(0, 4000), phase: 'stderr' });
+    if (text.trim()) {
+      stderrTail = (stderrTail ? `${stderrTail}\n${text}` : text).slice(-4000);
+      emit('progress', { text: text.slice(0, 4000), phase: 'stderr' });
+    }
   });
   child.stderr.pipe(process.stderr, { end: false });
   let sessionId, finalText = '', deltas = '', reason, error, terminal = false;
@@ -87,7 +91,12 @@ async function run({ executable, connector, settings, recipe, launchOptions, ext
     receive(frame);
   }
   error ||= outcome.error;
-  if (!error && outcome.code !== 0) error = `CLI exited with ${outcome.signal || `code ${outcome.code}`}. See stderr for details.`;
+  if (!error && outcome.code !== 0) {
+    const detail = stderrTail.trim();
+    error = detail
+      ? `CLI exited with ${outcome.signal || `code ${outcome.code}`}: ${detail}`
+      : `CLI exited with ${outcome.signal || `code ${outcome.code}`}. See stderr for details.`;
+  }
   if (!error && format !== 'plain' && (!terminal || !adapter.success(reason)))
     error = terminal ? `The CLI turn ended with ${reason || 'an unspecified reason'}` : 'The CLI did not report a terminal result';
   if (!error && expectedId && sessionId !== expectedId) error = 'The CLI did not confirm the resumed native session';

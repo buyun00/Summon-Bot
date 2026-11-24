@@ -544,6 +544,13 @@ export class FastReadRuntime {
     return this.active.has(recordKey(botId, roomId));
   }
 
+  isActiveBot(botId) {
+    for (const entry of this.active.values()) {
+      if (entry.botId === botId) return true;
+    }
+    return false;
+  }
+
   stopBot(botId) {
     const entries = [...this.active.values()].filter(entry => entry.botId === botId);
     for (const entry of entries) entry.controller.abort(runtimeFailure('bot_paused', 'Bot was explicitly stopped', 409));

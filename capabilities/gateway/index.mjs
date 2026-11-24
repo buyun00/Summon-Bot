@@ -104,7 +104,7 @@ export async function startGateway(options = {}) {
   if (history?.status && history.status !== 'complete') throw new Error('Offline history maintenance is incomplete');
   const historyEpoch = history?.historyEpoch ?? null;
   const clients = new Set(), requests = new Set(), stores = [];
-  let platform, runtime, models, connections, push, server, url, timer, activeTick, activeConnectionTick, closeTask, installation;
+  let platform, runtime, models, connections, push, server, url, timer, heartbeatTimer, activeTick, activeConnectionTick, closeTask, installation;
   let closing = false;
   let drainSnapshot;
   function store(name) {
@@ -162,6 +162,7 @@ export async function startGateway(options = {}) {
     return closeTask ??= (async () => {
       closing = true;
       clearInterval(timer);
+      clearInterval(heartbeatTimer);
       for (const client of clients) client.end();
       const closed = server?.listening ? new Promise(done => server.close(done)) : null;
       server?.closeIdleConnections();
@@ -279,8 +280,8 @@ export async function startGateway(options = {}) {
             details: error.details ?? (error.revision === undefined ? undefined : { revision: error.revision }) });
           const details = diagnostic.details ?? (error.code === 'protocol_mismatch' ? { protocolVersion, releasesUrl: '/api/releases' } : undefined);
           if (status >= 500 && !error.status) console.error('Summon platform request failed', diagnostic.message);
-          json(res, status, { error: status < 500 || error.status && error.code ? diagnostic.message : 'The Summon host could not complete this request',
-            code: diagnostic.code || 'request_failed', details, ...(error.code === 'protocol_mismatch' ? details : {}), call_id: error.call_id });
+          json(res, status, { error: diagnostic.message || 'The Summon host could not complete this request',
+            code: diagnostic.code || error.code || 'request_failed', details, ...(error.code === 'protocol_mismatch' ? details : {}), call_id: error.call_id });
         }
       })();
       requests.add(task);
@@ -294,6 +295,13 @@ export async function startGateway(options = {}) {
     await writeFile(join(dataRoot, 'capabilities', 'gateway', 'run.json'), JSON.stringify({ pid: process.pid, url, startedAt: new Date().toISOString() }));
     timer = setInterval(queueTick, 500);
     timer.unref();
+    heartbeatTimer = setInterval(() => {
+      for (const client of clients) {
+        if (client.writableLength > 65536) client.destroy();
+        else client.write(': ping\n\n');
+      }
+    }, 20_000);
+    heartbeatTimer.unref();
     queueTick();
     return { url, token, platform, close, installationDrain };
   } catch (error) {

@@ -159,7 +159,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                         }
                         composable("chat/{roomId}", arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
                             val id = URLDecoder.decode(entry.arguments?.getString("roomId").orEmpty(), "UTF-8")
-                            ChatScreen(store, id) { nav.popBackStack() }
+                            ChatScreen(store, id, onBack = { nav.popBackStack() }, onOpenModels = { nav.navigate("models") })
                         }
                         composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
                         composable("models") { ModelSettingsScreen(store) { nav.popBackStack() } }

@@ -75,7 +75,7 @@ struct MemberAvatar: View {
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? SummonAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
-                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion ?? "idle", groupOutline: groupOutline)
+                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion ?? bot?.activityMotion ?? "idle", groupOutline: groupOutline)
     }
 }
 

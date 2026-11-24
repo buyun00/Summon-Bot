@@ -1657,11 +1657,11 @@ export class SummonPlatform {
         const mentionedBots = message.mentions.filter(id => id !== 'user').map(id => this.store.get(botRecords, id));
         const paused = mentionedBots.find(bot => !bot || !bot.enabled || bot.archivedAt);
         if (paused) unavailableReason = `被点名成员 ${paused.name || 'Bot'} 当前已暂停或不可用`;
-        else if (runtimeActivity.suspended) unavailableReason = '被点名成员处理中断（suspended），可点击重试';
+        else if (runtimeActivity.suspended) unavailableReason = '被点名成员暂时无法回复';
       } else if (!this.naturalFallbackBot(room)) {
         unavailableReason = '当前群内无可用成员（均已暂停或缺少可用模型绑定）';
       } else if (fallbackRecord) {
-        unavailableReason = runtimeActivity.suspended ? '兜底成员处理中断，可点击重试或另行点名' : '已由统筹成员检视但未公开发言，可点击点名指定成员';
+        unavailableReason = runtimeActivity.suspended ? '兜底成员暂时无法回复，可另行点名' : '已由统筹成员检视但未公开发言，可点击点名指定成员';
       }
     }
 
@@ -1740,7 +1740,7 @@ export class SummonPlatform {
       fallback_reason: 'host_manual_fallback',
       fallback_guidance: 'The host explicitly asked you to respond to this message.',
     };
-    const delivery = this.deliveries.enqueue(bot.id, event, [{ id: keyOf('manual_fallback', messageId, Date.now()), revision: 1, kind: 'unanswered_fallback' }], []);
+    const delivery = this.deliveries.enqueue(bot.id, event, [{ id: keyOf('manual_fallback', messageId, randomUUID()), revision: 1, kind: 'unanswered_fallback' }], []);
     this.store.save('unanswered-fallbacks', {
       id: messageId,
       room_id: room.id,

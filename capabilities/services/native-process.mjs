@@ -23,7 +23,7 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 // If the launching service lost its receipt it must never start this action a second time.
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
-let child, childJob, timer, stopTimer, stopTree, drainTimer, pollTask, heartbeatFailure, stopping = false, finished = false, secrets = [];
+let child, childJob, timer, stopTimer, stopTree, drainTimer, pollTask, heartbeatFailure, stopping = false, finished = false, secrets = [], stderrTail = '';
 const nativeInputs = new Map(), answers = new Set();
 const heartbeatDelays = new Set();
 const managedAdapter = manifest.managedAdapter === true;
@@ -195,7 +195,11 @@ function protocolLine(line) {
 function pipe(stream, name) {
   let buffer = '', fragmented = false;
   const line = (value, complete = true) => {
-    append(name, clean(value));
+    const cleaned = clean(value);
+    append(name, cleaned);
+    if (name === 'stderr.log' && cleaned.trim()) {
+      stderrTail = (stderrTail + cleaned).slice(-4000);
+    }
     if (name === 'stdout.log' && eventProtocol && !fragmented) {
       if (complete && value.length <= maxNativeLine) protocolLine(value);
       else if (/^\s*\{\s*"summonEvent"\s*:/.test(value)) {
@@ -392,7 +396,14 @@ function start() {
     }
     const fallback = codex && (state.nativeTurnId || state.turnSubmitted || state.threadSubmitted) ? 'unknown' : stopping ? 'stopped' :
       managedAdapter ? 'unknown' : !codex && exitCode === 0 ? 'completed' : 'failed';
-    finish({ ...terminal, status: state.nativeOutcome || fallback });
+    const finalStatus = state.nativeOutcome || fallback;
+    const detail = stderrTail.trim();
+    const derivedError = finalStatus === 'failed' && !state.error && (exitCode !== 0 || exitSignal)
+      ? (detail
+        ? `CLI exited with ${exitSignal || `code ${exitCode}`}: ${detail}`
+        : `CLI exited with ${exitSignal || `code ${exitCode}`}`)
+      : undefined;
+    finish({ ...terminal, status: finalStatus, ...(derivedError ? { error: derivedError } : {}) });
   });
 }
 

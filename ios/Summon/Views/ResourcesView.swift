@@ -332,6 +332,31 @@ struct SummonReferenceView: View {
                     ForEach(value["mentions"].array ?? [], id: \.prettyPrinted) { id in
                         Text("@" + store.name(for: id.stringValue)).summonFont(.caption)
                     }
+                } else if ref.kind == "call" {
+                    let execStatus = value["result"]["status"].string ?? value["status"].string ?? "unknown"
+                    let httpStatus = value["result"]["status"].int
+                    let exitCode = value["result"]["exit_code"].int ?? value["result"]["native"]["exit_code"].int ?? value["result"]["output"]["exit_code"].int
+                    let errCode = value["result"]["code"].string ?? value["result"]["output"]["code"].string
+                    let errText = value["result"]["error"].string ?? value["result"]["output"]["error"].string
+                    let outText = value["result"]["output"].string ?? value["result"]["output"]["text"].string ?? value["result"]["output"]["message"].string
+                    LabeledContent("工具", value: value["tool"].string ?? "—")
+                    LabeledContent("状态", value: SummonFormat.status(execStatus))
+                    if let httpStatus { LabeledContent("HTTP 状态", value: String(httpStatus)) }
+                    if let exitCode { LabeledContent("退出码", value: String(exitCode)) }
+                    if let submitter = value["submitted_by"]["id"].string { LabeledContent("发起者", value: store.name(for: submitter)) }
+                    if let targetRef = SummonReference(value["target"]) { LabeledContent("目标", value: store.label(targetRef)) }
+                    if errCode != nil || errText != nil {
+                        LabeledContent("错误信息", value: [errCode, errText].compactMap { $0 }.joined(separator: " · "))
+                            .foregroundStyle(SummonTheme.warn)
+                    }
+                    if let outText, !outText.isEmpty {
+                        Section("结果摘要") {
+                            Text(String(outText.prefix(2000))).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                        }
+                    }
+                    DisclosureGroup("查看原始数据") {
+                        Text(value.prettyPrinted).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+                    }
                 } else { Text(value.prettyPrinted).font(.system(.footnote, design: .monospaced)).textSelection(.enabled) }
             }
             .navigationTitle(store.label(ref))

@@ -45,7 +45,7 @@ private fun usageNumber(value: SummonJson): String = (value as? SummonJson.Num)?
 private fun usageRate(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100) } ?: "—"
 private fun usageAmount(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.4f", it) } ?: "—"
 private fun usageTime(value: SummonJson): String = runCatching { Instant.parse(value.stringValue).atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("—")
-private val usagePurposes = mapOf("chat" to "聊天", "activity" to "快速任务说明", "work" to "工作执行", "routing" to "群聊路由", "compress" to "上下文压缩", "compact" to "上下文压缩", "organize" to "记忆整理", "assemble" to "上下文组装", "other" to "其他调用")
+private val usagePurposes = mapOf("fast_read" to "① 快读收件", "conversation" to "② 群主对话", "pi_session" to "③ 独立 Pi", "compression" to "公开历史压缩", "chat" to "聊天", "activity" to "快速任务说明", "work" to "工作执行", "routing" to "群聊路由", "compress" to "上下文压缩", "compact" to "上下文压缩", "organize" to "记忆整理", "assemble" to "上下文组装", "other" to "其他调用")
 private val usageStatuses = mapOf("succeeded" to "完成", "failed" to "失败", "cancelled" to "取消", "pending" to "调用中", "unknown" to "结果未知")
 
 @Composable
@@ -139,7 +139,9 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
                 HorizontalDivider(color = palette.hairline); Text(selectedKind?.let { selectedName } ?: "全部调用明细", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
                 if (selectedKind != null) { TextButton(onClick = { selectedKind = null; offset = 0 }) { Text("查看全部") }; UsageTotals(detail["totals"]) }
             }
-            if ((detail["totals"]["unreportedCalls"].int ?: 0) > 0) item { Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。", color = palette.warn, style = MaterialTheme.typography.bodySmall) }
+            if (((detail["totals"]["unreportedCalls"] as? SummonJson.Num)?.value ?: 0.0) > 0.0) item { Text("部分调用没有完整 Token 回执，缺失部分未计入缓存命中率分母。", color = palette.warn, style = MaterialTheme.typography.bodySmall) }
+            val unknownCacheInput = ((detail["totals"]["inputTokens"] as? SummonJson.Num)?.value?.toLong() ?: 0L) - ((detail["totals"]["cacheKnownInputTokens"] as? SummonJson.Num)?.value?.toLong() ?: 0L)
+            if (unknownCacheInput > 0L) item { Text("其中 ${NumberFormat.getIntegerInstance(Locale.CHINA).format(unknownCacheInput)} 输入 Token 缺少完整缓存明细，已从命中率分母剥离。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall) }
             listOf("purposes" to "消耗来源", "models" to "模型", "days" to "每日用量").forEach { (key, title) ->
                 item { Text(title, style = MaterialTheme.typography.titleSmall) }
                 items(detail[key].array.orEmpty()) { row -> UsageLine(if (key == "purposes") usagePurposes[row["key"].stringValue] ?: row["key"].stringValue else row["key"].stringValue, "${usageNumber(row["totalTokens"])} · ${usageNumber(row["calls"])} 次") }

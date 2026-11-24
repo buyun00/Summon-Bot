@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { modelError } from '../../bot/src/agent/connections.mjs';
 import { keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 
 export const callRecords = 'platform-calls';
@@ -14,10 +15,28 @@ export function isWaitOrigin(wait, origin) {
   return Boolean(wait && origin && wait.conversation_id === origin.conversation_id && wait.run_id === origin.run_id);
 }
 
+const sensitiveKeyPattern = /token|api[_-]?key|authorization|password|passwd|secret|cookie|credential|private[_-]?key|^(?:key|access|refresh)$/i;
+const tokenMetricKeyPattern = /(?:^(?:input|output|total|prompt|completion|cached|cache[_-]?(?:hit|miss|known[_-]?input)?|reasoning|max|min|avg|reserve|context|remaining|used|billed)[_-]?tokens?$|token[_-]?(?:count|limit|budget|usage|window|rate|price|cost)$)/i;
+
+function sanitizeDetails(value, depth = 0, key = '') {
+  if (value === null || value === undefined) return value;
+  if (depth > 8) return '[truncated]';
+  if (key && sensitiveKeyPattern.test(key) && !tokenMetricKeyPattern.test(key) && (typeof value === 'string' || typeof value === 'number')) return '[redacted]';
+  if (typeof value === 'string') return modelError(value);
+  if (Array.isArray(value)) return value.map(item => sanitizeDetails(item, depth + 1, key));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = sanitizeDetails(v, depth + 1, k);
+    return out;
+  }
+  return value;
+}
+
 export function errorResult(error) {
-  if (error.status && error.code) return { code: error.code, error: error.message, status: error.status, details: error.details };
-  if (error.status && error.status < 500) return { code: 'request_rejected', error: error.message, status: error.status };
-  return { code: 'operation_failed', error: 'The operation failed in the host', status: 500 };
+  const message = modelError(error?.message || error || 'The operation failed in the host');
+  if (error?.status && error?.code) return { code: error.code, error: message, status: error.status, details: sanitizeDetails(error.details) };
+  if (error?.status && error.status < 500) return { code: error.code || 'request_rejected', error: message, status: error.status };
+  return { code: error?.code || error?.name || 'operation_failed', error: message, status: error?.status || 500 };
 }
 
 export class Calls {
@@ -191,6 +210,8 @@ export class Calls {
       ...(receipt.session_status ? { session_status: receipt.session_status } : {}),
       ...(receipt.remote_outcome ? { remote_outcome: receipt.remote_outcome } : {}),
       ...(receipt.partial_snapshot ? { partial_snapshot: receipt.partial_snapshot } : {}),
+      ...(Number.isInteger(receipt.exit_code) ? { exit_code: receipt.exit_code } : {}),
+      ...(receipt.exit_signal ? { exit_signal: receipt.exit_signal } : {}),
       ...(receipt.code ? { code: receipt.code } : {}),
       ...(receipt.error ? { error: receipt.error } : {}) };
     const meta = this.sessionMeta?.(target) || null;

@@ -133,7 +133,7 @@ private data class ActiveBotStatus(
 )
 
 @Composable
-fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
+fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenModels: () -> Unit = {}) {
     val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val room = store.room(roomID)
@@ -142,17 +142,27 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val title = room?.name ?: "聊天"
     val messages = store.messagesForRoom(roomID)
     val roomExecutions = store.executionsForRoom(roomID)
-    val activeBotItems = remember(roomExecutions, store.bots) {
+    val activeBotItems = remember(roomExecutions, store.bots, room?.members) {
         val seen = mutableSetOf<String>()
         val items = mutableListOf<ActiveBotStatus>()
         for (exec in store.activeExecutionsForRoom(roomID)) {
             val botId = exec["execution_actor"]["id"].string ?: exec["bot_id"].string.orEmpty()
+            val bot = botId.takeIf { it.isNotEmpty() }?.let { store.bot(it) }
+            if (bot?.isPaused == true) continue
             val ref = SummonReference.parse(exec["execution_ref"])
             val key = botId.ifEmpty { ref?.id ?: exec.pretty }
             if (!seen.add(key)) continue
-            val bot = botId.takeIf { it.isNotEmpty() }?.let { store.bot(it) }
             val name = bot?.name ?: if (botId.isEmpty()) "执行会话" else store.name(botId)
-            items += ActiveBotStatus(key, bot, name, summonStatus(exec["status"].stringValue), ref)
+            val rawStatus = exec["status"].stringValue
+            val status = if (rawStatus in setOf("needs_input", "awaiting_input")) "等待输入" else "工作中"
+            items += ActiveBotStatus(key, bot, name, status, ref)
+        }
+        for (bot in roomBots) {
+            if (bot.isPaused || !seen.add(bot.id)) continue
+            when (bot.resolvedActivity) {
+                "working" -> items += ActiveBotStatus(bot.id, bot, bot.name, "工作中", null)
+                "error" -> items += ActiveBotStatus(bot.id, bot, bot.name, "运行异常", null)
+            }
         }
         items
     }
@@ -291,7 +301,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                 }
             }
             items(messages, key = { it.id }) { message ->
-                MessageRow(store, roomID, message) { store.setDraftReply(message.id, roomID) }
+                MessageRow(store, roomID, message, onOpenModels = onOpenModels) { store.setDraftReply(message.id, roomID) }
                 Spacer(Modifier.height(18.dp))
             }
             if (roomExecutions.isNotEmpty()) {
@@ -492,7 +502,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                         Box(Modifier.clip(RoundedCornerShape(12.dp)).clickable {
                             if (item.ref != null) activeExecutionRef = item.ref else showDetails = true
                         }) {
-                            BotWorkingIndicator(item.bot, item.name, item.status, motion = "work")
+                            BotWorkingIndicator(item.bot, item.name, item.status, motion = if (item.status == "运行异常") "failed" else "work")
                         }
                     }
                 }
@@ -835,7 +845,7 @@ private fun CodeBlockCard(language: String, code: String) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, onReply: () -> Unit) {
+private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, onOpenModels: () -> Unit = {}, onReply: () -> Unit) {
     val palette = LocalSummonPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1099,10 +1109,73 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         }
                     }
                 }
-                store.deliveryFacts(message.id).forEach { fact ->
-                    fact.diagnostic?.let { diagnostic ->
-                        Text(store.name(fact.botId) + " · " + diagnostic,
+                val suspendedRuns = store.suspendedRunsForMessage(roomID, message.id)
+                suspendedRuns.forEach { run ->
+                    val botName = store.name(run["bot_id"].stringValue)
+                    val errCode = run["error"]["code"].stringValue
+                    val isAuth = errCode == "auth_expired"
+                    val isQuota = errCode == "quota_exhausted"
+                    val summary = when {
+                        isAuth -> "模型登录已失效，需要重新登录或换绑"
+                        isQuota -> "模型额度已用尽，需要更换模型连接"
+                        else -> "暂时无法回复，请重试"
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("$botName · $summary", style = MaterialTheme.typography.labelSmall, color = palette.warn)
+                        val convId = run["conversation_id"].string
+                        if (isAuth) {
+                            TextButton(onClick = onOpenModels) { Text("重新登录 / 换绑") }
+                        } else if (isQuota) {
+                            TextButton(onClick = onOpenModels) { Text("更换模型连接") }
+                        } else if (convId != null) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { store.retrySuspendedRun(convId, run["run_id"].string) }
+                                        .onSuccess { error = null }
+                                        .onFailure { error = it.localizedMessage }
+                                }
+                            }) { Text("重试") }
+                        }
+                    }
+                }
+                val msgState = store.messageState(roomID, message.id)
+                if (suspendedRuns.isEmpty() && msgState?.get("state")?.string == "unanswered") {
+                    val availableBots = room?.members.orEmpty().mapNotNull { store.bot(it) }.filter { !it.isPaused }
+                    var fallbackMenu by remember(message.id) { mutableStateOf(false) }
+                    val fallbackReason = msgState["unavailable_reason"].string
+                        ?: if (availableBots.isEmpty()) "当前暂无可用成员，请先启用或添加成员" else "暂无人接手"
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(fallbackReason,
                             style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                        if (availableBots.size > 1) {
+                            Box {
+                                TextButton(onClick = { fallbackMenu = true }) { Text("点名补答") }
+                                DropdownMenu(expanded = fallbackMenu, onDismissRequest = { fallbackMenu = false }) {
+                                    availableBots.forEach { targetBot ->
+                                        DropdownMenuItem(
+                                            text = { Text(targetBot.name) },
+                                            onClick = {
+                                                fallbackMenu = false
+                                                scope.launch {
+                                                    runCatching { store.triggerManualFallback(roomID, message.id, targetBot.id) }
+                                                        .onSuccess { error = null }
+                                                        .onFailure { error = it.localizedMessage }
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (availableBots.size == 1) {
+                            val onlyBot = availableBots.first()
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { store.triggerManualFallback(roomID, message.id, onlyBot.id) }
+                                        .onSuccess { error = null }
+                                        .onFailure { error = it.localizedMessage }
+                                }
+                            }) { Text("点名补答") }
+                        }
                     }
                 }
                 error?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }

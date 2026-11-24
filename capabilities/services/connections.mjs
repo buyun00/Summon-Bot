@@ -483,15 +483,20 @@ export class SummonConnections {
 
   operationFacts(operation, session) {
     const status = operation.status === 'awaiting-input' ? 'needs_input' : operation.status === 'starting' ? 'submitted' : operation.status;
+    const exitCode = Number.isInteger(operation.exit_code) ? operation.exit_code : null;
     const native = operation.protocol === 'codex' ? { protocol: 'codex', thread_id: operation.thread_id, turn_id: operation.turn_id,
       model: operation.binding?.model, effort: operation.binding?.effort, reroute: operation.reroute } : operation.protocol === 'service' ?
       { protocol: 'service', call_id: operation.id, ...(operation.operation_id ? { operation_id: String(operation.operation_id) } : {}) } :
       { protocol: 'cli', instance_id: operation.instance_id, launch_call_id: operation.launch_call_id, pid: operation.child_pid,
-        operation_id: operation.original_native_id, requested_operation_id: operation.requested_native_id };
+        operation_id: operation.original_native_id, requested_operation_id: operation.requested_native_id,
+        ...(exitCode !== null ? { exit_code: exitCode } : {}),
+        ...(operation.exit_signal ? { exit_signal: operation.exit_signal } : {}) };
     const pending = operation.pending?.length ? operation.pending : undefined;
     const facts = this.clean({ status, session_status: status, native, input_revision: operation.input_revision, safe_to_disconnect: this.safeToDisconnect(operation),
-      ...(operation.result ? { output: operation.result } : operation.error ?
-        { output: { error: operation.error, code: operation.code, http_status: operation.http_status } } : {}),
+      ...(exitCode !== null ? { exit_code: exitCode } : {}),
+      ...(operation.exit_signal ? { exit_signal: operation.exit_signal } : {}),
+      ...(operation.result ? { output: operation.result } : operation.error || (exitCode !== null && exitCode !== 0) ?
+        { output: { error: operation.error, code: operation.code, http_status: operation.http_status, ...(exitCode !== null ? { exit_code: exitCode } : {}) } } : {}),
       ...(operation.error ? { error: operation.error } : {}), ...(operation.code ? { code: operation.code } : {}) });
     return { ...facts, input_targets: this.targets(operation, this.current(session)), pending_input: pending,
       ...(pending && !facts.output ? { output: { requests: pending } } : {}) };

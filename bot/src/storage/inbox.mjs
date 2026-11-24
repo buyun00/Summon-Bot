@@ -14,6 +14,13 @@ export class Inbox {
     return this.store.transaction(() => {
       const prior = this.store.getRecord(R.delivery, id);
       if (prior && prior.event_id !== event.id) throw runtimeFailure('delivery_conflict', 'Delivery identity belongs to another event');
+      const priorSources = new Set((prior?.match_sources || []).map(source => recordKey(source.id, source.revision, source.kind)));
+      const hasNewFallback = match_sources.some(source => source.kind === 'unanswered_fallback' &&
+        !priorSources.has(recordKey(source.id, source.revision, source.kind)));
+      const reopenObservation = Boolean(
+        prior && revision > (prior.revision ?? 1) &&
+        (hasNewFallback || event.fallback_reason === 'host_manual_fallback')
+      );
       const waitIds = [];
       for (const wait of wait_refs) {
         if (!wait?.id || wait.bot_id !== this.botId || !wait.run_id || !wait.conversation_id || !wait.call_id)
@@ -27,14 +34,14 @@ export class Inbox {
         const route = this.route(event.id, { wait_id: wait.id, conversation_id: wait.conversation_id });
         if (route.state === 'pending' && !route.run_id && this.canReturnToOwner(wait)) this.associate(wait.run_id, [route]);
       }
-      if (match_sources.length || wait_refs.length === 0) this.route(event.id, { match_sources });
+      if (match_sources.length || wait_refs.length === 0) this.route(event.id, { match_sources }, { reopen: reopenObservation });
       const saved = this.store.getRecord(R.event, event.id);
       const savedAt = prior?.received_at || now();
       const previous = saved?.event;
       const canExpand = prior && revision > (prior.revision ?? 1) && previous?.result_access === 'revoked' && event.result_access !== 'revoked' &&
         event.type === 'call.receipt' && previous.type === event.type && previous.call_id === event.call_id &&
         previous.result_position === event.result_position && previous.author?.kind === event.author?.kind && previous.author?.id === event.author?.id;
-      const projection = canExpand ? event : previous || event;
+      const projection = (canExpand || reopenObservation) ? event : previous || event;
       this.store.putRecord(R.event, { id: event.id, event: projection, received_at: saved?.received_at || savedAt });
       this.store.putRecord(R.delivery, { id, event_id: event.id, bot_id, state: 'received', received_at: savedAt, revision: Math.max(prior?.revision || 0, revision),
         match_sources: matchSources(prior?.match_sources || [], match_sources), wait_refs: [...new Set([...(prior?.wait_refs || []), ...waitIds])] });
@@ -42,10 +49,12 @@ export class Inbox {
     });
   }
 
-  route(eventId, patch) {
+  route(eventId, patch, { reopen = false } = {}) {
     const id = recordKey(eventId, patch.wait_id || 'observation');
     const existing = this.store.getRecord(R.route, id);
-    return this.store.putRecord(R.route, { id, event_id: eventId, state: 'pending', ...existing, ...patch,
+    const shouldReopen = reopen && existing && !patch.wait_id && settledRouteStates.has(existing.state);
+    const reset = shouldReopen ? { state: 'pending', run_id: null, processed_at: null, fast_read_decision: null, public_reply: null } : {};
+    return this.store.putRecord(R.route, { id, event_id: eventId, state: 'pending', ...existing, ...patch, ...reset,
       match_sources: matchSources(existing?.match_sources || [], patch.match_sources || []) });
   }
 

@@ -51,12 +51,21 @@ struct ChatView: View {
         var result: [ActiveBotItem] = []
         for exec in store.activeExecutionsForRoom(roomID) {
             let botID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string ?? ""
+            let bot = botID.isEmpty ? nil : store.bot(id: botID)
+            if bot?.isPaused == true { continue }
             let key = botID.isEmpty ? (exec["execution_ref"]["id"].string ?? exec.prettyPrinted) : botID
             guard seen.insert(key).inserted else { continue }
-            let bot = botID.isEmpty ? nil : store.bot(id: botID)
             let name = bot?.name ?? (botID.isEmpty ? "执行会话" : store.name(for: botID))
-            let status = SummonFormat.status(exec["status"].stringValue)
+            let rawStatus = exec["status"].stringValue
+            let status = ["needs_input", "awaiting_input"].contains(rawStatus) ? "等待输入" : "工作中"
             result.append(ActiveBotItem(id: key, bot: bot, name: name, status: status, ref: SummonReference(exec["execution_ref"])))
+        }
+        for bot in roomBots where !bot.isPaused && seen.insert(bot.id).inserted {
+            if bot.resolvedActivity == "working" {
+                result.append(ActiveBotItem(id: bot.id, bot: bot, name: bot.name, status: "工作中", ref: nil))
+            } else if bot.resolvedActivity == "error" {
+                result.append(ActiveBotItem(id: bot.id, bot: bot, name: bot.name, status: "运行异常", ref: nil))
+            }
         }
         return result
     }
@@ -280,7 +289,7 @@ struct ChatView: View {
                             if let ref = item.ref { activeExecutionRef = ref }
                             else { showDetails = true }
                         } label: {
-                            BotWorkingIndicator(bot: item.bot, name: item.name, status: item.status, motion: "work")
+                            BotWorkingIndicator(bot: item.bot, name: item.name, status: item.status, motion: item.status == "运行异常" ? "failed" : "work")
                         }
                         .buttonStyle(.plain)
                     }
@@ -485,6 +494,7 @@ private struct MessageRow: View {
     @State private var reference: SummonReference?
     @State private var failure: String?
     @State private var showSummaries = false
+    @State private var showModels = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -635,10 +645,61 @@ private struct MessageRow: View {
                         Text("消息已保存").summonFont(.caption2).foregroundStyle(.tertiary)
                     }
                 }
-                ForEach(store.deliveryFacts(message.id), id: \.bot_id) { fact in
-                    if let diagnostic = fact.fast_read_diagnostic {
-                        Text("\(store.name(for: fact.bot_id)) · \(diagnostic.message)")
+                let suspendedRuns = store.suspendedRunsForMessage(roomID: roomID, messageID: message.id)
+                ForEach(suspendedRuns.indices, id: \.self) { index in
+                    let run = suspendedRuns[index]
+                    let botName = store.name(for: run["bot_id"].stringValue)
+                    let errCode = run["error"]["code"].stringValue
+                    let isAuth = errCode == "auth_expired"
+                    let isQuota = errCode == "quota_exhausted"
+                    let summary = isAuth ? "模型登录已失效，需要重新登录或换绑"
+                        : isQuota ? "模型额度已用尽，需要更换模型连接"
+                        : "暂时无法回复，请重试"
+                    HStack(spacing: 8) {
+                        Text("\(botName) · \(summary)").summonFont(.caption2).foregroundStyle(SummonTheme.warn)
+                        if isAuth {
+                            Button("重新登录 / 换绑") { showModels = true }
+                                .summonFont(.caption2).buttonStyle(.glass)
+                        } else if isQuota {
+                            Button("更换模型连接") { showModels = true }
+                                .summonFont(.caption2).buttonStyle(.glass)
+                        } else if let convID = run["conversation_id"].string {
+                            Button("重试") {
+                                Task {
+                                    do { try await store.retrySuspendedRun(conversationID: convID, runID: run["run_id"].string); failure = nil }
+                                    catch { failure = error.localizedDescription }
+                                }
+                            }.summonFont(.caption2).buttonStyle(.glass)
+                        }
+                    }
+                }
+                if suspendedRuns.isEmpty,
+                   let msgState = store.messageState(roomID: roomID, messageID: message.id),
+                   msgState["state"].string == "unanswered" {
+                    let availableBots = (store.room(id: roomID)?.members ?? []).compactMap { store.bot(id: $0) }.filter { !$0.isPaused }
+                    let fallbackReason = msgState["unavailable_reason"].string ?? (availableBots.isEmpty ? "当前暂无可用成员，请先启用或添加成员" : "暂无人接手")
+                    HStack(spacing: 8) {
+                        Text(fallbackReason)
                             .summonFont(.caption2).foregroundStyle(.secondary)
+                        if availableBots.count > 1 {
+                            Menu("点名补答") {
+                                ForEach(availableBots) { targetBot in
+                                    Button(targetBot.name) {
+                                        Task {
+                                            do { try await store.triggerManualFallback(roomID: roomID, messageID: message.id, botID: targetBot.id); failure = nil }
+                                            catch { failure = error.localizedDescription }
+                                        }
+                                    }
+                                }
+                            }.summonFont(.caption2).buttonStyle(.glass)
+                        } else if let onlyBot = availableBots.first {
+                            Button("点名补答") {
+                                Task {
+                                    do { try await store.triggerManualFallback(roomID: roomID, messageID: message.id, botID: onlyBot.id); failure = nil }
+                                    catch { failure = error.localizedDescription }
+                                }
+                            }.summonFont(.caption2).buttonStyle(.glass)
+                        }
                     }
                 }
                 if let failure { InlineError(message: failure) }
@@ -665,6 +726,7 @@ private struct MessageRow: View {
             }
         }
         .summonSheet(item: $reference) { ref in NavigationStack { SummonReferenceView(ref: ref) } }
+        .summonSheet(isPresented: $showModels) { ModelSettingsView() }
     }
 }
 

@@ -72,7 +72,8 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const view = platform.manager.view(bot, user);
         const memory_items = platform.runtime?.materials?.inspectBot(bot, userContext) || [];
         const bot_files = platform.files.list(userContext, { kind: 'bot', id: bot.id });
-        return { ...view, memory_items, bot_files };
+        const activity = platform.runtime?.botActivityState?.(bot) || (bot.enabled === false ? 'paused' : 'idle');
+        return { ...view, activity, memory_items, bot_files };
       };
       const enrichRoom = roomItem => {
         const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });

@@ -91,7 +91,7 @@ fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.
 @Composable
 fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String?=null,groupOutline:Color?=null) {
     val a=bot?.resolvedAvatar ?: SummonAvatar()
-    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion ?: "idle",groupOutline=groupOutline)
+    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion ?: bot?.activityMotion ?: "idle",groupOutline=groupOutline)
 }
 
 

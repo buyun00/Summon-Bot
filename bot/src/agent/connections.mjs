@@ -155,7 +155,12 @@ export function normalizeModelCatalog(catalog) {
   };
 }
 export function readConnectionCatalog(path) {
-  const catalog = JSON.parse(readFileSync(path, 'utf8'));
+  let catalog;
+  try { catalog = JSON.parse(readFileSync(path, 'utf8')); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new Error('无法解析模型连接配置（JSON 格式错误）');
+    throw error;
+  }
   if (!Array.isArray(catalog?.connections)) throw new Error('The model connections catalog is unavailable');
   return normalizeModelCatalog(catalog);
 }
@@ -418,7 +423,11 @@ export class ModelCredentialStore {
       const credentials = JSON.parse(await readFile(this.path, 'utf8'));
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) throw new Error('Model credentials are unavailable');
       return credentials;
-    } catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+    } catch (error) {
+      if (error.code === 'ENOENT') return {};
+      if (error instanceof SyntaxError) throw new Error('无法解析模型凭据配置（JSON 格式错误）');
+      throw error;
+    }
   }
   async read(id) {
     const connection = this.connection(id);
@@ -512,8 +521,12 @@ export function connectionRuntime(connection, credentials = new ModelCredentialS
   return { model, models, provider, credentials };
 }
 export function modelError(error) {
-  return String(error?.message || error).replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+  const text = String(error?.message || error)
+    .replace(/\b(Bearer|Basic)\s+[^\s,"'\\}]+/gi, '$1 [redacted]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted]')
-    .replace(/\b(?:sk-|xai-)[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
-    .replace(/(["']?(?:access_token|refresh_token|api_key)["']?\s*[:=]\s*)["']?[^\s,"'}]+/gi, '$1[redacted]').slice(0, 700);
+    .replace(/\b(?:sk-|xai-|ghp_|gho_|AIza)[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+    .replace(/(["']?authorization["']?\s*[:=]\s*["']?)(?:(?:Bearer|Basic|Token|Digest)\s+)?[^\s,"'\\}]+/gi, '$1[redacted]')
+    .replace(/(["']?(?:access_token|refresh_token|api_key|apiKey|password|passwd|secret|cookie)["']?\s*[:=]\s*["']?)[^\s,"'\\}]+/gi, '$1[redacted]');
+  if (text.length <= 16384) return text;
+  return `${text.slice(0, 10000)}\n…[truncated ${text.length - 16000} chars]…\n${text.slice(-6000)}`;
 }

@@ -57,6 +57,10 @@ class SummonStore(private val app: Context) {
         private set
     var roomExecutions by mutableStateOf<Map<String, List<SummonJson>>>(emptyMap())
         private set
+    var roomSuspendedRuns by mutableStateOf<Map<String, List<SummonJson>>>(emptyMap())
+        private set
+    var roomMessageStates by mutableStateOf<Map<String, Map<String, SummonJson>>>(emptyMap())
+        private set
     var errorMessage by mutableStateOf<String?>(null)
 
     private var drafts by mutableStateOf<Map<String, String>>(emptyMap())
@@ -173,7 +177,7 @@ class SummonStore(private val app: Context) {
             val state = withContext(Dispatchers.IO) { api.requestJson("/api/state") }
             if (connection != connectionGeneration) return
             val epoch = state["historyEpoch"].string
-            if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap() }
+            if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap() }
             historyEpoch = epoch
             bots = (state["bots"].array ?: throw SummonApiException.invalidResponse).map(SummonBot::parse)
             rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
@@ -256,8 +260,27 @@ class SummonStore(private val app: Context) {
     fun summaryFacts(id: String): List<SummonMessageSummary> = messageSummaries[id].orEmpty()
     fun executionsForRoom(id: String): List<SummonJson> = roomExecutions[id].orEmpty()
     fun activeExecutionsForRoom(id: String): List<SummonJson> {
-        val live = setOf("running", "waiting", "queued", "needs_input", "awaiting_input")
+        val live = setOf("running", "submitted", "waiting", "queued", "needs_input", "awaiting_input")
         return roomExecutions[id].orEmpty().filter { it["status"].stringValue in live }
+    }
+    fun suspendedRunsForMessage(roomId: String, messageId: String): List<SummonJson> =
+        roomSuspendedRuns[roomId].orEmpty().filter { run ->
+            run["event_ids"].array.orEmpty().any { it.string == messageId }
+        }
+    fun messageState(roomId: String, messageId: String): SummonJson? =
+        roomMessageStates[roomId]?.get(messageId)
+    suspend fun retrySuspendedRun(conversationId: String, runId: String?) {
+        val fields = mutableListOf(
+            "target" to SummonJson.obj("kind" to SummonJson.Str("conversation"), "id" to SummonJson.Str(conversationId))
+        )
+        if (!runId.isNullOrBlank()) fields += "run_id" to SummonJson.Str(runId)
+        request("/api/executions/retry", "POST", SummonJson.Obj(fields.toMap()))
+        scheduleRefresh()
+    }
+    suspend fun triggerManualFallback(roomId: String, messageId: String, botId: String? = null) {
+        val body = if (!botId.isNullOrBlank()) SummonJson.obj("bot_id" to SummonJson.Str(botId)) else SummonJson.obj()
+        request(roomPath(roomId) + "/messages/" + SummonApiClient.component(messageId) + "/fallback", "POST", body)
+        scheduleRefresh()
     }
     fun pendingMessage(message: SummonMessage): SummonPendingMessage? =
         pendingMessages.firstOrNull { it.clientID == message.clientId && it.roomID == message.roomId }
@@ -294,6 +317,12 @@ class SummonStore(private val app: Context) {
             }
             deliveries = deliveries + snapshot["deliveries"].obj.orEmpty().mapValues { SummonDelivery.list(it.value) }
             messageSummaries = messageSummaries + snapshot["summaries"].obj.orEmpty().mapValues { SummonMessageSummary.list(it.value) }
+            val pageStates = snapshot["messageStates"].obj.orEmpty()
+            val baseStates = if (retainCache) roomMessageStates[id].orEmpty() else emptyMap()
+            roomMessageStates = roomMessageStates + (id to (baseStates + pageStates))
+            if (!older) {
+                roomSuspendedRuns = roomSuspendedRuns + (id to snapshot["suspendedRuns"].array.orEmpty())
+            }
             val confirmed = page.filter(SummonMessage::isOwn).mapNotNull(SummonMessage::clientId).toSet()
             val staged = pendingMessages.filter { it.roomID == id && it.clientID in confirmed }.flatMap { it.message.attachments }
             pendingMessages = pendingMessages.filterNot { it.roomID == id && it.clientID in confirmed }
@@ -670,6 +699,7 @@ class SummonStore(private val app: Context) {
 
     private fun clearServerState() {
         bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
+        roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
         modelSummary = SummonJson.Null

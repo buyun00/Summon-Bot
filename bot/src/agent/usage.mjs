@@ -1,4 +1,5 @@
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const nonNegNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 export const USAGE_PRICING = { currency: 'USD', checkedAt: '2026-11-03', source: 'https://api-docs.deepseek.com/quick_start/pricing/',
   note: '按官方低峰至高峰单价给出参考区间，实际扣费以供应商账单为准。',
   models: { 'deepseek-flash': { cacheHit: [0.003, 0.006], cacheMiss: [0.15, 0.3], output: [0.6, 1.2] },
@@ -7,12 +8,24 @@ export const USAGE_PRICING = { currency: 'USD', checkedAt: '2026-11-03', source:
 // Missing usage is unknown, including a disconnected request that may be billed.
 export function reportedUsage(source) {
   const inputTokens = count(source?.prompt_tokens), outputTokens = count(source?.completion_tokens);
-  let cacheHitTokens = count(source?.prompt_cache_hit_tokens ?? source?.prompt_tokens_details?.cached_tokens);
-  let cacheMissTokens = count(source?.prompt_cache_miss_tokens);
-  if (inputTokens !== null) {
-    if (cacheHitTokens === null && cacheMissTokens !== null && cacheMissTokens <= inputTokens) cacheHitTokens = inputTokens - cacheMissTokens;
-    if (cacheMissTokens === null && cacheHitTokens !== null && cacheHitTokens <= inputTokens) cacheMissTokens = inputTokens - cacheHitTokens;
-    if (cacheHitTokens !== null && cacheMissTokens !== null && cacheHitTokens + cacheMissTokens !== inputTokens) cacheHitTokens = cacheMissTokens = null;
+  const rawHit = source?.prompt_cache_hit_tokens ?? source?.prompt_tokens_details?.cached_tokens;
+  const rawMiss = source?.prompt_cache_miss_tokens;
+  const hitProvided = rawHit !== undefined && rawHit !== null;
+  const missProvided = rawMiss !== undefined && rawMiss !== null;
+  let cacheHitTokens = count(rawHit);
+  let cacheMissTokens = count(rawMiss);
+  if (hitProvided && cacheHitTokens === null || missProvided && cacheMissTokens === null) {
+    cacheHitTokens = cacheMissTokens = null;
+  } else if (inputTokens !== null) {
+    if (cacheHitTokens !== null && cacheMissTokens !== null) {
+      if (cacheHitTokens + cacheMissTokens !== inputTokens) cacheHitTokens = cacheMissTokens = null;
+    } else if (cacheHitTokens !== null) {
+      if (cacheHitTokens <= inputTokens) cacheMissTokens = inputTokens - cacheHitTokens;
+      else cacheHitTokens = null;
+    } else if (cacheMissTokens !== null) {
+      if (cacheMissTokens <= inputTokens) cacheHitTokens = inputTokens - cacheMissTokens;
+      else cacheMissTokens = null;
+    }
   }
   return { usageReported: inputTokens !== null && outputTokens !== null, inputTokens, outputTokens,
     totalTokens: count(source?.total_tokens) ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null),
@@ -96,19 +109,91 @@ export function combineUsageTotals(groups) {
   return finishUsageTotals(totals);
 }
 
-const sums = `COUNT(*) AS calls,
-  SUM(status='succeeded') AS succeeded,SUM(status='failed') AS failed,SUM(status='cancelled') AS cancelled,SUM(status='pending') AS pending,SUM(status='unknown') AS unknown,
-  SUM(COALESCE(json_extract(data,'$.usageReported'),0)) AS reportedCalls,
-  SUM(NOT COALESCE(json_extract(data,'$.usageReported'),0)) AS unreportedCalls,
-  SUM(COALESCE(json_extract(data,'$.inputTokens'),0)) AS inputTokens,SUM(COALESCE(json_extract(data,'$.outputTokens'),0)) AS outputTokens,
-  SUM(json_extract(data,'$.inputTokens') IS NOT NULL) AS inputReportedCalls,
-  SUM(COALESCE(json_extract(data,'$.totalTokens'),0)) AS totalTokens,
-  SUM(COALESCE(json_extract(data,'$.cacheHitTokens'),0)) AS cacheHitTokens,SUM(COALESCE(json_extract(data,'$.cacheMissTokens'),0)) AS cacheMissTokens,
-  SUM(CASE WHEN json_extract(data,'$.cacheHitTokens') IS NOT NULL AND json_extract(data,'$.cacheMissTokens') IS NOT NULL THEN COALESCE(json_extract(data,'$.inputTokens'),0) ELSE 0 END) AS cacheKnownInputTokens,
-  SUM(COALESCE(json_extract(data,'$.reasoningTokens'),0)) AS reasoningTokens,SUM(json_extract(data,'$.reasoningTokens') IS NOT NULL) AS reasoningReportedCalls,
-  SUM(json_extract(data,'$.cost') IS NOT NULL) AS pricedCalls,SUM(COALESCE(json_extract(data,'$.cost.min'),0)) AS costMin,SUM(COALESCE(json_extract(data,'$.cost.max'),0)) AS costMax,
-  SUM(COALESCE(json_extract(data,'$.latencyMs'),0)) AS latencyMs,SUM(json_extract(data,'$.latencyMs') IS NOT NULL) AS timedCalls,
-  SUM(COALESCE(json_extract(data,'$.historical'),0)) AS historicalCalls`;
+function createUsageAccumulator() {
+  return {
+    calls: 0, succeeded: 0, failed: 0, cancelled: 0, pending: 0, unknown: 0,
+    reportedCalls: 0, unreportedCalls: 0,
+    inputTokens: 0n, inputReportedCalls: 0, outputTokens: 0n, totalTokens: 0n,
+    cacheHitTokens: 0n, cacheMissTokens: 0n, cacheKnownInputTokens: 0n,
+    reasoningTokens: 0n, reasoningReportedCalls: 0,
+    pricedCalls: 0, costMin: 0, costMax: 0,
+    latencyMs: 0, timedCalls: 0, historicalCalls: 0,
+  };
+}
+
+function finalizeUsageAccumulator(acc) {
+  return finishUsageTotals({
+    ...acc,
+    inputTokens: Number(acc.inputTokens),
+    outputTokens: Number(acc.outputTokens),
+    totalTokens: Number(acc.totalTokens),
+    cacheHitTokens: Number(acc.cacheHitTokens),
+    cacheMissTokens: Number(acc.cacheMissTokens),
+    cacheKnownInputTokens: Number(acc.cacheKnownInputTokens),
+    reasoningTokens: Number(acc.reasoningTokens),
+  });
+}
+
+function addUsageRow(acc, status, record) {
+  acc.calls += 1;
+  if (status === 'succeeded') acc.succeeded += 1;
+  else if (status === 'failed') acc.failed += 1;
+  else if (status === 'cancelled') acc.cancelled += 1;
+  else if (status === 'pending') acc.pending += 1;
+  else if (status === 'unknown') acc.unknown += 1;
+
+  const inputTokens = count(record.inputTokens);
+  const outputTokens = count(record.outputTokens);
+  const totalTokens = count(record.totalTokens);
+  const reasoningTokens = count(record.reasoningTokens);
+  const cacheHitTokens = count(record.cacheHitTokens);
+  const cacheMissTokens = count(record.cacheMissTokens);
+  const latencyMs = nonNegNumber(record.latencyMs);
+  const costMin = nonNegNumber(record.cost?.min);
+  const costMax = nonNegNumber(record.cost?.max);
+
+  const reported = record.usageReported === true && inputTokens !== null && outputTokens !== null;
+  if (reported) acc.reportedCalls += 1;
+  else acc.unreportedCalls += 1;
+
+  if (inputTokens !== null) {
+    acc.inputTokens += BigInt(inputTokens);
+    acc.inputReportedCalls += 1;
+  }
+  if (outputTokens !== null) acc.outputTokens += BigInt(outputTokens);
+  if (totalTokens !== null) acc.totalTokens += BigInt(totalTokens);
+
+  if (reported && cacheHitTokens !== null && cacheMissTokens !== null
+    && cacheHitTokens <= inputTokens && (inputTokens - cacheHitTokens) === cacheMissTokens) {
+    acc.cacheHitTokens += BigInt(cacheHitTokens);
+    acc.cacheMissTokens += BigInt(cacheMissTokens);
+    acc.cacheKnownInputTokens += BigInt(inputTokens);
+  }
+
+  if (reasoningTokens !== null) {
+    acc.reasoningTokens += BigInt(reasoningTokens);
+    acc.reasoningReportedCalls += 1;
+  }
+  if (costMin !== null && costMax !== null) {
+    acc.pricedCalls += 1;
+    acc.costMin += costMin;
+    acc.costMax += costMax;
+  }
+  if (latencyMs !== null) {
+    acc.latencyMs += latencyMs;
+    acc.timedCalls += 1;
+  }
+  if (record.historical === true) acc.historicalCalls += 1;
+}
+
+function parseUsageRecord(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 export function readUsage(db, range, { offset = 0, limit = 25, detail = true, roomId, botId, botIds, excludeBotIds } = {}) {
   const empty = { totals: finishUsageTotals(emptyUsageTotals()), purposes: [], models: [], days: [], rooms: [], bots: [], requests: [], offset, limit, hasMore: false, firstRecordAt: null };
@@ -119,19 +204,59 @@ export function readUsage(db, range, { offset = 0, limit = 25, detail = true, ro
   const filter = (roomId !== undefined ? ' AND room_id IS ?' : '') + (botId ? ' AND bot_id=?' : '') + allowed;
   const filterArgs = [...(roomId !== undefined ? [roomId] : []), ...(botId ? [botId] : []), ...(botIds || excludeBotIds || [])];
   const where = 'started_at>=? AND started_at<?' + filter, args = [range.from, range.to, ...filterArgs];
-  const normalize = row => finishUsageTotals(Object.fromEntries(Object.keys(emptyUsageTotals()).map(key => [key, Number(row[key] || 0)])));
-  const totals = normalize(db.prepare(`SELECT ${sums} FROM model_usage WHERE ${where}`).get(...args));
   const coverage = db.prepare(`SELECT MIN(started_at) AS firstRecordAt FROM model_usage WHERE 1=1${filter}`).get(...filterArgs);
-  const groups = field => {
-    const names = field === 'bot_id' ? ",MAX(json_extract(data,'$.botName')) AS name" : field === 'room_id' ? ",MAX(json_extract(data,'$.roomName')) AS name,MAX(json_extract(data,'$.roomKind')) AS kind" : '';
-    return db.prepare(`SELECT ${field} AS key${names},${sums} FROM model_usage WHERE ${where} GROUP BY key ORDER BY totalTokens DESC`).all(...args)
-      .map(row => ({ key: row.key, ...(names ? { name: row.name, kind: row.kind } : {}), ...normalize(row) }));
+
+  const totalsAcc = createUsageAccumulator();
+  const roomMap = new Map();
+  const botMap = detail ? new Map() : null;
+  const purposeMap = detail ? new Map() : null;
+  const modelMap = detail ? new Map() : null;
+  const dayMap = detail ? new Map() : null;
+
+  const ensureGroup = (map, key, meta = null) => {
+    let entry = map.get(key);
+    if (!entry) {
+      entry = { key, ...(meta || {}), acc: createUsageAccumulator() };
+      map.set(key, entry);
+    }
+    return entry;
   };
-  const rooms = groups('room_id');
+  const maxString = (current, candidate) => typeof candidate === 'string' && (current === null || candidate > current) ? candidate : current;
+  const dayKey = startedAt => {
+    const ms = Date.parse(startedAt);
+    return Number.isFinite(ms) ? new Date(ms + 8 * 3600000).toISOString().slice(0, 10) : '';
+  };
+
+  const stmt = db.prepare(`SELECT bot_id, started_at, purpose, model, status, room_id, data FROM model_usage WHERE ${where}`);
+  for (const row of stmt.iterate(...args)) {
+    const record = parseUsageRecord(row.data);
+    addUsageRow(totalsAcc, row.status, record);
+
+    const roomEntry = ensureGroup(roomMap, row.room_id ?? null, { name: null, kind: null });
+    roomEntry.name = maxString(roomEntry.name, record.roomName);
+    roomEntry.kind = maxString(roomEntry.kind, record.roomKind);
+    addUsageRow(roomEntry.acc, row.status, record);
+
+    if (detail) {
+      const botEntry = ensureGroup(botMap, row.bot_id, { name: null });
+      botEntry.name = maxString(botEntry.name, record.botName);
+      addUsageRow(botEntry.acc, row.status, record);
+
+      addUsageRow(ensureGroup(purposeMap, row.purpose).acc, row.status, record);
+      addUsageRow(ensureGroup(modelMap, row.model).acc, row.status, record);
+      addUsageRow(ensureGroup(dayMap, dayKey(row.started_at)).acc, row.status, record);
+    }
+  }
+
+  const byTotalDesc = (a, b) => (b.acc.totalTokens > a.acc.totalTokens ? 1 : b.acc.totalTokens < a.acc.totalTokens ? -1 : 0);
+  const finalizeGroups = (map, sortFn = byTotalDesc) => [...map.values()].sort(sortFn).map(({ acc, ...meta }) => ({ ...meta, ...finalizeUsageAccumulator(acc) }));
+
+  const totals = finalizeUsageAccumulator(totalsAcc);
+  const rooms = finalizeGroups(roomMap);
   if (!detail) return { ...empty, totals, rooms, ...coverage };
-  const requests = db.prepare(`SELECT data FROM model_usage WHERE ${where} ORDER BY started_at DESC,bot_id,id DESC LIMIT ? OFFSET ?`).all(...args, limit + 1, offset).map(row => JSON.parse(row.data));
-  return { totals, rooms, bots: groups('bot_id'), ...coverage, purposes: groups('purpose'), models: groups('model'),
-    days: groups("date(started_at,'+8 hours')").sort((a, b) => a.key.localeCompare(b.key)),
+  const requests = db.prepare(`SELECT data FROM model_usage WHERE ${where} ORDER BY started_at DESC,bot_id,id DESC LIMIT ? OFFSET ?`).all(...args, limit + 1, offset).map(row => parseUsageRecord(row.data));
+  return { totals, rooms, bots: finalizeGroups(botMap), ...coverage, purposes: finalizeGroups(purposeMap), models: finalizeGroups(modelMap),
+    days: finalizeGroups(dayMap, (a, b) => a.key.localeCompare(b.key)),
     requests: requests.slice(0, limit), offset, limit, hasMore: requests.length > limit };
 }
 import { DatabaseSync } from 'node:sqlite';

@@ -1649,7 +1649,30 @@ async function openReference(ref) {
   let value;
   if (ref.kind === 'event') value = await api('/api/events/' + encodeURIComponent(ref.id));
   else if (ref.kind === 'connection') value = await api('/api/connections/' + encodeURIComponent(ref.id));
-  else if (ref.kind === 'call') value = await api('/api/calls/' + encodeURIComponent(ref.id));
+  else if (ref.kind === 'call') {
+    value = await api('/api/calls/' + encodeURIComponent(ref.id));
+    const status = typeof value.result?.status === 'string' ? value.result.status : (value.status || 'unknown');
+    const httpStatus = typeof value.result?.status === 'number' ? value.result.status : null;
+    const exitCode = Number.isInteger(value.result?.exit_code) ? value.result.exit_code
+      : (Number.isInteger(value.result?.native?.exit_code) ? value.result.native.exit_code
+        : (Number.isInteger(value.result?.output?.exit_code) ? value.result.output.exit_code : null));
+    const errText = value.result?.error || value.result?.output?.error || '';
+    const errCode = value.result?.code || value.result?.output?.code || '';
+    const outText = typeof value.result?.output === 'string'
+      ? value.result.output
+      : (value.result?.output?.text || value.result?.output?.message || '');
+    const summaryRows = [
+      `<dt>工具</dt><dd>${esc(value.tool || '—')}</dd>`,
+      `<dt>状态</dt><dd>${statusPill(status)}</dd>`,
+      httpStatus !== null ? `<dt>HTTP 状态</dt><dd>${esc(String(httpStatus))}</dd>` : '',
+      exitCode !== null ? `<dt>退出码</dt><dd>${esc(String(exitCode))}</dd>` : '',
+      value.submitted_by?.id ? `<dt>发起者</dt><dd>${esc(nameOf(value.submitted_by.id))}</dd>` : '',
+      value.target?.kind && value.target?.id ? `<dt>目标</dt><dd>${renderReference(value.target)}</dd>` : '',
+      errText || errCode ? `<dt>错误信息</dt><dd class="execution-error">${esc([errCode, errText].filter(Boolean).join(' · '))}</dd>` : '',
+      outText ? `<dt>结果摘要</dt><dd><pre class="execution-output">${esc(outText.slice(0, 2000))}</pre></dd>` : '',
+    ].filter(Boolean).join('');
+    return openModal('调用详情', value.tool || '', `<div class="execution-facts"><dl>${summaryRows}</dl></div><details style="margin-top:12px"><summary>查看原始数据</summary><pre class="execution-output">${esc(JSON.stringify(value, null, 2))}</pre></details>`);
+  }
   else value = (await api('/api/platform/read','POST',{ arguments:{ ref } })).result;
   openModal(refType[ref.kind] || '引用','',`<pre class="execution-output">${esc(value.content ?? JSON.stringify(value,null,2))}</pre>`);
 }
@@ -2183,7 +2206,7 @@ function avatar(id, large = false, key = `bot:${id}`) {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
   if (id === 'user') return `<img class="user-avatar" src="/icons/user-avatar.jpg?v=owner-20261028" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
-  const motion = ({ paused:'sleep', running:'orbit', waiting:'notify' })[botActivity(botById(id)).kind] || 'idle';
+  const motion = botActivity(botById(id)).motion || 'idle';
   return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}`, state: motion })}</span>`;
 }
 function groupAvatar(room, size = 96, key = `group:${room?.id}:${size}`) {
@@ -2200,11 +2223,16 @@ function currentAccent() { const bot = currentBot() || (roomById(ui.roomId)?.mem
 function ownerName() { return state.user?.name || state.owner?.name || 'Lin'; }
 function directRoom(room) { return room?.mode ? room.mode === 'direct' : room?.members?.length === 2 && room.members.includes('user'); }
 function botActivity(bot) {
-  if (bot.enabled === false) return { kind:'paused', text:'Bot 已暂停' };
+  if (!bot) return { kind:'idle', text:'在线', motion:'idle' };
+  if (bot.enabled === false || bot.activity === 'paused') return { kind:'paused', text:'已暂停', motion:'sleep' };
   const execution = [...state.executions, ...(ui.roomExecutions || [])].find(item =>
-    (item.bot_id === bot.id || item.execution_actor?.id === bot.id) && ['running', 'waiting', 'needs_input', 'awaiting_input'].includes(item.status));
-  return execution ? { kind:execution.status === 'running' ? 'running' : 'waiting', text:labels[execution.status] || '待输入' }
-    : { kind:'idle', text:'启用' };
+    (item.bot_id === bot.id || item.execution_actor?.id === bot.id) && ['running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input'].includes(item.status));
+  if (execution || bot.activity === 'working') {
+    const needsInput = execution && ['needs_input', 'awaiting_input'].includes(execution.status);
+    return { kind:'running', text: needsInput ? '等待输入' : '工作中', motion:'work' };
+  }
+  if (bot.activity === 'error') return { kind:'error', text:'运行异常', motion:'failed' };
+  return { kind:'idle', text:'在线', motion:'idle' };
 }
 function messagePreview(message) { return message?.content?.replace(/\s+/g, ' ').trim() || message?.attachments?.map(file => file.name).join('、') || (message?.references?.length ? '共享了引用' : '消息'); }
 function roomPreview(room) {
@@ -2617,47 +2645,33 @@ function renderMessageSummaries(message) {
 
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
-  const fastDiag = (ui.roomDeliveries.get(message.id) || []).filter(item => item.fast_read_diagnostic?.message).map(item =>
-    `<div class="message-delivery">${esc(nameOf(item.bot_id))} · ${esc(item.fast_read_diagnostic.message)}</div>`).join('');
   const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run => {
     const errCode = run.error?.code;
     const isAuth = errCode === 'auth_expired';
     const isQuota = errCode === 'quota_exhausted';
-    const prefix = isAuth ? '模型登录已失效' : isQuota ? '模型额度已用尽' : '运行已挂起';
-    const settingsBtn = (isAuth || isQuota)
-      ? `<button type="button" class="text-button" data-action="navigate" data-view="models">${isAuth ? '重新登录 / 换绑' : '更换模型连接'}</button>`
-      : '';
-    return `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} ${prefix}：${esc(run.error?.message || errCode || '未知错误')}</span>
-      ${settingsBtn}<button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`;
+    const summary = isAuth ? '模型登录已失效，需要重新登录或换绑'
+      : isQuota ? '模型额度已用尽，需要更换模型连接'
+      : '暂时无法回复，请重试';
+    const actionBtn = isAuth
+      ? '<button type="button" class="text-button" data-action="navigate" data-view="models">重新登录 / 换绑</button>'
+      : isQuota
+        ? '<button type="button" class="text-button" data-action="navigate" data-view="models">更换模型连接</button>'
+        : `<button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button>`;
+    return `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} · ${esc(summary)}</span>${actionBtn}</div>`;
   }).join('');
   const msgState = ui.roomMessageStates?.[message.id];
-  let stateNotice = '';
-  if (msgState?.state === 'unanswered') {
-    const reason = msgState.unavailable_reason || '暂无人接手';
-    stateNotice = `<div class="message-delivery" role="status" data-message-state="unanswered"><span>${esc(reason)}</span>
-        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`;
-  } else if (msgState?.state === 'in_flight') {
-    const label = msgState.fallback_attempted && msgState.fallback_bot_id
-      ? `正在由 ${nameOf(msgState.fallback_bot_id)} 兜底处理…`
-      : '处理中…';
-    stateNotice = `<div class="message-delivery" role="status" data-message-state="in_flight"><span>${esc(label)}</span></div>`;
-  } else if (msgState?.state === 'answered') {
-    const label = msgState.fallback_attempted && msgState.fallback_bot_id
-      ? `已由 ${nameOf(msgState.fallback_bot_id)} 兜底答复`
-      : '已答复';
-    stateNotice = `<div class="message-delivery" role="status" data-message-state="answered"><span>${esc(label)}</span></div>`;
-  }
+  const stateNotice = !suspended && msgState?.state === 'unanswered'
+    ? `<div class="message-delivery" role="status" data-message-state="unanswered"><span>${esc(msgState.unavailable_reason || '暂无人接手')}</span>
+        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`
+    : '';
   const hostFallbackNotice = msgState?.host_fallback_delivered
     ? `<div class="message-delivery" role="status"><span>后台成果已就绪并同步宿主私聊</span>
         ${msgState.host_fallback_room_id ? `<button type="button" class="text-button" data-action="select-room" data-id="${esc(msgState.host_fallback_room_id)}">前往查看</button>` : ''}</div>`
     : '';
-  const awaitingNotice = message.awaitingReply && message.senderId !== 'user'
-    ? `<div class="message-delivery">等待你的回复</div>`
-    : '';
   const staleWaitNotice = (ui.roomStaleWaits || []).filter(w => w.origin_message_id === message.id).map(w =>
-    `<div class="message-delivery" role="status"><span>${esc(nameOf(w.bot_id))} 长期等待中（${Math.floor(w.elapsed_seconds / 60)}分${w.elapsed_seconds % 60}秒）${w.waiting_summary ? ' · ' + esc(w.waiting_summary) : w.work_summary ? ' · ' + esc(w.work_summary) : ''}</span>
+    `<div class="message-delivery" role="status"><span>${esc(nameOf(w.bot_id))} 等待已超过 ${Math.floor(w.elapsed_seconds / 60)} 分钟</span>
       <button type="button" class="text-button" data-action="stop-room">打断</button></div>`).join('');
-  return fastDiag + suspended + stateNotice + hostFallbackNotice + awaitingNotice + staleWaitNotice;
+  return suspended + stateNotice + hostFallbackNotice + staleWaitNotice;
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {
@@ -2735,20 +2749,20 @@ function selectedMentions(room) {
 }
 
 function renderFloatingBotActivity(room, members) {
-  const liveStatuses = new Set(['running', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+  const liveStatuses = new Set(['running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
   const seen = new Set(), items = [];
   for (const exec of ui.roomExecutions || []) {
     if (!liveStatuses.has(exec.status)) continue;
     const botId = exec.execution_actor?.id || exec.bot_id;
     if (!botId || !botById(botId) || seen.has(botId)) continue;
     seen.add(botId);
-    const statusText = labels[exec.status] || '正在处理';
+    const statusText = ['needs_input', 'awaiting_input'].includes(exec.status) ? '等待输入' : '工作中';
     items.push({ botId, label: `${nameOf(botId)} · ${statusText}`, ref: exec.execution_ref });
   }
   for (const member of members) {
     if (seen.has(member.id)) continue;
     const act = botActivity(member);
-    if (['running', 'waiting'].includes(act.kind)) {
+    if (act.kind === 'running') {
       seen.add(member.id);
       items.push({ botId: member.id, label: `${member.name} · ${act.text}`, ref: null });
     }
@@ -2844,7 +2858,7 @@ const inputLabels = { codex_turn:'Codex 轮次', pi_run:'Pi 运行', cli_process
 const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', detached:'已本地脱钩（远端未知）', unsupported:'连接不支持远程取消' };
 const executionLabel = item => item.kind === 'conversation' ? '内部对话' : item.engine === 'pi' ? 'Pi 会话' : (item.engine || '执行会话');
 const executionTitle = item => [executionLabel(item), item.space?.kind === 'room' ? roomById(item.space.id)?.name : null].filter(Boolean).join(' · ');
-const executionError = item => [item.last_error?.message, item.last_error?.code].filter(Boolean).join(' · ');
+const executionError = item => [item.last_error?.exit_code != null ? `退出码 ${item.last_error.exit_code}` : null, item.last_error?.code, item.last_error?.message].filter(Boolean).join(' · ');
 
 function renderExecutionRow(item) {
   const ref = item.execution_ref;
@@ -2934,6 +2948,7 @@ function renderExecutionDetail(detail) {
     ${detail.submitted_by ? `<dt>提交者</dt><dd>${esc(nameOf(detail.submitted_by.id))}</dd>` : ''}
     ${detail.model?.id ? `<dt>模型</dt><dd>${esc(detail.model.id)}${detail.model.thinking_level ? ' · ' + esc(detail.model.thinking_level) : ''}</dd>` : ''}
     ${detail.latest_call_id ? `<dt>调用</dt><dd>${renderReference({ kind:'call',id:detail.latest_call_id })}</dd>` : ''}
+    ${detail.origin_message_id ? `<dt>来源消息</dt><dd>${renderReference({ kind:'event',id:detail.origin_message_id })}</dd>` : ''}
     </dl>${native}</div>
     <div class="execution-actions">${stop ? '<button class="secondary-button" data-action="stop-execution">打断当前运行</button>' : ''}
       ${detail.status === 'suspended' ? `<button class="primary-button" data-action="retry-suspended" data-conversation="${esc(detail.execution_ref?.id || detail.id)}">重试运行</button>` : ''}</div>

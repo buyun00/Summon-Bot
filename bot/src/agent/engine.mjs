@@ -22,7 +22,7 @@ const roomLayerRules = [
   '- When the speaker has appropriate authority and the instruction applies, resolve conflicts in this order: 1) current-turn explicit request or correction (this delivery only) > 2) confirmed room or project convention (this room/project only) > 3) this Bot’s individual persona and long-term user instructions (all rooms and direct chats) > 4) built-in role default > 5) general defaults.',
   '- Preserve all non-conflicting rules from lower layers. Active entries in selected_material_revisions whose applies_to matches this Bot or Room are live operative rules—actually apply every required format, tone, or closing signature/suffix to the final text of your send reply (do not merely quote or describe the rule and omit it) unless overridden by a current-turn one-off exception.',
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly sets or revises a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message(s) so it survives history compression. When asked to consolidate or update a target knowledge File (such as a Room handbook), read the target File and call save_file directly in this turn (recording source message references in sources and noting any superseded/retired terms) so the updated File revision is immediately live.',
-  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members and any resolved @mentions)—use the full wording, actual author, reply target, mentions, and references of those messages. Newer room messages in the tail that are not listed in current_room_inputs are background context unless you intentionally answer them directly with send(..., reply_to).',
+  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members, any resolved @mentions, and any fallback directives)—use the full wording, actual author, reply target, mentions, references, and fallback directives of those messages. When fallback specifies reason="host_manual_fallback" for a message, the host explicitly selected you to answer that message publicly in the Room via send. Newer room messages in the tail that are not listed in current_room_inputs are background context unless you intentionally answer them directly with send(..., reply_to).',
   '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
   '- Room boundaries: Keep Room-private details in their source Room unless the host asks to share them in another Room.',
   '- For a delegated request, own the direct child Sessions you open. When a Room request explicitly @mentions or assigns execution to another member (and not this Bot), do not open duplicate execution Sessions for that member’s assigned scope; only act on parts explicitly assigned to this Bot. Respect explicit read-only and file-ownership boundaries in the current request: if you are assigned to review read-only or not edit files, do not call save_file in the project workspace (including review or note docs)—post your review directly via send. While a delegated Session is actively working on its assigned files, steer that Session (or wait until it finishes/stops) rather than editing the same files concurrently from the host conversation. When the user explicitly reserves a product or design choice to decide after being asked, do not invent or pre-commit a fallback decision in open_session—implement only the option-neutral parts and wait for the user’s actual choice. On a receipt, use origin_work_status (including any nested descendants) for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
@@ -248,9 +248,16 @@ export class BotEngine {
           });
           const memberNameById = new Map(roomMembers.map(member => [member.id, member.name]));
           const resolvedMentions = {};
+          const fallbackRequests = {};
           for (const event of unseenActiveRoomEvents) {
             if (event.mentions?.length) {
               resolvedMentions[event.id] = event.mentions.map(id => ({ id, name: memberNameById.get(id) || id }));
+            }
+            if (event.fallback_reason || event.fallback_guidance) {
+              fallbackRequests[event.id] = {
+                ...(event.fallback_reason ? { reason: event.fallback_reason } : {}),
+                ...(event.fallback_guidance ? { guidance: event.fallback_guidance } : {}),
+              };
             }
           }
           roomInputPointer = {
@@ -260,6 +267,7 @@ export class BotEngine {
               message_ids: unseenActiveRoomIds,
               ...(roomMembers.length ? { members: roomMembers } : {}),
               ...(Object.keys(resolvedMentions).length ? { mentions: resolvedMentions } : {}),
+              ...(Object.keys(fallbackRequests).length ? { fallback: fallbackRequests } : {}),
               ...(boundary.observation ? { observation_since: boundary.observation.from } : {}),
             }),
             origin_event_ids: unseenActiveRoomIds,
@@ -364,10 +372,17 @@ export class BotEngine {
       context = { ...context, messages };
     }
     const lease = this.platform.acquireModel(job.context(), { reserve_tokens: estimate + maxTokens });
+    const usageRoomId = job.conversation.space?.kind === 'room'
+      ? job.conversation.space.id
+      : (job.conversation.origin_room?.id
+        || (job.conversation.session_id
+          ? this.platform.executions.record({ kind: 'session', id: job.conversation.session_id })?.origin_room?.id
+          : null)
+        || null);
     try {
       const result = this.provider.stream(model, context, { ...options, signal: job.signal, maxTokens,
         reasoning: job.binding.model.thinking_level,
-        usageContext: { purpose, botId: origin.bot_id, roomId: job.conversation.space?.kind === 'room' ? job.conversation.space.id : null,
+        usageContext: { purpose, botId: origin.bot_id, roomId: usageRoomId,
           sessionId: origin.session_id || origin.conversation_id, runId: origin.run_id, parentCallId: job.conversation.open_call_id,
           chargeAccount: 'host', hostUsageId: lease.id, submittedBy: job.context().submitted_by },
         beforeFetch: async () => {

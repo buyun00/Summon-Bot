@@ -25,6 +25,8 @@ final class SummonStore {
     private(set) var lastSyncAt: Date?
     private(set) var modelSummary: SummonJSONValue = .null
     private(set) var roomExecutions: [String: [SummonJSONValue]] = [:]
+    private(set) var roomSuspendedRuns: [String: [SummonJSONValue]] = [:]
+    private(set) var roomMessageStates: [String: [String: SummonJSONValue]] = [:]
     var errorMessage: String?
 
     private var messageHistory: [String: [SummonMessage]] = [:]
@@ -184,6 +186,8 @@ final class SummonStore {
                 deliveries = [:]
                 messageSummaries = [:]
                 cursors = [:]
+                roomSuspendedRuns = [:]
+                roomMessageStates = [:]
             }
             historyEpoch = state.historyEpoch
             bots = state.bots
@@ -280,8 +284,34 @@ final class SummonStore {
     func summaryFacts(_ id: String) -> [SummonMessageSummary] { messageSummaries[id] ?? [] }
     func executionsForRoom(_ id: String) -> [SummonJSONValue] { roomExecutions[id] ?? [] }
     func activeExecutionsForRoom(_ id: String) -> [SummonJSONValue] {
-        let live: Set<String> = ["running", "waiting", "queued", "needs_input", "awaiting_input"]
+        let live: Set<String> = ["running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
         return (roomExecutions[id] ?? []).filter { live.contains($0["status"].stringValue) }
+    }
+    func suspendedRunsForMessage(roomID: String, messageID: String) -> [SummonJSONValue] {
+        (roomSuspendedRuns[roomID] ?? []).filter { run in
+            (run["event_ids"].array ?? []).contains { $0.string == messageID }
+        }
+    }
+    func messageState(roomID: String, messageID: String) -> SummonJSONValue? {
+        roomMessageStates[roomID]?[messageID]
+    }
+    func retrySuspendedRun(conversationID: String, runID: String?) async throws {
+        var payload: [String: SummonJSONValue] = [
+            "target": .object(["kind": .string("conversation"), "id": .string(conversationID)])
+        ]
+        if let runID, !runID.isEmpty { payload["run_id"] = .string(runID) }
+        _ = try await request(path: "/api/executions/retry", method: "POST", body: .object(payload))
+        scheduleRefresh()
+    }
+    func triggerManualFallback(roomID: String, messageID: String, botID: String? = nil) async throws {
+        var payload: [String: SummonJSONValue] = [:]
+        if let botID, !botID.isEmpty { payload["bot_id"] = .string(botID) }
+        _ = try await request(
+            path: Self.roomPath(roomID) + "/messages/" + SummonAPIClient.component(messageID) + "/fallback",
+            method: "POST",
+            body: .object(payload)
+        )
+        scheduleRefresh()
     }
     func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {
         pendingMessages.first { $0.clientID == message.clientId && $0.roomID == message.roomId }
@@ -326,6 +356,16 @@ final class SummonStore {
             else if cursors[id] == nil { cursors[id] = oldest }
             deliveries.merge(snapshot.deliveries ?? [:]) { _, new in new }
             messageSummaries.merge(snapshot.summaries ?? [:]) { _, new in new }
+            if let states = snapshot.messageStates {
+                var merged = retainCache ? (roomMessageStates[id] ?? [:]) : [:]
+                merged.merge(states) { _, new in new }
+                roomMessageStates[id] = merged
+            } else if !retainCache && !older {
+                roomMessageStates[id] = [:]
+            }
+            if !older {
+                roomSuspendedRuns[id] = snapshot.suspendedRuns ?? []
+            }
             let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
             let staged = pendingMessages.filter { $0.roomID == id && confirmed.contains($0.clientID) }.flatMap(\.attachments)
             pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
@@ -705,6 +745,7 @@ final class SummonStore {
 
     private func clearServerState() {
         bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
+        roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }

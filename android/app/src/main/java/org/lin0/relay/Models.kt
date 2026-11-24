@@ -94,8 +94,16 @@ data class SummonBot(
     val materialIndex: SummonReference?,
     val avatar: SummonAvatar?,
     val memoryItems: List<SummonJson> = emptyList(),
+    val activity: String? = null,
 ) {
-    val isPaused: Boolean get() = enabled == false || control["state"].string == "paused"
+    val isPaused: Boolean get() = enabled == false || control["state"].string == "paused" || activity == "paused"
+    val resolvedActivity: String get() = if (isPaused) "paused" else activity ?: "idle"
+    val activityMotion: String get() = when (resolvedActivity) {
+        "paused" -> "sleep"
+        "working" -> "work"
+        "error" -> "failed"
+        else -> "idle"
+    }
     val resolvedAvatar: SummonAvatar get() = avatar ?: SummonAvatar.defaultFor(id)
 
     fun toJson(): SummonJson = SummonJson.obj(
@@ -106,6 +114,7 @@ data class SummonBot(
         "material_index_ref" to (materialIndex?.toJson() ?: SummonJson.Null),
         "avatar" to (avatar?.toJson() ?: SummonJson.Null),
         "memory_items" to SummonJson.Arr(memoryItems),
+        "activity" to activity.strOrNull(),
     )
 
     companion object {
@@ -114,7 +123,8 @@ data class SummonBot(
             return SummonBot(id, json["name"].string ?: id, json["instructions"].string, json["model"], json["revision"].int,
                 json["enabled"].bool, json["control"], json["resume_ref"], SummonReference.parse(json["material_index_ref"]),
                 json["avatar"].takeIf { it.obj != null }?.let(SummonAvatar::parse),
-                json["memory_items"].array.orEmpty())
+                json["memory_items"].array.orEmpty(),
+                json["activity"].string)
         }
     }
 }
