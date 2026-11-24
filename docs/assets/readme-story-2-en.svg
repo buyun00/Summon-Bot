@@ -208,11 +208,11 @@
         <text x="256" y="44" class="mono" font-size="9.8" fill="#848B9D">Codex · gpt-6.2-sol (xhigh)</text>
         <text x="256" y="66" class="mono" font-size="9.8" fill="#E6AB55">$ node render.mjs → bundling</text></g>
       <rect x="22" y="166" width="464" height="28" rx="8" fill="#EEF3F7"/>
-      <text x="34" y="184" class="mono" font-size="10.8" fill="#395B75">Code gate blocks ③ engines from spamming the room (403 room_send_forbidden)</text>
+      <text x="34" y="184" class="mono" font-size="10.2" fill="#395B75">Code gate blocks ③ workers from posting (403 room_send_forbidden)</text>
     </g>
   </g>
 
-  <path d="M 626 410 C 675 410, 685 490, 728 490" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
+  <path d="M 664 443 C 696 443, 696 490, 728 490" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
   
   <g transform="translate(728, 380)">
     <circle cx="24" cy="24" r="16" fill="#2E8548"/>
@@ -223,12 +223,12 @@
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#235E34">Zero-latency direct forward (route: forward)</tspan>: At 10:05 you remember the</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">  0-byte blank.png and 2-column layout. Lead Bot's ① Fast-Read matches</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">  in-flight Session #2, bypasses ② Main Chat, and injects your words</text><text x="22" y="95" class="font" font-size="13.5" fill="#4B4840">  straight into the running Codex thread via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>!</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI self-healing</tspan>: When a CLI update breaks parsing, tasks</text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840">  send <tspan class="mono">send(to: connection)</tspan> to its <tspan font-weight="700">Maintainer Bot</tspan> to patch the script.</text>
       <rect x="22" y="170" width="464" height="28" rx="8" fill="#E8F4EC"/>
-      <text x="34" y="188" class="mono" font-size="10.8" fill="#235E34">Built-in Bot Maintenance Room reviews daily connection_usage standups</text>
+      <text x="34" y="188" class="mono" font-size="10.2" fill="#235E34">Built-in Bot Maintenance Room reviews daily connection_usage standups</text>
     </g>
   </g>
 
   <path d="M 636 760 C 680 760, 685 900, 728 900" fill="none" stroke="#4B4840" stroke-width="2.2" class="flow"/>
-  <path d="M 594 1280 C 665 1280, 680 1030, 728 1030" fill="none" stroke="#785620" stroke-width="2" class="flow"/>
+  <path d="M 663 1306 C 694 1306, 696 1275, 696 1180 C 696 1075, 700 1030, 728 1030" fill="none" stroke="#785620" stroke-width="2" class="flow"/>
   
   <g transform="translate(728, 780)">
     <circle cx="24" cy="24" r="16" fill="#23211E"/>
@@ -259,7 +259,7 @@
         <rect x="0" y="76" width="464" height="30" rx="8" fill="#EEF3F7"/>
         <text x="14" y="96" class="mono" font-size="11.2" fill="#1F1E1B">③ Standalone Pi &amp; Codex: gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text></g>
       <rect x="22" y="171" width="464" height="28" rx="8" fill="#F3F0E7"/>
-      <text x="34" y="189" class="mono" font-size="10.8" fill="#4B4840">usage.sqlite attributes every call by fast_read / conversation / pi_session</text>
+      <text x="34" y="189" class="mono" font-size="10.2" fill="#4B4840">usage.sqlite tracks fast_read / conversation / pi_session separately</text>
     </g>
   </g>
 </svg>

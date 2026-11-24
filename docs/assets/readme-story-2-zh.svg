@@ -212,7 +212,7 @@
     </g>
   </g>
 
-  <path d="M 626 410 C 675 410, 685 490, 728 490" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
+  <path d="M 664 443 C 696 443, 696 490, 728 490" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
   
   <g transform="translate(728, 380)">
     <circle cx="24" cy="24" r="16" fill="#2E8548"/>
@@ -228,7 +228,7 @@
   </g>
 
   <path d="M 636 760 C 680 760, 685 900, 728 900" fill="none" stroke="#4B4840" stroke-width="2.2" class="flow"/>
-  <path d="M 594 1280 C 665 1280, 680 1030, 728 1030" fill="none" stroke="#785620" stroke-width="2" class="flow"/>
+  <path d="M 596 1306 C 686 1306, 696 1275, 696 1180 C 696 1075, 700 1030, 728 1030" fill="none" stroke="#785620" stroke-width="2" class="flow"/>
   
   <g transform="translate(728, 780)">
     <circle cx="24" cy="24" r="16" fill="#23211E"/>

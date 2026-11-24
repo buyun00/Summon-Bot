@@ -111,13 +111,13 @@
       <use href="#en-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#B3ADA0">09:56</tspan></text>
       <path d="M 52 22 H 574 Q 594 22 594 42 V 74 Q 594 94 574 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
-      <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">We can structure it by chapters: start with the Coast Chapter (Camp, Storm,</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">and Ruin nodes), then expand to Snowfield. How about *Mistport Expedition*?</text>
+      <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">We can structure it by chapters: start with the Coast Chapter (Camp, Storm,</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">and Ruin nodes), then expand to Snowfield. How about <tspan font-style="italic">Mistport Expedition</tspan>?</text>
     </g>
 
     
     <g transform="translate(94, 554)">
       <path d="M 20 0 H 508 Q 528 0 528 20 V 66 Q 528 72 522 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
-      <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">*Mistport Expedition* sounds great! Let's start with 10 supply (-1 per step):</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">Camp restores +2, Storm costs -2 extra, and Ruin grants 2 medals.</text>
+      <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E"><tspan font-style="italic">Mistport Expedition</tspan> sounds great! Let's start with 10 supply (-1 per step):</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">Camp restores +2, Storm costs -2 extra, and Ruin grants 2 medals.</text>
       <text x="514" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:58</text>
       
     </g>
@@ -148,7 +148,7 @@
       <use href="#en-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#B3ADA0">09:59</tspan></text>
       <path d="M 52 22 H 574 Q 594 22 594 42 V 97 Q 594 117 574 117 H 66 Q 46 117 46 97 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
-      <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">Hi all, I'll own *Mistport Expedition* chapter economy! With 10 starting supply:</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">Safe route (Camp - Storm - Ruin) leaves 7 supply &amp; 2 medals; Risky route</text><text x="62" y="98" class="font" font-size="13.5" fill="#1F1E1B">(Storm - Storm - Ruin) leaves 3 supply &amp; 2 medals. Risky payoff feels low—thoughts?</text>
+      <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">Hi all, I'll own <tspan font-style="italic">Mistport Expedition</tspan> chapter economy! With 10 starting supply:</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">Safe route (Camp - Storm - Ruin) leaves 7 supply &amp; 2 medals; Risky route</text><text x="62" y="98" class="font" font-size="13.5" fill="#1F1E1B">(Storm - Storm - Ruin) leaves 3 supply &amp; 2 medals. Risky payoff feels low—thoughts?</text>
     </g>
 
     
@@ -157,7 +157,7 @@
       
       <rect x="14" y="14" width="500" height="28" rx="6" fill="#D4E0D8"/>
       <line x1="14" y1="14" x2="14" y2="42" stroke="#6B7D70" stroke-width="2.5"/>
-      <text x="24" y="32" class="font" font-size="11.8" fill="#4A534C"><tspan font-weight="600" fill="#1E221E">LevelDesigner</tspan> Hi all, I'll own *Mistport Expedition* chapter economy!…</text><text x="18" y="64" class="font" font-size="13.5" fill="#1E221E">Agreed—surviving two storms with 3 supply left for the same 2 medals</text><text x="18" y="87" class="font" font-size="13.5" fill="#1E221E">isn't worth it. Let's award +1 extra medal per storm on the Coast table.</text>
+      <text x="24" y="32" class="font" font-size="11.8" fill="#4A534C"><tspan font-weight="600" fill="#1E221E">LevelDesigner</tspan> Hi all, I'll own <tspan font-style="italic">Mistport Expedition</tspan> chapter economy!…</text><text x="18" y="64" class="font" font-size="13.5" fill="#1E221E">Agreed—surviving two storms with 3 supply left for the same 2 medals</text><text x="18" y="87" class="font" font-size="13.5" fill="#1E221E">isn't worth it. Let's award +1 extra medal per storm on the Coast table.</text>
       <text x="514" y="101" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:00</text>
       
       <rect x="301" y="114" width="227" height="22" rx="11" fill="#EFECE4" stroke="#E2DDD2"/>
@@ -228,9 +228,9 @@
     <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">From vague chat to an auto-assembled team</text>
     <rect x="0" y="60" width="508" height="216" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
-      <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">Real projects don't start with a rigid spec. You began with “a lightweight</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">weekend game,” and <tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed with you across three turns</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">to shape the maritime loop, chapters, and the name *Mistport Expedition*.</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> noticed that while Lead Bot owned core code, no one</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">owned long-term chapter economy tables. Without being asked, it called</text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840"><tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn <tspan font-weight="700" fill="#3B6346">@LevelDesigner</tspan> and invited her into the room.</text>
+      <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">Real projects don't start with a rigid spec. You began with “a lightweight</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">weekend game,” and <tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed with you across three turns</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">to shape the maritime loop, chapters, and the name <tspan font-style="italic">Mistport Expedition</tspan>.</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> noticed that while Lead Bot owned core code, no one</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">owned long-term chapter economy tables. Without being asked, it called</text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840"><tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn <tspan font-weight="700" fill="#3B6346">@LevelDesigner</tspan> and invited her into the room.</text>
       <rect x="22" y="170" width="464" height="28" rx="8" fill="#F6F2E8"/>
-      <text x="34" y="188" class="mono" font-size="10.8" fill="#785620">EggBot observes room checkpoints → spots role gaps &amp; hands off context</text>
+      <text x="34" y="188" class="mono" font-size="10.2" fill="#785620">EggBot observes room checkpoints → spots role gaps &amp; hands off context</text>
     </g>
   </g>
 
