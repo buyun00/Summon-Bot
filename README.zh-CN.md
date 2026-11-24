@@ -4,8 +4,8 @@
 
 # Summon Bot
 
-**部署在你电脑上的新一代多 Bot 群聊助理：告别单对话混乱与人肉多会话编排，让一群会分工、会纠错、会记事的 AI BOT 替你把工作干完。把时间留给自己冲咖啡。**  
-**A Next-Gen Multi-Bot Group Assistant on Your Computer · Beyond Single-Thread Chaos and Manual Session Juggling — Let Peer AI Bots Split Work, Cross-Check, Remember, and Ship for You. Keep Your Time for Brewing Coffee.**
+**部署在你电脑上的新一代多 Bot 群聊助理：告别单对话混乱与人肉多会话编排，让一群会分工、会纠错、会记事的 AI Bot 替你把活干完，把时间留给自己冲咖啡。**  
+**A Next-Gen Local Multi-Bot Group Assistant · Beyond single-thread chaos and manual session juggling — a team of AI Bots that divide work, cross-check, and remember for you, leaving you time to brew your own coffee.**
 
 ![Group Chat](https://img.shields.io/badge/Workflow-Multi--Bot_Group_Chat-477A54?style=flat-square)
 ![Auto Team](https://img.shields.io/badge/EggBot-Auto_Role_Spawning-A87932?style=flat-square)
