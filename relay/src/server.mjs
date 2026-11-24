@@ -15,15 +15,15 @@ const GITHUB_REPO = 'buyun00/Summon-Bot';
 
 const staticAssets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration', 'canvas-overview']
+  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'canvas-overview']
     .map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub']
+  ...['style', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub']
     .map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],
   ['/icons/ai-brands-LICENSE.txt', ['icons/ai-brands-LICENSE.txt', 'text/plain']],
-  ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
+  ...['icon-192', 'icon-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
 

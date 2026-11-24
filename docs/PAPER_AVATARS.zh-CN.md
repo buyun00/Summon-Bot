@@ -28,19 +28,10 @@
 ## 3. 源码结构与跨端导出
 
 - `capabilities/shared/avatar-style.mjs`：跨端造型、纸色、旧值映射与规范化逻辑。
-- `web/avatar-showcase/src/relay/rig.ts`：直接调用 Bloub 原引擎的运行状态适配。
-- `web/avatar-showcase/src/relay/browser.ts`：正式网页 SVG 渲染与生命周期管理。
-- `web/avatar-showcase/src/components/BloubBot.tsx`：原展示页，保留完整动画时间线。
-- `scripts/build/export-paper.mjs`：构建网页入口并导出 20 FPS 原生矢量动作目录（版本 3）。
+- 独立 Bloub 头像源工程（已迁至外部目录 `D:\Summon-Bloub-Avatars`）：封装 Bloub 原引擎，在其中运行 `node export-paper.mjs --target D:/Relay-Bot` 可重新生成网页产物与 20 FPS 原生矢量动作目录（版本 3）。
 - iOS `PaperLibrary.swift` / Android `PaperAvatars.kt`：使用原生 Canvas 直接绘制共享矢量动作并插值，不使用逐帧位图或 WebView。
 
-修改头像引擎或样式后，在安装 `web/avatar-showcase` 依赖的前提下，使用 Node 24+ 在仓库根目录运行：
-
-```powershell
-node scripts/build/export-paper.mjs
-```
-
-该脚本自动生成并更新以下产物（随源码提交）：
+本仓库内随源码提交的跨端产物：
 - `web/frontend/avatars.js`
 - `ios/Summon/Resources/paper-avatars.json` 与 `Bloub-LICENSE.txt`
 - `android/app/src/main/assets/paper-avatars.json` 与 `Bloub-LICENSE.txt`
@@ -48,5 +39,4 @@ node scripts/build/export-paper.mjs
 ## 4. 性能与许可
 
 - 网页端可见头像限帧 30 FPS，滚出视口或切到后台时自动暂停；原生移动端同步响应应用前后台生命周期与系统“减少动态效果”设置。
-- 在线演示页：`https://bot.lin0.org/api/avatar-showcase/#etat=idle`。更新上线沿用 [运行维护](OPERATIONS.zh-CN.md) 中的正式发布安装流程。
-- 保留 Bloub MIT 许可，来源及修改说明见 [avatar-showcase 说明](../web/avatar-showcase/README.md)。
+- Bloub MIT 许可保留在 `ios/Summon/Resources/Bloub-LICENSE.txt` 与 `android/app/src/main/assets/Bloub-LICENSE.txt`。

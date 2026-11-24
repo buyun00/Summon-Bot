@@ -13,13 +13,13 @@ import { RelayConnector } from './relay-connector.mjs';
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],
   ['/icons/ai-brands-LICENSE.txt', ['icons/ai-brands-LICENSE.txt', 'text/plain']],
-  ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
+  ...['icon-192', 'icon-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
@@ -27,14 +27,6 @@ const json = (res, status, value) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(value));
 };
-
-// This prefix also bypasses older installed chat service workers' navigation cache.
-const showcasePrefix = '/api/avatar-showcase/';
-const showcaseMime = new Map([
-  ['html', 'text/html'], ['js', 'text/javascript'], ['css', 'text/css'],
-  ['svg', 'image/svg+xml'], ['png', 'image/png'], ['ico', 'image/x-icon'],
-  ['wasm', 'application/wasm'], ['txt', 'text/plain'], ['woff2', 'font/woff2'],
-]);
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, dataRoot, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
@@ -153,28 +145,11 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, dataRoot, getR
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
-      const page = Boolean(game) || url.pathname === showcasePrefix || url.pathname === showcasePrefix.slice(0, -1);
+      const page = Boolean(game);
       if (!authorize(req, res, url, requestOrigin, { page })) return;
       if (game) return await game.serveLauncher(req, res, url);
       if (url.pathname.startsWith(gamePrefix)) return json(res, 404, { error: '找不到已发布资源' });
       if (releaseRequest && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local })) return;
-      if (url.pathname === showcasePrefix.slice(0, -1)) {
-        res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
-      }
-      if (url.pathname.startsWith(showcasePrefix)) {
-        const name = url.pathname.slice(showcasePrefix.length) || 'index.html';
-        const mime = showcaseMime.get(name.split('.').at(-1));
-        if (!['GET', 'HEAD'].includes(req.method) || !mime || !/^(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+|assets\/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)$/.test(name)) {
-          res.writeHead(404); res.end('Not found'); return;
-        }
-        const content = await readFile(join(frontendRoot, 'avatar-showcase', name));
-        res.writeHead(200, {
-          'Content-Type': `${mime}${mime.startsWith('text/') ? '; charset=utf-8' : ''}`,
-          'Content-Length': content.length, 'Cache-Control': 'private, no-store',
-          'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex',
-        });
-        res.end(req.method === 'HEAD' ? undefined : content); return;
-      }
       if (url.pathname === '/hub/health' && req.method === 'GET') {
         return json(res, 200, {
           ok: true,

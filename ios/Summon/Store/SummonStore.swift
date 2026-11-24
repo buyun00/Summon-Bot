@@ -90,8 +90,6 @@ final class SummonStore {
     }
 
     init() {
-        do { try SummonBrandingMigration.run() }
-        catch { errorMessage = "无法迁移本机连接设置：\(error.localizedDescription)" }
         if let data = defaults.data(forKey: settingsKey),
            let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) {
             settings = saved

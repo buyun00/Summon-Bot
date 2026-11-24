@@ -50,13 +50,8 @@ class SummonViewModel(app: Application) : AndroidViewModel(app) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val migrationWarning = try { SummonBrandingMigration.run(this); null }
-        catch (error: Exception) { error.localizedMessage ?: "部分本机设置等待迁移。" }
         enableEdgeToEdge()
         setContent { SummonApp() }
-        if (migrationWarning != null) {
-            android.widget.Toast.makeText(this, migrationWarning, android.widget.Toast.LENGTH_LONG).show()
-        }
     }
 }
 

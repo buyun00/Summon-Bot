@@ -1,6 +1,45 @@
-import { estimateTokens } from '../pi/core/compaction/compaction.mjs';
 import { repairTranscript } from './recovery.mjs';
 import { runtimeFailure } from '../storage/runtime-records.mjs';
+
+// Derived from earendil-works/pi v1.3.0 (MIT, Copyright (c) 2025 Mario Zechner).
+const ESTIMATED_IMAGE_CHARS = 4800;
+function estimateTextAndImageContentChars(content) {
+  if (typeof content === 'string') return content.length;
+  let chars = 0;
+  for (const block of content || []) {
+    if (block.type === 'text' && block.text) chars += block.text.length;
+    else if (block.type === 'image') chars += ESTIMATED_IMAGE_CHARS;
+  }
+  return chars;
+}
+
+export function estimateTokens(message) {
+  let chars = 0;
+  switch (message?.role) {
+    case 'system':
+      chars = estimateTextAndImageContentChars(message.content);
+      if (message.sections) for (const section of Object.values(message.sections)) if (section) chars += section.length;
+      if (message.toolsAdded) chars += JSON.stringify(message.toolsAdded).length;
+      return Math.ceil(chars / 4);
+    case 'user':
+    case 'custom':
+    case 'toolResult':
+      return Math.ceil(estimateTextAndImageContentChars(message.content) / 4);
+    case 'assistant':
+      for (const block of message.content || []) {
+        if (block.type === 'text') chars += block.text.length;
+        else if (block.type === 'thinking') chars += block.thinking.length;
+        else if (block.type === 'toolCall') chars += block.name.length + JSON.stringify(block.arguments).length;
+      }
+      return Math.ceil(chars / 4);
+    case 'bashExecution':
+      return Math.ceil((message.command.length + message.output.length) / 4);
+    case 'branchSummary':
+    case 'compactionSummary':
+      return Math.ceil(message.summary.length / 4);
+  }
+  return 0;
+}
 
 export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', timestamp,
   content: [{ type: 'text', text: JSON.stringify(value) }] });

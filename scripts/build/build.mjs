@@ -9,7 +9,7 @@ import { removeInside } from '../release/repository.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
-const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'README.zh-CN.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
+const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const docsBases = ['ARCHITECTURE', 'CLIENT_RELEASES', 'DEPLOYMENT', 'DEVELOPMENT', 'EGGBOT', 'IOS_TESTFLIGHT', 'MACOS_SIGNING', 'MODEL_CONNECTIONS', 'OPERATIONS', 'PAPER_AVATARS', 'WEB_AUTH'];
 const docsFiles = docsBases.flatMap(name => [`${name}.md`, `${name}.zh-CN.md`]);
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)

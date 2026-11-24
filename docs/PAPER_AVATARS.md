@@ -28,19 +28,10 @@ Runtime status drives only facial expression and motion—never mutating the Bot
 ## 3. Source Files & Cross-Platform Export
 
 - `capabilities/shared/avatar-style.mjs`: shared shapes, palettes, legacy mappings, and normalization.
-- `web/avatar-showcase/src/relay/rig.ts`: runtime state adapter wrapping the Bloub engine directly.
-- `web/avatar-showcase/src/relay/browser.ts`: Web SVG rendering and visibility lifecycle.
-- `web/avatar-showcase/src/components/BloubBot.tsx`: showcase component preserving full animation timelines.
-- `scripts/build/export-paper.mjs`: builds the Web bundle and exports the 20 FPS native vector motion catalog (format v3).
+- Standalone Bloub avatar generator project (maintained externally at `D:\Summon-Bloub-Avatars`): wraps the Bloub engine, builds the Web bundle (`web/frontend/avatars.js`), and exports the 20 FPS native vector motion catalog (format v3) via `node export-paper.mjs --target D:/Relay-Bot`.
 - iOS `PaperLibrary.swift` & Android `PaperAvatars.kt`: native Canvas renderers interpolating shared vector geometry and eye transforms directly (no frame bitmaps or WebViews).
 
-After modifying the avatar engine or styles (with `web/avatar-showcase` dependencies installed), run from the repository root using Node 24+:
-
-```powershell
-node scripts/build/export-paper.mjs
-```
-
-This updates the committed cross-platform outputs:
+Committed cross-platform outputs in this repository:
 - `web/frontend/avatars.js`
 - `ios/Summon/Resources/paper-avatars.json` & `Bloub-LICENSE.txt`
 - `android/app/src/main/assets/paper-avatars.json` & `Bloub-LICENSE.txt`
@@ -48,5 +39,4 @@ This updates the committed cross-platform outputs:
 ## 4. Performance & Licensing
 
 - Visible Web avatars cap rendering at 30 FPS and pause automatically when off-screen or backgrounded; native mobile clients respect app lifecycle transitions and the system Reduce Motion accessibility setting.
-- Live showcase: `https://bot.lin0.org/api/avatar-showcase/#etat=idle`. Production updates follow the standard release installation flow in [Operations & Maintenance](OPERATIONS.md).
-- Bloub MIT license terms and attribution notes are preserved in [avatar-showcase README](../web/avatar-showcase/README.md).
+- Bloub MIT license terms are preserved in `ios/Summon/Resources/Bloub-LICENSE.txt` and `android/app/src/main/assets/Bloub-LICENSE.txt`.

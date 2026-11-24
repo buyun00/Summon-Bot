@@ -188,18 +188,19 @@
         resolve({ ...storageStatus });
       };
       const timer = setTimeout(() => finish(null, '打开本地存储超时'), 1500);
-      Promise.resolve(window.SummonStorageMigration).then(() => {
-        if (settled) return;
-        if (!window.indexedDB) { void finish(null, '浏览器未提供本地数据库'); return; }
-        request = window.indexedDB.open(databaseName, 1);
-        request.onupgradeneeded = () => {
-          const db = request.result;
-          for (const store of ['state', 'rooms', 'session']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
-        };
-        request.onsuccess = () => void finish(request.result);
-        request.onerror = () => void finish(null, request.error || '无法打开本地存储');
-        request.onblocked = () => void finish(null, '本地存储正在被其他页面更新');
-      }).catch(error => void finish(null, error));
+      try {
+        if (!window.indexedDB) { void finish(null, '浏览器未提供本地数据库'); }
+        else {
+          request = window.indexedDB.open(databaseName, 1);
+          request.onupgradeneeded = () => {
+            const db = request.result;
+            for (const store of ['state', 'rooms', 'session']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+          };
+          request.onsuccess = () => void finish(request.result);
+          request.onerror = () => void finish(null, request.error || '无法打开本地存储');
+          request.onblocked = () => void finish(null, '本地存储正在被其他页面更新');
+        }
+      } catch (error) { void finish(null, error); }
     }).finally(() => { opening = null; });
     return opening;
   }
