@@ -49,7 +49,7 @@ private val usagePurposes = mapOf("fast_read" to "① 快读收件", "conversati
 private val usageStatuses = mapOf("succeeded" to "完成", "failed" to "失败", "cancelled" to "取消", "pending" to "调用中", "unknown" to "结果未知")
 
 @Composable
-fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit, embedded: Boolean = false) {
+fun TokenUsageScreen(store: SummonStore, embedded: Boolean = false, onBack: () -> Unit) {
     var period by remember { mutableStateOf("today") }
     var dimension by remember { mutableStateOf("bots") }
     var sort by remember { mutableStateOf("totalTokens") }

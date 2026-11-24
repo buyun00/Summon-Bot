@@ -181,7 +181,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                             val id = URLDecoder.decode(entry.arguments?.getString("roomId").orEmpty(), "UTF-8")
                             ChatScreen(store, id, onBack = { nav.popBackStack() }, onOpenModels = { nav.navigate("models") })
                         }
-                        composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
+                        composable("usage") { TokenUsageScreen(store = store, onBack = { nav.popBackStack() }) }
                         composable("models") { ModelSettingsScreen(store) { nav.popBackStack() } }
                         composable("resources/{section}") { entry ->
                             val section = runCatching { ResourceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(ResourceSection.Bots)
