@@ -1,75 +1,82 @@
-# 客户端发行与更新
+[English](CLIENT_RELEASES.md) | [简体中文](CLIENT_RELEASES.zh-CN.md)
 
-Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 在本地打包并只就位本机；GitHub 上的 Windows、macOS 和 Android 发行包统一由 GitHub Actions 构建发布。本机不上传安装包到 GitHub。iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。
+# Client Releases & Auto-Update
 
-## 下载来源
+Summon Bot ships four first-party clients: standard Web, Windows / macOS (Apple Silicon) Electron Desktop, native Kotlin / Compose Android, and native SwiftUI iOS 26. Web and Electron Desktop share the same production Web UI.
 
-Windows x64 提供 EXE，Apple Silicon macOS 提供 DMG。iOS 和 Android 首次使用时填写实例地址和访问令牌。桌面操作与候选构建见 [桌面端说明](../desktop/README.md)。
+Once Web changes are finalized, synced to native clients, committed, and pushed:
+- **Windows**: Packaged locally on Windows and published only to the local release directory (never uploaded from the local machine to GitHub).
+- **GitHub Releases (Windows / macOS / Android)**: Built and published exclusively by GitHub Actions from the same commit.
+- **iOS**: Signed, archived, uploaded, and distributed to the TestFlight internal group by GitHub Actions; see [iOS Auto-Packaging, TestFlight & APNs Guide](IOS_TESTFLIGHT.md).
 
-客户端下载与更新按设备本机、GitHub 的顺序查找：
+## 1. Download & Update Source Order
 
-1. 先查询设备自己的 `http://127.0.0.1:8787`。本机包在 `D:/Relay-Bot-data/client-releases/<platform>/<arch>`；已有有效发行物时优先使用，不再请求该目标的远端版本。
-2. 本机不可用、没有对应发行物，或 Windows/Android 本机包下载失败时，使用公开仓库 [buyun00/Summon-Bot 的 Releases](https://github.com/buyun00/Summon-Bot/releases)。安装包从 GitHub 直接下载，不经过正式主机转发，也不依赖源码目录。
+Windows x64 ships an EXE installer, Apple Silicon macOS ships an `arm64` DMG, and Android ships a universal APK. Native iOS and Android prompt for the instance URL and access token on first launch; desktop CLI commands and candidate builds are covered in [Desktop README](../desktop/README.md).
 
-网页“客户端下载与更新”使用相同来源顺序。本机包的构建号至少应达到当前正式版本，过时文件不参与下载选择。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
+Every client checks and downloads updates in strict fallback order:
 
-GitHub Release 标签为 `client-windows-x64`、`client-macos-arm64` 和 `client-android-universal`。每个标签保留最新版安装包和元数据。发行描述展示下载链接和安装说明，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
+1. **Local device first**: Queries `http://127.0.0.1:8787`. Local artifacts live under `D:/Relay-Bot-data/client-releases/<platform>/<arch>`. When a valid artifact matching or exceeding the current formal build number exists locally, it is preferred without hitting remote GitHub endpoints for that target.
+2. **Direct GitHub Releases fallback**: When localhost is unavailable, lacks a valid artifact, or a local Windows/Android download fails, the client fetches directly from the public [buyun00/Summon-Bot Releases](https://github.com/buyun00/Summon-Bot/releases)—never proxied through the formal host and never reading the source tree.
 
-## 版本和 Windows 发布
+The Web "Client Downloads & Updates" panel uses the same lookup order. Remote `GET /api/releases` returns only the GitHub catalog and direct links; the local endpoint reads local artifacts (`?local=1` checks localhost only without contacting GitHub). When browser policies block localhost access, it falls back seamlessly to GitHub.
 
-各端读取根目录 `release.json` 的 `version`、递增 `buildNumber`、正式地址和 GitHub 仓库。每次发布先递增版本：
+GitHub Releases maintain 3 rolling tags:
+- `client-windows-x64`
+- `client-macos-arm64`
+- `client-android-universal`
+
+Each tag retains only the latest installer and metadata (`latest.json` for native clients, plus `latest.yml` on Windows for Electron auto-updater). Publishing uploads the new binary first, updates metadata next, and deletes superseded assets last.
+
+## 2. Versioning & Local Windows Release
+
+All platforms read `version`, monotonic `buildNumber`, `appUrl`, and `githubRepository` from root `release.json`. Bump the version before each release:
 
 ```powershell
 npm run release:version
 ```
 
-此命令同步包、锁文件和 Xcode 工程版本，Android 读取同一 JSON。提交并推送本次代码后运行：
+This synchronizes workspace `package.json`, lockfiles, and the Xcode project version (Android reads `release.json` directly). After committing and pushing, run from the repository root:
 
 ```powershell
 npm run release:all
 ```
 
-该命令用同一提交构建 Windows 本机包和正式 Web 与后端。同协议发布先更新 Web，客户端沿各自渠道交付。协议切换先准备 Windows 本机包，再由安装器核对对应 GitHub 下载和 TestFlight 内测组的实际可用状态。已有 App Store Connect 配置时直接查询 Apple，否则使用同提交发行任务中的 Apple 分发结果。首次准备桌面构建依赖可运行 `npm ci --prefix desktop --ignore-scripts --no-audit --no-fund`。
+This builds the local Windows package plus the formal Web and backend from the current Git commit:
+- **Same-protocol releases**: Update Web/backend immediately while clients roll out via their respective channels.
+- **Protocol-changing releases**: Stage the local Windows package first, then verify that same-commit GitHub Releases and TestFlight internal builds are actually available before switching the formal server (querying App Store Connect directly when configured, or reading the same-commit Actions result).
+- For initial desktop dependency installation, run `npm ci --prefix desktop --ignore-scripts --no-audit --no-fund`.
 
-也可分别执行：
+You can also invoke individual release commands:
 
 ```powershell
 npm run release:desktop
 npm run release:web -- --committed-only
 ```
 
-制作阶段 `npm run release:web` 可安装与现行协议相容的工作区构建。Windows 的 `release:desktop` 默认发布到本机发行目录，`--publish` 同样只发布本机。`--github` 由 GitHub Actions 使用。已就位的同提交 Windows 包会在重试 `release:all` 时复用。
+- During active Web crafting, `npm run release:web` installs a protocol-compatible workspace build to the single formal Web entry so changes can be inspected live.
+- On Windows, `release:desktop` publishes only to the local release directory by default (`--publish` is also local-only; `--github` is reserved for GitHub Actions). Re-running `release:all` reuses an already staged same-commit Windows package.
+- If Electron runtime downloads face network constraints, set `SUMMON_ELECTRON_DIST` to the absolute path of the matching Electron ZIP archive.
 
-若运行时下载受网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`。
+## 3. GitHub Actions Workflows
 
-## GitHub Actions
+The [Client releases workflow](../.github/workflows/client-releases.yml) triggers automatically on `main` when `release.json` changes, or manually for `cloud`, `windows`, `macos`, or `android`. It installs dependencies, builds, and publishes without running tests or spawning preview servers.
 
-[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。`cloud` 和版本推送均构建 Windows、macOS 和 Android；各平台的 GitHub 发行物直接由对应 runner 构建发布。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
+- **macOS (Apple Silicon `arm64`)**: Built on a GitHub macOS runner as an `arm64` DMG signed with Developer ID Application + Hardened Runtime, notarized by Apple, and stapled. See [macOS Signing & Notarization](MACOS_SIGNING.md).
+- **Android**: Built on a Linux runner with Java 17 and the repository Gradle wrapper using the existing signing identity supplied via GitHub Actions Secrets (original keystore stays only in host private config):
+  - `SUMMON_ANDROID_KEYSTORE_BASE64`
+  - `SUMMON_ANDROID_KEY_ALIAS`
+  - `SUMMON_ANDROID_STORE_PASSWORD`
+  - `SUMMON_ANDROID_KEY_PASSWORD`
+- **iOS**: Signed, archived, and uploaded to TestFlight via [ios-testflight.yml](../.github/workflows/ios-testflight.yml) on `release.json` changes or manual dispatch.
 
-GitHub 的 Mac runner 为 Apple Silicon 构建 arm64 DMG。正式包使用 Developer ID Application 签名和 Hardened Runtime，完成 Apple 公证并附加票据。候选构建可在缺少签名材料时生成。客户端提示新版本并打开 DMG 下载，由用户覆盖安装。 [macOS 签名与公证](MACOS_SIGNING.md)
+## 4. Per-Platform Update Experience
 
-Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 APK。必须沿用现有签名身份，在 GitHub Actions Secrets 中配置：
+- **Windows Desktop**: Installs per-user via EXE. On first launch, choose the local formal instance or enter a remote URL and access token. Updates check automatically at startup and runtime (1.2 s local probe timeout before falling back to GitHub); click "Restart & Update" once downloaded.
+- **macOS Desktop**: Web UI updates on page refresh; shell updates prompt the user to download the notarized DMG and drag-replace the app.
+- **Android**: Checks for updates on foreground resume, reuses any already-cached matching APK, and hands installation to the Android package installer (requiring "Install unknown apps" permission on first install).
+- **iOS**: Installed and updated through TestFlight internal testing; see [iOS Auto-Packaging, TestFlight & APNs Guide](IOS_TESTFLIGHT.md).
 
-- `SUMMON_ANDROID_KEYSTORE_BASE64`：现有 keystore 的 Base64 内容。
-- `SUMMON_ANDROID_KEY_ALIAS`：现有别名。
-- `SUMMON_ANDROID_STORE_PASSWORD`、`SUMMON_ANDROID_KEY_PASSWORD`：现有密码。
+## 5. Production Boundaries & PWA Retirement
 
-正式签名原件留在正式数据根的私有签名配置中。GitHub 使用加密 Secrets。本机和 CI 的 APK 都沿用现有签名配置，缺少凭据时会报告错误。GitHub Actions 直接发布正式 APK。
-
-## 客户端更新
-
-Windows EXE 安装到当前用户目录。首次从开始菜单打开 Summon Bot，在开箱页选择本机正式实例或输入远程地址并登录。连接后，在应用内的正式页面配置聊天模型和 API Key。
-
-Windows 应用在启动及运行期间自动检查更新，下载完成后在“客户端下载与更新”选择“重启并更新”。本机探测最长 1.2 秒，本机查询或下载失败则转到 GitHub。
-
-macOS：网页内容刷新即可更新；外壳通过 DMG 手动覆盖安装。检查版本同样先本机、再 GitHub。
-
-Android：进入前台后检查版本，优先使用已经下载到应用缓存的对应 APK。下载时由系统确认覆盖安装；首次可能需要允许此应用安装未知来源应用。本机发行服务缺失时使用 GitHub，与手机设置的业务服务地址无关。
-
-iOS：GitHub Actions 从同一提交签名归档并上传 TestFlight，处理完成后分发到本应用内部组；安装与更新由 TestFlight 完成。详见 [iOS 发布与推送教程](IOS_TESTFLIGHT.md)。
-
-## 正式环境和清理
-
-后端仍只运行 `D:/Relay-Bot-app` 的正式安装，使用 `D:/Relay-Bot-data` 数据，入口和端口不变。源码 `dist` 仅供后端构建。Windows 本机发行目录不作为后端中间目录清理，各目标仅保留当前发行物。旧的远程包上传接口和发布令牌不再使用。
-
-网页不再注册 Service Worker 或提供 PWA 离线页面。`/sw.js` 只清理原离线页面缓存并注销自身；聊天缓存、草稿和用户文件继续保留。
+- The backend runs exclusively from `D:/Relay-Bot-app` against `D:/Relay-Bot-data` on the fixed formal ports and URLs. Source `dist/` is strictly a backend build staging area; `D:/Relay-Bot-data/client-releases` is never wiped by backend cleanup and keeps only the current artifact per target.
+- The Web app no longer registers a PWA or offline cache. Legacy `/sw.js` exists solely to clear old offline page caches and unregister itself while preserving user drafts and connection settings.

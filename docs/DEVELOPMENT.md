@@ -1,74 +1,53 @@
-# 开发方式
+[English](DEVELOPMENT.md) | [简体中文](DEVELOPMENT.zh-CN.md)
 
-自 2026-10-21 起，按用户要求采用以下开发方式。仓库级约定见 [AGENTS.md](../AGENTS.md)；用户后续明确要求优先。
+# Development Conventions & Workflow
 
-产品展示名为 `Summon Bot`，GitHub 仓库名为 `Summon-Bot`，根 npm 包为 `summon-bot`，工作区包使用 `@summon/*`，命令使用 `summon:*`，代码类型使用 `Summon` 前缀，环境变量使用 `SUMMON_` 前缀。现有源码、安装、数据及客户端资源目录保持原位，应用 ID、签名和证书身份沿用原值；目录引用中的旧拼写属于固定位置。客户端升级时一次转换原有设置、凭据与网页缓存，成功后删除旧存储项；这些转换入口只处理尚未升级的本机数据，不作为旧版运行入口。
+Repository-wide rules live in [AGENTS.md](../AGENTS.md); explicit follow-up user instructions always take precedence.
 
-## 默认流程
+## 1. Naming & Identity Boundaries
 
-阅读与当前需求有关的代码，按下述网页优先流程完成制作和交付。用户已授权启动、运行或部署时，继续完成相应操作。只为实际运行执行必要的依赖安装、构建和配置。
+- Display name: `Summon Bot`; GitHub repository: `Summon-Bot`; root npm package: `summon-bot`; workspace scope: `@summon/*`; npm command prefix: `summon:*`; code type prefix: `Summon`; environment variable prefix: `SUMMON_`.
+- Existing source, installation, and data paths stay in place. Desktop and Android retain their existing app IDs and signing identities. iOS uses `ios/Summon.xcodeproj` with Bundle ID `org.lin0.summon` and production APNs push.
+- Client upgrades perform one-time migrations of legacy local settings, credentials, and caches, removing legacy items after success without retaining dual compatibility paths.
 
-用户 2026-11-03 固定开发顺序：
+## 2. Standard Development & Release Workflow
 
-1. 产品功能和界面先在网页端制作，通过浏览器查看效果并按当前需求调试。制作阶段允许将尚未提交的工作区修改构建、安装到现有唯一正式环境，不预先提交定稿版本，不提前发布手机或桌面更新包。
-2. 网页定稿后，将确定的行为、视觉和接口同步到 iOS、Android 原生实现，以及必要的 Electron 桌面代码。网页修改不会自动转换为原生手机组件。
-3. 同步完成后提交并推送代码。后续各端发行物以同一提交为代码基线，分别记录实际版本及打包状态。
-4. Windows 桌面端在本机打包并发布到本机目录。GitHub Actions 由同一提交发布 Windows、macOS 和 Android，并签名上传 iOS 至 TestFlight 内部测试组。macOS 使用 Developer ID Application 签名和 Apple 公证，仍手动覆盖安装。
-5. 需要变更协议时，等同提交各端安装包可以取得，再更新正式网页和后端。安装器收尾已启动调用、保留新输入和回执，并在旧写入者退出后转换数据。各发行渠道就位后更新最新版元数据并清理被替代产物。客户端下载先查设备本机，再查询 GitHub。
+1. **Craft & iterate on Web first**: Build and visually debug new features on the Web client through the single formal entry. During crafting, uncommitted workspace edits may be deployed to the formal Web entry with `npm run release:web`; do not finalize commits or publish mobile/desktop installers prematurely.
+2. **Sync native clients & desktop shell**: Once Web behavior, UX, and protocol are finalized, mirror them into native iOS (SwiftUI), native Android (Kotlin/Compose), and any required Electron desktop code. Web edits never auto-generate native mobile UIs.
+3. **Commit & push a unified baseline**: Bump versions via `npm run release:version` when shipping client updates, then commit and push so every platform artifact builds from the same Git commit.
+4. **Publish through platform channels**:
+   - Windows desktop builds locally and publishes only to `D:/Relay-Bot-data/client-releases` (never uploaded from localhost to GitHub);
+   - GitHub Releases for Windows, macOS (Apple Silicon `arm64` only, Developer ID signed & notarized), and Android are built and published by GitHub Actions from that commit;
+   - iOS signs, archives, and uploads to TestFlight internal testing via GitHub Actions.
+5. **Protocol upgrade ordering**: Whenever a change bumps the protocol version, ensure same-commit local Windows packages, GitHub Releases, and TestFlight builds are actually available before switching the formal Web/backend.
 
-“四端”指网页、桌面（Windows/macOS）、Android、iOS 四类终端；桌面需要分别生成 Windows 和 macOS 产物。定稿节点以当前任务的用户指令为准。
+## 3. Four First-Party Clients & Update Channels
 
-## 终端形态与发行包仓库
-
-终端和更新方式固定如下：
-
-| 终端 | 实现 | 更新方式 |
+| Client | Implementation | Update Mechanism |
 | --- | --- | --- |
-| 网页 | 普通浏览器网页 | 部署后刷新获取新页面，不保留 PWA 安装、离线页面和 Service Worker 缓存更新机制 |
-| Windows/macOS | Electron 加载正式网页 | 网页内容随网页部署更新；Windows 外壳下载后重启替换，macOS 下载 DMG 手动覆盖安装 |
-| Android | Kotlin/Compose 原生组件 | 检查版本、下载 APK，再交给系统确认覆盖安装 |
-| iOS | SwiftUI 原生组件 | TestFlight 内部测试安装与更新，不实现应用内下载安装更新 |
+| Web | Standard browser app (PWA retired) | Reload after deployment; legacy `/sw.js` only clears old offline caches and unregisters itself while keeping drafts and settings |
+| Desktop (Windows / macOS) | Electron loading formal Web UI | Web content updates on reload; Windows auto-checks and restarts to update; macOS downloads signed/notarized `arm64` DMG for manual drag-replace |
+| Android | Native Kotlin / Jetpack Compose | Foreground version check, APK download, and system package installer confirmation |
+| iOS | Native SwiftUI (iOS 26+) | Installed and updated via TestFlight internal testing |
 
-网页和 Electron 共用同一正式页面。因此，制作阶段已部署的网页改动在刷新后也会显示到桌面端；定稿后统一提交并发布安装包，不代表桌面页面在制作阶段另行冻结。
+> Because Electron loads the formal Web UI, Web changes deployed during crafting also appear in Desktop on refresh.
 
-网页退出 PWA 时须注销现有 Service Worker 并清理对应离线缓存，避免旧缓存继续接管页面；草稿、连接设置等必要本地存储独立保留。
+## 4. Fixed Paths & Release Sources
 
-源码仓库、后端安装和可下载客户端产物各有固定位置：
-
-| 用途 | 本机位置 |
+| Purpose | Path / Source |
 | --- | --- |
-| 源码 Git 仓库 | `D:/Relay-Bot` |
-| 后端程序安装 | `D:/Relay-Bot-app` |
-| 正式业务数据 | `D:/Relay-Bot-data` |
-| Windows 本机发行物 | `D:/Relay-Bot-data/client-releases` |
-| 各平台远程发行物 | GitHub Releases：`buyun00/Summon-Bot` |
+| Source Git repository | `D:/Relay-Bot` |
+| Backend installation | `D:/Relay-Bot-app` |
+| Formal business data | `D:/Relay-Bot-data` |
+| Local Windows releases | `D:/Relay-Bot-data/client-releases` |
+| Remote platform releases | GitHub Releases: `buyun00/Summon-Bot` |
 
-客户端下载先查询设备本机的正式入口 `http://127.0.0.1:8787`，缺少发行物或本机不可用时直接查询和下载 GitHub Releases。正式网页提供 GitHub 版本目录和下载链接，远程请求不读取本机发行目录、不转发安装包。每个发布目标只保留最新发行物；Windows 本地包仅通过本机入口读取。安装包不进入源码 Git，正式产物不长期留在源码 `dist` 中。
+Client downloads query `http://127.0.0.1:8787` first and fall back directly to GitHub Releases without proxying binaries through the formal server. Each target keeps only the current latest release; installers are never committed to Git or left in source `dist/`. See [Client Releases & Auto-Update](CLIENT_RELEASES.md).
 
-实现和操作入口见 [客户端发行与更新](CLIENT_RELEASES.md)。正式环境是否已更新、平台是否已有发行包，以实际安装、Actions 构建和 GitHub 发布状态为准。
+## 5. Pure-Development Constraints & Delivery Discipline
 
-## 正式环境与构建约束
-
-用户 2026-10-29 明确要求：目前是纯开发阶段，每次交付只保留最新版，不维护旧版兼容。安装时统一更新运行入口、Bot 内核、能力绑定和配置，随后删除被替代的发行目录、能力版本、旧配置及构建中间目录。不保留备份或回退副本，不继续维护旧入口、旧配置回退和旧数据格式兼容分支。已有有效业务数据一次性转换为当前格式并保留，不用清空对话、记忆或用户文件代替升级。
-
-用户未另行明确要求时：
-
-- 不运行回归、单元、集成、浏览器、真实模型等测试，不补写测试，不恢复已删除的测试及入口。
-- 不计算或比对文件、目录、发行物、数据的哈希，不追加完整性扫描、来源校验或重复验收。
-- 不把测试通过、哈希一致、额外回执、证据文件或流程报告作为交付条件，不以这些事项扩大范围、延迟交付或反复向用户确认。
-
-只运行一个正式环境（用户 2026-10-22 明确要求），不再启动开发、测试或临时预览服务，不使用独立开发数据根。正式入口为 https://bot.lin0.org，本机入口 http://127.0.0.1:8787，两者使用同一份 D:/Relay-Bot-data 数据。源码位于 D:/Summon Bot，安装位于 D:/Relay-Bot-app；修改后按 [OPERATIONS.md](OPERATIONS.md) 的正式发行安装流程更新。启动使用安装目录的 Start.ps1，不另开 summon:dev。
-
-需要安装依赖或构建时使用 Node.js 24 或更新版本。模型凭据沿用正式数据根的 config/runtime.env，不为观察效果发送模型任务或填充用户已清空的对话历史。
-
-构建清单保存构建号、协议、数据格式、Git 提交和运行时版本。系统签名和依赖安装沿用对应工具的标准流程。
-
-## 错误与交付
-
-实际启动或操作报错时，针对该错误作必要修复，然后继续原任务。只有具体问题确实使当前工作无法继续时，才说明出错操作、实际错误以及缺少的条件；未跑测试、未做哈希、没有额外回执或验收报告都不是阻塞原因。
-
-交付只说明实际改了什么、按授权运行了什么，以及尚未完成的事项。不把未执行的验证写成通过，也不主动补齐历史记录中的未验证项。
-
-## 历史记录
-
-[VERIFICATION.md](VERIFICATION.md) 和 [REFACTOR_PROGRESS.md](REFACTOR_PROGRESS.md) 保留此前已做的测试、哈希、现场运行和失败记录。它们记录当时事实，不是当前开发清单。文中测试路径可在 Git 历史中查阅，不因此恢复测试代码或重跑旧流程。
+- **Single formal environment**: Only `https://bot.lin0.org` (local `http://127.0.0.1:8787`) runs. Never spin up dev, test, or temporary preview servers or alternate data roots. Deliver source changes through the formal install pipeline in [Operations & Maintenance](OPERATIONS.md).
+- **Latest-only hygiene**: Update all live references and clean superseded builds, configs, obsolete docs, and intermediate directories on delivery—no fallback copies or legacy compatibility branches. Data schema shifts migrate valid chats, memories, tool records, and user files once, then remove the migration code.
+- **No unrequested test/hash overhead**: Unless explicitly requested by the user, do not run regression, unit, integration, browser, or live-model tests; do not write or restore tests; do not compute or compare file/directory/artifact hashes; and never gate delivery on extra verification reports.
+- **Runtime & credentials**: Build and install with Node.js 24+. Reuse host private configs for model and signing credentials—never send test prompts to models or populate cleared user chat history just to inspect UI.
+- **Direct error handling & truthful reporting**: Fix real build/runtime errors as they occur; report a blocker only when a concrete missing prerequisite prevents progress. Report truthfully what was changed, executed, and left pending.

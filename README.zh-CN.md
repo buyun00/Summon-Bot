@@ -142,9 +142,10 @@
 
 ### 🗂️ 深入了解与专项文档
 
-如果你想了解背后的架构与部署细节，可以直接查看以下专项文档：
+如果你想了解背后的架构、权限与部署细节，可以直接查看以下中英双语专项文档：
 
-- [系统总体架构 (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md) · [EggBot 自动组队与 17 种内置岗位 (`docs/EGGBOT.md`)](docs/EGGBOT.md) · [模型路由与执行连接 (`docs/MODEL_CONNECTIONS.md`)](docs/MODEL_CONNECTIONS.md) · [Bloub 纸片几何头像 (`docs/PAPER_AVATARS.md`)](docs/PAPER_AVATARS.md) · [四端发行与自动更新 (`docs/CLIENT_RELEASES.md`)](docs/CLIENT_RELEASES.md) · [部署与日常运维 (`docs/DEPLOYMENT.md`)](docs/DEPLOYMENT.md)
+- **架构与核心机制**：[系统总体架构](docs/ARCHITECTURE.zh-CN.md) · [EggBot 与内置角色](docs/EGGBOT.zh-CN.md) · [模型路由与执行连接](docs/MODEL_CONNECTIONS.zh-CN.md) · [Bloub 纸片几何头像](docs/PAPER_AVATARS.zh-CN.md) · [网页与 App 访问认证](docs/WEB_AUTH.zh-CN.md)
+- **部署、开发与发行**：[交给 AI 部署](docs/DEPLOYMENT.zh-CN.md) · [运行维护](docs/OPERATIONS.zh-CN.md) · [开发方式与约定](docs/DEVELOPMENT.zh-CN.md) · [四端发行与自动更新](docs/CLIENT_RELEASES.zh-CN.md) · [iOS TestFlight 与推送](docs/IOS_TESTFLIGHT.zh-CN.md) · [macOS 签名与公证](docs/MACOS_SIGNING.zh-CN.md)
 
 </details>
 
@@ -272,6 +273,9 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ### 🗂️ Deep-Dive Documentation
 
-- [System Architecture (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md) · [EggBot & 17 Built-in Roles (`docs/EGGBOT.md`)](docs/EGGBOT.md) · [Model Routing & Connections (`docs/MODEL_CONNECTIONS.md`)](docs/MODEL_CONNECTIONS.md) · [Bloub Vector Paper Avatars (`docs/PAPER_AVATARS.md`)](docs/PAPER_AVATARS.md) · [Client Releases & Auto-Update (`docs/CLIENT_RELEASES.md`)](docs/CLIENT_RELEASES.md) · [Deployment & Operations (`docs/DEPLOYMENT.md`)](docs/DEPLOYMENT.md)
+All detailed guides are maintained in both English and Simplified Chinese:
+
+- **Architecture & Core**: [System Architecture](docs/ARCHITECTURE.md) · [EggBot & Built-in Roles](docs/EGGBOT.md) · [Model Routing & Connections](docs/MODEL_CONNECTIONS.md) · [Bloub Vector Paper Avatars](docs/PAPER_AVATARS.md) · [Web & App Auth](docs/WEB_AUTH.md)
+- **Deployment, Dev & Releases**: [AI-Assisted Deployment](docs/DEPLOYMENT.md) · [Operations & Maintenance](docs/OPERATIONS.md) · [Development Conventions](docs/DEVELOPMENT.md) · [Client Releases & Auto-Update](docs/CLIENT_RELEASES.md) · [iOS TestFlight & APNs](docs/IOS_TESTFLIGHT.md) · [macOS Signing & Notarization](docs/MACOS_SIGNING.md)
 
 </details>

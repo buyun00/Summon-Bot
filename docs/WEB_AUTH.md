@@ -1,11 +1,29 @@
-# 网页与 App 访问认证
+[English](WEB_AUTH.md) | [简体中文](WEB_AUTH.zh-CN.md)
 
-正式部署在数据根 `config/deployment.json` 的 `web.accessToken` 配置独立的 32 字节随机 Token（base64url，43 字符），不复用内部 gatewayToken/controlToken，不写入源码。未配置时 Web 拒绝启动；新部署自动生成。
+# Web & App Access Authentication
 
-iOS、Android 在连接设置中填写该 Token，通过 `Authorization: Bearer …` 访问。网页和 Electron 首次打开只显示登录页；登录后使用 HttpOnly、SameSite=Strict 会话 Cookie，公网 HTTPS 使用 Secure 和 __Host- 前缀。签名会话有效期 30 天，使用时按天续期；刷新、关闭重开以及服务重启不失效。签名绑定访问 Token，修改 Token 后原会话失效。Token 不放 URL 或 localStorage。
+User access control is enforced by `web/backend/auth.mjs` ahead of every HTTP route—including APIs, SSE streams, attachment downloads, client release endpoints, static assets, and the legacy Service Worker cleanup script. Localhost access is not exempted.
 
-认证在全部路由之前执行，包括 API、SSE、附件、发行下载、静态资源和 Service Worker 清理脚本；本机访问也不豁免。唯一无凭据可见内容是返回 401 的登录页，不包含业务数据。网页收到 API 401 后返回登录。
+## 1. Access Token (`web.accessToken`)
 
-无效/缺失凭据按连接来源每分钟最多 20 次、全服务每分钟最多 200 次，超过返回 429 和 Retry-After。来源取 socket 地址，不信任客户端伪造的转发头；隧道来访可能共享同一来源额度。有效 Token / 会话不受失败额度影响，避免攻击者锁死合法访问。失败记录数量有上限；签名会话不占用服务端会话表。此限制用于认证失败节流，不替代公网入口的流量防护。
+- Production deployments store an independent 32-byte random token (base64url encoded, at least 43 characters) under `web.accessToken` in the formal data root's `config/deployment.json`.
+- This token is separate from internal gateway/control credentials and is never committed to source control.
+- Fresh deployments generate it automatically; Web refuses to start if the token is missing or shorter than 43 characters.
 
-修改正式配置中的 Token 后重启 Web 即撤销原 Token 和全部网页会话。客户端本机匿名发行下载会被拒绝，沿用现有 GitHub Releases 回退。
+## 2. Client Authentication Flows
+
+- **Native iOS & Android**: Users enter the access token in connection settings (stored in iOS Keychain / Android encrypted storage) and send `Authorization: Bearer <token>` on requests.
+- **Web & Electron Desktop**:
+  - Unauthenticated requests to `/` or pages receive a minimal `401` login shell containing zero application data, hardened with a per-request CSP script/style nonce, `Referrer-Policy: no-referrer`, and `frame-ancestors 'none'`.
+  - Submitting the token calls `POST /auth/session` via the `Authorization: Bearer` header (never placed in URLs or `localStorage`). On success, the server sets an HMAC-SHA256 signed session cookie:
+    - Public HTTPS uses `__Host-summon_session` with `Secure`;
+    - Local HTTP uses port-scoped `summon_local_session` (or `summon_local_session_<port>` for non-8787 ports).
+  - Cookies carry `HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000` (30-day lifetime) and renew daily on active use. Sessions survive page reloads, browser restarts, and server restarts.
+  - Because signatures bind to `web.accessToken`, rotating the token in `config/deployment.json` and restarting Web immediately revokes both the old token and all existing browser sessions. On any API `401`, the Web client returns to the login view.
+
+## 3. Rate Limiting & Local Release Fallback
+
+- Missing or invalid credentials are throttled by raw TCP socket address (`req.socket.remoteAddress`, ignoring spoofable forwarded IP headers): up to **20 failures/minute** per source and **200 failures/minute** globally (tracking table capped at 4,096 sources), returning `429` with `Retry-After: 60`.
+- Visitors behind a reverse tunnel may share the same local socket bucket, but valid tokens and valid signed session cookies bypass failure limits so attackers cannot lock out legitimate users.
+- Signed sessions are stateless and consume no server-side session table memory. This throttling guards authentication attempts and does not replace edge network protection.
+- Unauthenticated local release download requests are rejected; clients automatically fall back to public GitHub Releases.

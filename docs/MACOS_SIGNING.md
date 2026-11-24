@@ -1,45 +1,43 @@
-# macOS Developer ID 签名与公证
+[English](MACOS_SIGNING.md) | [简体中文](MACOS_SIGNING.zh-CN.md)
 
-GitHub 发布的 macOS Apple Silicon（arm64）DMG 使用 Developer ID Application 签名及 Hardened Runtime，并将 Apple 公证票据附加到 App。缺少材料或公证失败时停止正式发布。
+# macOS Developer ID Signing & Notarization
 
-macOS 继续通过 GitHub Releases 分发，应用 ID 沿用 `org.lin0.relay.desktop`，展示名为 Summon Bot；不需要创建 Mac App Store 应用记录。安装更新仍下载 DMG 手动覆盖。
+macOS Apple Silicon (`arm64`) DMGs published to GitHub Releases are signed with **Developer ID Application** + Hardened Runtime, submitted to Apple Notarization (`notarytool`), and stapled onto the `.app` bundle. Official releases abort if signing material is missing or notarization fails.
 
-## 只需补一张证书
+macOS distributes via GitHub Releases using the existing app ID `org.lin0.relay.desktop` and display name `Summon Bot` (no Mac App Store record is required). Users receive update prompts and drag-replace the app from the downloaded DMG.
 
-本项目通过 DMG 分发，使用 **Developer ID Application** 证书。
+## 1. Issue the Developer ID Application Certificate
 
-证书请求及对应私钥已在本机私有目录准备。只上传下面的 CSR，私钥留在本机：
-
+The CSR and private key are stored in the host private directory—upload only the CSR and keep the private key strictly local:
 `C:\Users\win11\.codex\private\summon-macos-signing\Summon-Developer-ID.certSigningRequest`
 
-1. 用账户持有人登录 [Apple Developer](https://developer.apple.com/account/)，选择团队 `6Y29E7PSVF`。
-2. 进入「证书、标识符和描述文件」→「证书 / Certificates」→「＋」。
-3. 选择 **Developer ID Application**；若先出现 Developer ID 分类，继续后再选 Application。
-4. 如果要求选择证书颁发机构，选择当前 **G2 Sub-CA**，用于现代 Xcode 签名。
-5. 点击 Choose File，选择上面的 `.certSigningRequest` 文件 → Continue。
-6. 下载生成的 `.cer`，保存到下载目录，把路径告诉 Codex 即可。不要重新生成另一份 CSR，也不要上传 `.key` 私钥。
+1. Sign in as the Account Holder at [Apple Developer](https://developer.apple.com/account/) and select team `6Y29E7PSVF`.
+2. Go to **Certificates, Identifiers & Profiles** → **Certificates** → **+**.
+3. Choose **Developer ID Application** (and **G2 Sub-CA** if prompted for a Certificate Authority).
+4. Upload the `.certSigningRequest` file above, click Continue, and download the generated `.cer` certificate (do not generate a new CSR or upload `.key`).
 
-Apple 说明：[Developer ID 证书](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)。
+Reference: [Apple: Create Developer ID Certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
 
-## 证书到位后的自动化
+## 2. Configure GitHub Secrets & Trigger Release
 
-配置入口是 `scripts/macos/signing.py configure <cer文件>`。它核对证书类型、团队、有效期及是否匹配本机私钥，封装带随机密码的 PKCS#12，通过标准输入写入本项目 GitHub Secrets：
+Run `scripts/macos/signing.py configure <path-to-cer>`. The script verifies certificate type, Team ID, expiration, and private key match, packages a PKCS#12 bundle with a random password, and writes these GitHub Secrets via stdin:
 
 - `SUMMON_MACOS_P12_BASE64`
 - `SUMMON_MACOS_P12_PASSWORD`
 
-如果从 PowerShell 启动 Python，先把当前 `gh auth token` 的结果放入子进程的 `GH_TOKEN` 环境变量，结束后清除，避免 Windows 子进程无法读取系统凭据。不要输出 token。
+> When invoking Python from PowerShell, if child processes cannot read the Windows `gh` credential store, inject `gh auth token` into the child process `GH_TOKEN` environment variable temporarily and clear it afterward without printing the token.
 
-公证复用本仓库现有的 `SUMMON_ASC_PRIVATE_KEY`、`SUMMON_ASC_KEY_ID`、`SUMMON_ASC_ISSUER_ID`，不使用 APNs 私钥。[Apple 明确支持上传与公证复用 App Store Connect API Key](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool)。
+Notarization reuses the repository's existing App Store Connect API credentials (`SUMMON_ASC_PRIVATE_KEY`, `SUMMON_ASC_KEY_ID`, `SUMMON_ASC_ISSUER_ID`), never the APNs key. Reference: [Apple TN3147: Migrating to the Latest Notarization Tool](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool).
 
-配置完成后运行：
+Trigger a standalone macOS build and release (or let a `release.json` push build all platforms automatically):
 
 ```powershell
 gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos
 ```
 
-GitHub Mac runner 导入签名证书，为 Apple Silicon 构建应用并提交 Apple 公证。公证完成后附加票据，再生成和发布 DMG。
+The GitHub macOS runner imports the signing certificate, builds the Apple Silicon `arm64` app, submits it for Apple notarization, staples the ticket, and publishes the DMG to the `client-macos-arm64` release tag.
 
-签名后正常从 GitHub 下载的新版应不再因“无法验证开发者”要求到设置里手动放行；macOS 仍可能显示正常的“从互联网下载，是否打开”提示。此前已经下载的旧包不会自动获得签名，需要下载新发布的包。
+## 3. Installation Behavior
 
-本次只完成签名与公证接入，不自动改变为应用内静默更新。正式可用状态以新签名包实际完成公证并发布为准。
+- Newly signed and notarized DMGs open directly on macOS without Gatekeeper's "unverified developer" block (macOS may still display the standard "downloaded from the Internet" confirmation prompt).
+- Previously downloaded unsigned DMGs do not inherit signing retroactively; download the latest notarized DMG and drag-replace the app.

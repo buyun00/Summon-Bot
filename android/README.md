@@ -1,6 +1,6 @@
 # Summon Bot Android
 
-原生 Android 客户端使用 Compose，通过协议 2 连接部署机。正式入口为 `https://bot.lin0.org`。
+原生 Android 客户端使用 Compose，通过协议 3 连接部署机。正式入口为 `https://bot.lin0.org`。
 
 支持群聊、@ 成员、回复、附件、资料引用和置顶，以及 Bot 设置、基础关注、订阅与提醒。执行会话和内部对话根据服务实际返回的目标提供输入、输出、停止与恢复。设置包括模型连接、执行目录和宿主额度。升级期间保留本机草稿、附件和待确认发送，重试先查询同一 clientId。
 
@@ -10,7 +10,7 @@
 npm run release:android -- --publish
 ```
 
-版本统一读取根目录 `release.json`，固定签名保存在正式主机的私有配置和 GitHub Actions Secrets 中。检查与下载先查设备本机发行物，缺少时直接使用 GitHub Releases，不再经过正式主机的安装包目录。应用前台检查新版，设置中可下载 APK 并交给系统确认安装。完整发布流程见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
+版本统一读取根目录 `release.json`，固定签名保存在正式主机的私有配置和 GitHub Actions Secrets 中。检查与下载先查设备本机发行物，缺少时直接使用 GitHub Releases，不再经过正式主机的安装包目录。应用前台检查新版，设置中可下载 APK 并交给系统确认安装。完整发布流程见 [客户端发行与更新](../docs/CLIENT_RELEASES.zh-CN.md)。
 
 访问令牌保存在加密存储中。HTTP 只接受 `localhost`、无点主机名和 `.local`，与 iOS 的本地网络例外一致。
 

@@ -1,8 +1,10 @@
-# 运行维护
+[English](OPERATIONS.md) | [简体中文](OPERATIONS.zh-CN.md)
 
-正式数据根为 `D:/Relay-Bot-data`，后端安装在 `D:/Relay-Bot-app`。公网和本机入口共用这份数据，分别为 `https://bot.lin0.org` 和 `http://127.0.0.1:8787`。
+# Operations & Maintenance
 
-## 启停与配置
+Summon Bot operates a single formal production environment: business data lives in `D:/Relay-Bot-data` and backend binaries live in `D:/Relay-Bot-app`. Public HTTPS (`https://bot.lin0.org`) and local loopback (`http://127.0.0.1:8787`) serve the same running instance and data.
+
+## 1. Start, Stop, Status & Logs
 
 ```powershell
 & D:/Relay-Bot-app/Start.ps1 -DataRoot D:/Relay-Bot-data
@@ -10,36 +12,38 @@
 npm run summon:status -- --data-root D:/Relay-Bot-data
 ```
 
-Windows 启动入口使用选定发行物中的 Node。双击 `Start-Hidden.vbs` 或 `Run.cmd` 可隐藏终端启动。现有 StartupHub `Summon Bot` 任务通过同一入口运行看门狗，依据服务身份恢复已退出的 Web 和网关。计划任务与手动入口均读取安装状态。正常停止会保存运行意图，用户暂停的 Bot、对话和执行会话继续遵守各自控制记录。
+- Windows launchers run the bundled Node executable from the active release. Double-clicking `Start-Hidden.vbs` or `Run.cmd` launches without a visible terminal window.
+- The StartupHub `Summon Bot` scheduled task runs the watchdog through the same entrypoint, automatically recovering exited Web or gateway processes by service identity. Graceful stops persist desired state; user-paused Bots, conversations, and execution sessions remain paused across restarts.
+- Local access is live as soon as the gateway and Web are ready. Web restores registered self-managed remote connectors (Tailscale / Cloudflare Tunnel) in the background and reports status via `summon:status`; remote connector failures never block local access.
+- Configuration layout:
+  - `config/deployment.json` (Schema v4, Data Format 3): active release root, listen address, `web.accessToken`, initial model settings, log rotation, and host resource limits.
+  - `config/model-connections.json`, `config/model-credentials.json`, and `config/runtime.env`: model connections, purpose routing table, API keys, and env references. Day-to-day changes are managed from Web settings.
+- Primary logs live under `web/logs/`, `web/watchdog/`, and `capabilities/gateway/logs/`. Rotation can be tuned via `logs.maxFileBytes`, `logs.maxFiles`, `logs.retentionDays`, and `logs.sweepIntervalMs` in `config/deployment.json` (with per-service overrides for Web and gateway). If managed log writes fail, services keep running and report the log error in `summon:status`.
 
-网关与 Web 就绪后，本机入口可用。Web 在后台恢复已登记的自管远程连接器，`summon:status` 的 Web 状态会显示恢复结果。远程配置无法读取时，本机仍可用。远程条目按各自地址登记和验证。
+## 2. Releases & Upgrades
 
-`config/deployment.json` 保存选定发行目录、正式监听地址、模型初始配置及宿主资源设置。外部模型和已有凭据由 `config/model-connections.json`、`config/model-credentials.json` 及该连接引用的凭据来源管理。由网页设置修改模型、执行连接、资源上限和实际执行目录权限。
+After finalizing changes, syncing native clients, bumping `release.json`, and pushing, run `npm run release:all` to update the formal Web/backend and local Windows package (or `npm run release:web -- --committed-only` for backend/Web only). See [Client Releases & Auto-Update](CLIENT_RELEASES.md).
 
-主要日志位于 `web/logs/`、`web/watchdog/` 和 `capabilities/gateway/logs/`。需要调整轮转时，可在部署配置中设置 `logs.maxFileBytes`、`logs.maxFiles`、`logs.retentionDays` 与 `logs.sweepIntervalMs`，或使用 Web 和网关各自的 `logs` 覆盖。
+### Windows Node Runtime Requirement
 
-托管日志无法写入时，服务继续运行，`summon:status` 显示相关日志错误。看门狗由原计划任务托管。
+Windows release builds must use a Node 24 LTS build that fixes the libuv Windows TCP keepalive native crash (`nodejs/node#62561`); `build.mjs` explicitly rejects `24.15.0` and `25.8.0`. Use Node 24.21.0 / 24.22.1 or newer LTS. If the system Node is an affected build, set `SUMMON_RELEASE_NODE` to a clean standalone Node executable or invoke `scripts/release/cli.mjs` directly with it.
 
-## 发行与升级
+### Graceful Drain & Installation State Machine
 
-定稿、同步原生端、递增版本并提交推送后，可执行 `npm run release:all` 更新正式 Web 与 Windows 本机包。同协议时可先更新 Web。协议变更时，Windows 本机包与各远程渠道的同提交版本先就位。具体命令见 [客户端发行与更新](CLIENT_RELEASES.md)。
+- Installation progress is persisted in `config/installation_state.json` across 6 exclusive phases: `prepared` → `draining` → `converting` → `data_ready` → `runtime_ready` → `done`.
+- During an upgrade window, the installer verifies the running instance supports graceful drain (and verifies matching client releases when protocol version changes), closes autonomous intake, and waits for in-flight calls and writes to finish (default 3-minute timeout, adjustable via `--drain-timeout-ms`).
+- If draining times out or is interrupted with Ctrl+C, re-running the same release command resumes the staged build; progress output and `summon:status` list blocking calls or services. To swap in a fixed candidate build, pass `--replace-pending`.
+- Once the new release starts, superseded release directories and build staging folders are cleaned up automatically; any remaining cleanup errors surface in `cleanupPending` and finish on the next run. `D:/Relay-Bot-data/client-releases` is managed separately by client release scripts and is never cleared by backend cleanup.
 
-应使用修复 Windows TCP keepalive 问题的 Node 24 LTS 版本完成构建。正式旧包携带 24.21.0，可用独立安装的 24.22.1 运行新构建和安装器。系统 Node 是 24.15.0 时，可将 `SUMMON_RELEASE_NODE` 指向可用的独立 Node，或直接用该可执行文件运行 `scripts/release/cli.mjs`。
+## 3. Data Storage & Clearing Chat History
+
+- **Shared records DB**: `capabilities/chatroom/state.sqlite` stores rooms, members, messages, attachments, execution sessions, and platform objects.
+- **Per-Bot runtime DB**: `bots/<bot-id>/state.sqlite` stores each Bot's inbox, internal conversations, call receipts, and processing cursors.
+- **Token ledger**: `usage.sqlite` tracks real model requests and purpose-level token accounting.
+- **Clearing chat history**: Only when explicitly requested by the user, stop the formal instance gracefully and run:
 
 ```powershell
-npm run release:web -- --committed-only
+npm run summon:history -- --data-root D:/Relay-Bot-data
 ```
 
-安装器先确认当前运行支持有序收尾，并在协议变更时确认对应客户端发行已就绪。更新窗口内，正在运行的调用及对应写入完成后关闭接收，等待服务退出。安装器随后在同一数据根准备部署配置，再选择并启动新版本。
-
-`config/installation_state.json` 保存安装进度。排空等待默认三分钟，可用 `--drain-timeout-ms` 调整。若排空超时或用 Ctrl+C 停止等待，重跑同一发行命令即可续接暂存构建。等待输出和 `summon:status` 会显示相关调用或服务的进度。修复了候选源码时，可运行 `npm run release:web -- --committed-only --replace-pending` 更换安装候选。数据转换和服务选取由安装器独占执行。
-
-新服务启动后清理被替代的程序和构建产物。若清理尚未完成，部署结果中的 `cleanupPending` 给出错误，可重跑发行入口继续收尾。Windows 本机发行目录由客户端发布入口管理。
-
-0.3.100 的一次性格式转换已完成。原聊天、文件、暂停、调用及接收状态由当前格式保留。
-
-## 数据与运行
-
-房间、成员、消息和平台对象使用 `capabilities/chatroom/state.sqlite`。Bot 内部的接收、处理、调用和等待位置由其数据目录下的 SQLite 保存。模型账本位于 `usage.sqlite`。达到上限时保留已有输入，按设置的额度和用户控制恢复允许的处理。
-
-用户明确要求清空对话历史时，正常停止正式运行，再按实际数据根执行 `npm run summon:history -- --data-root D:/Relay-Bot-data`。清理持有排他写入锁，保留成员、用户资料、文件及用量。恢复后客户端依据数据根的 `historyEpoch` 清除旧聊天缓存并保留未发送草稿。
+This acquires an exclusive write lock, clears message history, and advances `historyEpoch` while preserving Bots, user profiles, files, and usage history. On reconnect, clients see the new `historyEpoch`, clear stale chat caches automatically, and preserve unsent drafts.

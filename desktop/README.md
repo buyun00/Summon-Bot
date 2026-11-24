@@ -4,7 +4,7 @@ Windows x64 和 Apple Silicon macOS 的桌面安装包内置 Electron、Node、W
 
 Windows 安装后从开始菜单打开 Summon Bot。默认安装路径是 `%LOCALAPPDATA%\Programs\summon-desktop\Summon Bot.exe`。开箱页可选择本机正式实例，或填写远程地址并用该实例的访问令牌登录。连接后，在同一窗口的正式页面配置聊天模型和 API Key。
 
-本机正式实例使用 `D:/Relay-Bot-data`，入口为 `http://127.0.0.1:8787` 和 `https://bot.lin0.org`。正式服务由现有安装入口启停和升级，关闭窗口后继续运行。[运行维护](../docs/OPERATIONS.md)
+本机正式实例使用 `D:/Relay-Bot-data`，入口为 `http://127.0.0.1:8787` 和 `https://bot.lin0.org`。正式服务由现有安装入口启停和升级，关闭窗口后继续运行。[运行维护](../docs/OPERATIONS.zh-CN.md)
 
 ## 安装后的运维命令
 
@@ -30,4 +30,4 @@ Electron 通过已验证的部署机登录会话读取启动信息，然后加�
 
 在目标系统以本机架构的 Node 24 安装根生产依赖与桌面依赖，然后运行 `npm run release:desktop -- --candidate`。本机候选的桌面外壳和内嵌运行时都取自当前工作区，产物位于命令返回的 `.relay/client-builds` 子目录。Actions 的 `Client releases` 可通过 `candidate=true` 从该次检出的代码构建候选。
 
-下载和更新先查设备本机发行物，再查 GitHub Releases。正式发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
+下载和更新先查设备本机发行物，再查 GitHub Releases。正式发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.zh-CN.md)。
