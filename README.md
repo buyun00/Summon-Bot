@@ -150,7 +150,7 @@
 <details open>
 <summary>
   <picture>
-    <img src="docs/assets/readme-guide-en.svg" alt="Lead Bot & EggBot Guide Card: Click to expand the English continuous group chat walkthrough, multi-domain scenarios, and tool comparison" width="100%" />
+    <img src="docs/assets/readme-guide-en.svg" alt="Lead Bot & EggBot Welcome Card: English Edition — Full Walkthrough, Everyday Scenarios & Architecture Comparisons" width="100%" />
   </picture>
 </summary>
 

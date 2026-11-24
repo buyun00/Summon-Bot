@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 144" width="100%" height="100%" style="display:block">
   <defs>
     <style>
-      .font { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
       .float { animation: float 3.6s ease-in-out infinite; }
       @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-4px); } }
     </style>
@@ -33,7 +33,7 @@
   <g transform="translate(164, 18)">
     <text x="6" y="15" class="font" font-size="12.2" font-weight="700" fill="#3B4A59">Lead Bot &amp; EggBot <tspan font-weight="400" fill="#8A99A8">Just now</tspan></text>
     <path d="M 14 24 H 820 Q 834 24 834 38 V 88 Q 834 102 820 102 H 14 Q 0 102 0 88 V 68 L -12 58 L 0 48 V 38 Q 0 24 14 24 Z" fill="#FFFFFF" stroke="#D6DFE8" stroke-width="1.5"/>
-    <text x="22" y="57" class="font" font-size="14.5" font-weight="700" fill="#1A222B">👋 Prefer English? Click this card to see how a group of Bots ships a real project through natural chat</text>
-    <text x="22" y="83" class="font" font-size="12.2" font-weight="600" fill="#2C5270">▼ Click to expand / collapse [English · Continuous Room Walkthrough &amp; How the Group Works]</text>
+    <text x="22" y="57" class="font" font-size="14.5" font-weight="700" fill="#1A222B">👋 Welcome! Scroll down to see how a local team of Bots handles real work through natural group chat</text>
+    <text x="22" y="83" class="font" font-size="12.5" font-weight="600" fill="#2C5270">English Edition · Full Walkthrough, Everyday Scenarios &amp; Architecture Comparisons</text>
   </g>
 </svg>
