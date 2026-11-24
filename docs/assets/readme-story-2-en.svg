@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2177" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2311" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
@@ -48,30 +48,30 @@
     </g>
   </defs>
 
-  <path d="M 0 0 H 1280 V 2177 H 0 Z" fill="url(#en2-bg)"/>
-  <path d="M 0.75 0 V 2177 M 1279.25 0 V 2177" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 0 0 H 1280 V 2311 H 0 Z" fill="url(#en2-bg)"/>
+  <path d="M 0.75 0 V 2311 M 1279.25 0 V 2311" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
 
   <!-- Left Continuous Chat Window -->
-  <g transform="translate(24, 0)" filter="url(#windowShadow)">
-    <path d="M 0 0 H 624 V 2177 H 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 0 V 2177 M 623.25 0 V 2177" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <g transform="translate(20, 0)" filter="url(#windowShadow)">
+    <path d="M 0 0 H 618 V 2311 H 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 0 V 2311 M 617.25 0 V 2311" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
     <g transform="translate(50, 26)">
-      <path d="M 20 0 H 536 Q 556 0 556 20 V 139 Q 556 146 549 146 H 20 Q 0 146 0 126 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <path d="M 20 0 H 530 Q 550 0 550 20 V 139 Q 550 146 543 146 H 20 Q 0 146 0 126 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       
-      <rect x="16" y="16" width="524" height="34" rx="7" fill="#D2DFD6"/>
+      <rect x="16" y="16" width="518" height="34" rx="7" fill="#D2DFD6"/>
       <line x1="16" y1="16" x2="16" y2="50" stroke="#687C6E" stroke-width="3"/>
       <text x="27" y="38" class="font" font-size="15.2" fill="#465249"><tspan font-weight="700" fill="#1E221E">LevelDesigner</tspan> Hi all, I own <tspan font-style="italic">Mistport</tspan> economy!…</text>
     <text x="20" y="80" class="font" font-size="21" fill="#1E221E">Agreed—2 storms for 2 medals is not worth it.</text><text x="20" y="111" class="font" font-size="21" fill="#1E221E">Grant +1 bonus medal per storm on Coast.</text>
-      <text x="540" y="138" text-anchor="end" class="font" font-size="14" fill="#728577">10:00</text>
+      <text x="534" y="138" text-anchor="end" class="font" font-size="14" fill="#728577">10:00</text>
       
-      <rect x="263" y="154" width="293" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
-      <text x="409.5" y="175.5" text-anchor="middle" class="font" font-size="15.2" fill="#433F37"><tspan font-weight="700" fill="#7A7366">Fast-Read Summary · 3 peers ▾</tspan></text>
+      <rect x="257" y="154" width="293" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
+      <text x="403.5" y="175.5" text-anchor="middle" class="font" font-size="15.2" fill="#433F37"><tspan font-weight="700" fill="#7A7366">Fast-Read Summary · 3 peers ▾</tspan></text>
     
-      <rect x="16" y="194" width="540" height="110" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
-      <text x="32" y="221" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">LevelDesigner</tspan> +1 medal per storm on Coast table</text><text x="32" y="249" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> Balance tweak only; code intact (quiet)</text><text x="32" y="277" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan> LevelDesigner handling feedback (quiet)</text>
+      <rect x="14" y="194" width="536" height="110" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
+      <text x="30" y="221" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">LevelDesigner</tspan> +1 medal per storm on Coast table</text><text x="30" y="249" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> Balance tweak only; code intact (quiet)</text><text x="30" y="277" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan> LevelDesigner handling feedback (quiet)</text>
     
     </g>
   
@@ -82,7 +82,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Coast v2 pinned: Safe leaves 7 supply / 3</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">medals; Risky leaves 3 supply / 4 medals.</text>
     </g>
   
-    <g transform="translate(78, 496)">
+    <g transform="translate(72, 496)">
       <path d="M 20 0 H 508 Q 528 0 528 20 V 95 Q 528 102 521 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Nice gradient! I also dropped wav audio in—</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">compress to ogg &amp; track bundle size diffs.</text>
       <text x="512" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:01</text>
@@ -99,7 +99,7 @@
     <g transform="translate(18, 762)">
       <use href="#en2-av-tool" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Tool Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:02</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 146 Q 588 166 568 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 146 Q 582 166 562 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">No need! FFmpeg 8.1.2 is already installed</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">on this host—use this registered connection:</text>
         <rect x="76" y="112" width="242" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
         <text x="197" y="134.5" text-anchor="middle" class="font" font-size="15.5" font-weight="600" fill="#3F3C35">🔗 Connection cli-ffmpeg</text>
@@ -113,7 +113,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Awesome, saved a redundant install!</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Converted all Coast audio via cli-ffmpeg.</text>
     </g>
   
-    <g transform="translate(69, 1092)">
+    <g transform="translate(63, 1092)">
       <path d="M 20 0 H 517 Q 537 0 537 20 V 95 Q 537 102 530 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Great! Lead Bot, build the Coast route/diff</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">CLI and a standalone offline HTML report.</text>
       <text x="521" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:03</text>
@@ -127,10 +127,10 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Started CLI &amp; HTML report in parallel.</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Chat stays live—want to design Chapter 2?</text>
     </g>
   
-    <g transform="translate(52, 1358)">
-      <path d="M 20 0 H 534 Q 554 0 554 20 V 95 Q 554 102 547 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+    <g transform="translate(50, 1358)">
+      <path d="M 20 0 H 530 Q 550 0 550 20 V 95 Q 550 102 543 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Love zero waiting! For Snowfield, 2 exposed</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">nodes in a row cost -1 extra supply till Camp.</text>
-      <text x="538" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:04</text>
+      <text x="534" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:04</text>
       
     </g>
   
@@ -141,7 +141,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Great mechanic! Adding frost_streak to</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Snowfield that resets at Campfire nodes.</text>
     </g>
   
-    <g transform="translate(78, 1624)">
+    <g transform="translate(72, 1624)">
       <path d="M 20 0 H 508 Q 528 0 528 20 V 95 Q 528 102 521 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Oh, just remembered! 0-byte blank.png is a</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">valid placeholder—show it + 2 size columns.</text>
       <text x="512" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:05</text>
@@ -154,68 +154,68 @@
   </g>
 
   <!-- Right Vertical Timeline Axis -->
-  <line x1="724" y1="0" x2="724" y2="2177" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="710" y1="0" x2="710" y2="2311" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
 
   <!-- Smooth Curved Connectors -->
-  <path d="M 632.0 275.0 C 668.0 275.0, 672 245.7, 696 245.7" fill="none" stroke="#477A54" stroke-width="2.4" class="flow"/><path d="M 632.0 859.0 C 668.0 859.0, 672 405.7, 696 405.7" fill="none" stroke="#B2634F" stroke-width="2.4" class="flow"/><path d="M 623.0 1290.0 C 668 1290.0, 668 1322.3, 668 1354.5 C 668 1386.8, 672 1419.0, 696 1419.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 616.0 1556.0 C 668.0 1556.0, 672 1554.0, 696 1554.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 632.0 1750.0 C 668.0 1750.0, 672 1938.0, 696 1938.0" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
+  <path d="M 622.0 275.0 C 658.0 275.0, 660 263.7, 682 263.7" fill="none" stroke="#477A54" stroke-width="2.4" class="flow"/><path d="M 622.0 859.0 C 658 859.0, 658 751.4, 658 643.9 C 658 536.3, 662 428.7, 682 428.7" fill="none" stroke="#B2634F" stroke-width="2.4" class="flow"/><path d="M 619.0 1290.0 C 658 1290.0, 658 1325.5, 658 1361.0 C 658 1396.5, 662 1432.0, 682 1432.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 612.0 1556.0 C 658.0 1556.0, 660 1592.0, 682 1592.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 622.0 1750.0 C 658 1750.0, 658 1819.3, 658 1888.5 C 658 1957.8, 662 2027.0, 682 2027.0" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
 
   <!-- Right Callout Cards -->
   
-    <g transform="translate(696, 81.7)">
-      <circle cx="28" cy="28" r="20" fill="#477A54"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">02</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#2E633D">① FAST-READ TRIAGE &amp; PROACTIVE RESCUE</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">4 Bots never spam,</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">yet catch mistakes live</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="296" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#1F1E1B">Silent when unrelated</tspan>: Every message runs</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  zero-thinking ① <tspan font-weight="700" fill="#2E633D">Fast-Read</tspan>. At 10:00 Lead</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  &amp; EggBot stay quiet, saving 90% tokens.</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#B2634F">Proactive rescue</tspan>: Nobody tagged <tspan font-weight="700" fill="#1F1E1B">Tool Bot</tspan></text><text x="24" y="162" class="font" font-size="19" fill="#454139">  at 10:02, yet it caught a redundant install</text><text x="24" y="191" class="font" font-size="19" fill="#454139">  and handed over <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> live!</text>
-    <rect x="24" y="214" width="512" height="60" rx="10" fill="#EBF4EE"/>
-    <text x="38" y="238" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">Summaries sync via room-message-summaries</text><text x="38" y="260" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">with zero prompt pollution</text>
-  
+    <g transform="translate(682, 81.7)">
+      <circle cx="28" cy="30" r="22" fill="#477A54"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">02</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#2E633D">① FAST-READ TRIAGE &amp; PROACTIVE RESCUE</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">4 Bots never spam,</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">yet catch mistakes live</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="353" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#1F1E1B">Silent when unrelated (quiet)</tspan>: Every message runs</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">  zero-thinking ① <tspan font-weight="700" fill="#2E633D">Fast-Read</tspan>, logging a 1-line summary.</text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">  At 10:00 Lead Bot &amp; EggBot stay quiet, avoiding</text><text x="22" y="131" class="font" font-size="20.5" fill="#413D35">  chatter spam and saving 90% of idle tokens.</text><text x="22" y="176" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#B2634F">Proactive rescue without @mention</tspan>: Nobody tagged</text><text x="22" y="207" class="font" font-size="20.5" fill="#413D35">  <tspan font-weight="700" fill="#1F1E1B">Tool Bot</tspan> at 10:02, yet it caught a redundant FFmpeg</text><text x="22" y="238" class="font" font-size="20.5" fill="#413D35">  download and handed over <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> immediately!</text>
+      <rect x="22" y="263" width="534" height="68" rx="11" fill="#EBF4EE"/>
+      <text x="36" y="289" class="mono" font-size="14.8" font-weight="600" fill="#2E633D">Summaries sync via room-message-summaries channel</text><text x="36" y="314" class="mono" font-size="14.8" font-weight="600" fill="#2E633D">with zero prompt pollution to main models</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 1250)">
-      <circle cx="28" cy="28" r="20" fill="#597C91"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">03</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#325672">CHAT VS. HEAVY ENGINE SPLIT</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Two Codex lanes run;</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">you plan Ch. 2 live</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="372" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">Summon splits ② <tspan font-weight="700" fill="#325672">Main Room Chat</tspan> from</text><text x="24" y="63" class="font" font-size="19" fill="#454139">③ <tspan font-weight="700" fill="#1F1E1B">Execution Sessions</tspan> in parallel:</text>
-        <g transform="translate(24, 84)">
-          <rect width="512" height="88" rx="13" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">Session #1 · Route &amp; Diff CLI</text>
-          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
-          <text x="18" y="76" class="mono" font-size="14.5" fill="#5CD49B">$ node diff.mjs → exit 0</text>
+    <g transform="translate(682, 1250)">
+      <circle cx="28" cy="30" r="22" fill="#597C91"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">03</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">CHAT VS. HEAVY ENGINE SPLIT</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Two Codex lanes run;</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">you plan Ch. 2 live</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="439" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Summon cleanly separates ② <tspan font-weight="700" fill="#325672">Main Room Chat</tspan> from</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">③ <tspan font-weight="700" fill="#1F1E1B">Execution Sessions</tspan>—orchestrating parallel Codex</text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">lanes while the room stays responsive for Ch. 2:</text>
+        <g transform="translate(22, 121)">
+          <rect width="534" height="98" rx="14" fill="#171C26"/>
+          <circle cx="20" cy="26" r="5.5" fill="#5CD49B" class="pulse"/>
+          <text x="36" y="32" class="font" font-size="18.5" font-weight="700" fill="#F3F4F8">Session #1 · Route &amp; Bundle Diff CLI</text>
+          <text x="20" y="59" class="mono" font-size="15.2" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
+          <text x="20" y="84" class="mono" font-size="15.8" fill="#5CD49B">$ node diff.mjs → verified (exit 0)</text>
         </g>
       
-        <g transform="translate(24, 184)">
-          <rect width="512" height="88" rx="13" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">Session #2 · Offline HTML Report</text>
-          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
-          <text x="18" y="76" class="mono" font-size="14.5" fill="#E6AB55">$ node render.mjs → bundling</text>
+        <g transform="translate(22, 231)">
+          <rect width="534" height="98" rx="14" fill="#171C26"/>
+          <circle cx="20" cy="26" r="5.5" fill="#5CD49B" class="pulse"/>
+          <text x="36" y="32" class="font" font-size="18.5" font-weight="700" fill="#F3F4F8">Session #2 · Offline HTML Battle Report</text>
+          <text x="20" y="59" class="mono" font-size="15.2" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
+          <text x="20" y="84" class="mono" font-size="15.8" fill="#E6AB55">$ node render.mjs → bundling live steer</text>
         </g>
       
-    <rect x="24" y="290" width="512" height="60" rx="10" fill="#EEF3F7"/>
-    <text x="38" y="314" class="mono" font-size="14.2" font-weight="600" fill="#325672">Code gate blocks ③ workers from posting</text><text x="38" y="336" class="mono" font-size="14.2" font-weight="600" fill="#325672">(403 room_send_forbidden)</text>
-  
+      <rect x="22" y="349" width="534" height="68" rx="11" fill="#EEF3F7"/>
+      <text x="36" y="375" class="mono" font-size="14.8" font-weight="600" fill="#325672">Code hard gate blocks ③ workers from posting</text><text x="36" y="400" class="mono" font-size="14.8" font-weight="600" fill="#325672">(403 room_send_forbidden) — chat stays spotless</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 1764)">
-      <circle cx="28" cy="28" r="20" fill="#2E8548"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">04</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#235E34">① DIRECT FORWARD &amp; TOOL SELF-REPAIR</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Mid-flight chat steers</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Codex; tools self-heal</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="267" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#235E34">Zero-latency steer</tspan>: Lead Bot ① Fast-Read</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  injects 10:05 straight into live Session #2</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>—no restart needed.</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI repair</tspan>: Broken tools alert</text><text x="24" y="162" class="font" font-size="19" fill="#454139">  a <tspan font-weight="700" fill="#1F1E1B">Maintainer Bot</tspan> outside the room to patch.</text>
-    <rect x="24" y="185" width="512" height="60" rx="10" fill="#E8F4EC"/>
-    <text x="38" y="209" class="mono" font-size="14.2" font-weight="600" fill="#235E34">Built-in Bot Maintenance Room reviews</text><text x="38" y="231" class="mono" font-size="14.2" font-weight="600" fill="#235E34">daily connection_usage standups</text>
-  
+    <g transform="translate(682, 1835)">
+      <circle cx="28" cy="30" r="22" fill="#2E8548"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">04</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#235E34">① DIRECT FORWARD &amp; TOOL SELF-REPAIR</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Mid-flight chat steers</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Codex; tools self-heal</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="322" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#235E34">Zero-latency steer (route: forward)</tspan>: Lead Bot</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">  ① Fast-Read matches 10:05 to live Session #2 and</text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">  injects it via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>—no abort or restart.</text><text x="22" y="145" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI self-healing</tspan>: When a local CLI</text><text x="22" y="176" class="font" font-size="20.5" fill="#413D35">  update breaks parsing, an out-of-room <tspan font-weight="700" fill="#1F1E1B">Maintainer</tspan></text><text x="22" y="207" class="font" font-size="20.5" fill="#413D35">  patches the adapter silently without spamming chat.</text>
+      <rect x="22" y="232" width="534" height="68" rx="11" fill="#E8F4EC"/>
+      <text x="36" y="258" class="mono" font-size="14.8" font-weight="600" fill="#235E34">Built-in Bot Maintenance Room reviews daily</text><text x="36" y="283" class="mono" font-size="14.8" font-weight="600" fill="#235E34">connection_usage standups to harden tool scripts</text>
+    
       </g>
     </g>
   

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1453" width="100%" height="100%" style="display:block">
   <defs>
     <style>
-      .font { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .font { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
       .pulse { animation: pulse 2.2s ease-in-out infinite; }
       .flow { stroke-dasharray: 6 5; animation: dash 14s linear infinite; }
@@ -54,9 +54,9 @@
   
 
   <!-- Left Continuous Chat Window -->
-  <g transform="translate(24, 0)" filter="url(#windowShadow)">
-    <path d="M 0 0 H 624 V 1397 Q 624 1419 602 1419 H 22 Q 0 1419 0 1397 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 0 V 1397 Q 0.75 1418.25 22 1418.25 H 602 Q 623.25 1418.25 623.25 1397 V 0" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <g transform="translate(20, 0)" filter="url(#windowShadow)">
+    <path d="M 0 0 H 618 V 1397 Q 618 1419 596 1419 H 22 Q 0 1419 0 1397 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 0 V 1397 Q 0.75 1418.25 22 1418.25 H 596 Q 617.25 1418.25 617.25 1397 V 0" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
     <g transform="translate(18, 26)">
       <use href="#zh3-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
@@ -82,7 +82,7 @@
         <text x="14" y="21" class="mono" font-size="13" fill="#7D7669">sh</text>
         <text x="445" y="21" text-anchor="end" class="font" font-size="13" fill="#7D7669">复制</text>
         <line x1="0" y1="30" x2="459" y2="30" stroke="#D7D1C3"/>
-        <text x="14" y="52" class="mono" font-size="13.8" fill="#3B3831">node diff.mjs before.json after.json &gt; report.json</text><text x="14" y="76" class="mono" font-size="13.8" fill="#3B3831">node render.mjs report.json report.html</text>
+        <text x="14" y="52" class="mono" font-size="13.6" fill="#3B3831">node diff.mjs before.json after.json &gt; report.json</text><text x="14" y="76" class="mono" font-size="13.6" fill="#3B3831">node render.mjs report.json report.html</text>
       </g>
     
         <rect x="76" y="266" width="155" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
@@ -93,7 +93,7 @@
       <text x="76" y="327" class="font" font-size="14.8" fill="#8A8478">↩ 回复　　⧉ 复制　　📌 置顶</text>
     </g>
   
-    <g transform="translate(113, 584)">
+    <g transform="translate(107, 584)">
       <path d="M 20 0 H 473 Q 493 0 493 20 V 95 Q 493 102 486 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">打开看了，两列很清楚！再加个“只看删除</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">项”勾选框和路径搜索，去掉行展开更清爽。</text>
       <text x="477" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:08</text>
@@ -110,7 +110,7 @@
       
     </g>
   
-    <g transform="translate(126, 896)">
+    <g transform="translate(120, 896)">
       <path d="M 20 0 H 460 Q 480 0 480 20 V 95 Q 480 102 473 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">完美！以后这个群所有战报页都按这个格式</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">来。海岸章收工，我们正式开做雪原章！</text>
       <text x="464" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:10</text>
@@ -136,62 +136,62 @@
         <text x="20" y="16" class="font" font-size="15.5" font-weight="600" fill="#7D7669">执行过程（3）</text>
       </g>
       <g transform="translate(22, 1323)" filter="url(#pillShadow)">
-        <rect width="580" height="60" rx="30" fill="#FFFDF9" stroke="#DFD9CC" stroke-width="1.3"/>
+        <rect width="574" height="60" rx="30" fill="#FFFDF9" stroke="#DFD9CC" stroke-width="1.3"/>
         <circle cx="30" cy="30" r="19" fill="#F2EFE7" stroke="#E5E0D5"/>
         <text x="30" y="37" text-anchor="middle" class="font" font-size="22" fill="#4B4840">+</text>
         <text x="64" y="36" class="font" font-size="16.5" fill="#B0A99B">发消息…</text>
-        <text x="508" y="36" class="font" font-size="18" fill="#8A8478">@</text>
-        <circle cx="550" cy="30" r="19" fill="#23211E"/>
-        <text x="550" y="36" text-anchor="middle" class="font" font-size="16" font-weight="700" fill="#FFF">↑</text>
+        <text x="502" y="36" class="font" font-size="18" fill="#8A8478">@</text>
+        <circle cx="544" cy="30" r="19" fill="#23211E"/>
+        <text x="544" y="36" text-anchor="middle" class="font" font-size="16" font-weight="700" fill="#FFF">↑</text>
       </g>
     
   </g>
 
   <!-- Right Vertical Timeline Axis -->
-  <line x1="724" y1="0" x2="724" y2="1383" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="710" y1="0" x2="710" y2="1383" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
 
   <!-- Smooth Curved Connectors -->
-  <path d="M 597.0 402.0 C 668.0 402.0, 672 476.0, 696 476.0" fill="none" stroke="#4B4840" stroke-width="2.4" class="flow"/><path d="M 626.0 1078.5 C 668 1078.5, 668 969.1, 668 859.8 C 668 750.4, 672 641.0, 696 641.0" fill="none" stroke="#785620" stroke-width="2.4" class="flow"/>
+  <path d="M 593.0 402.0 C 658.0 402.0, 660 452.0, 682 452.0" fill="none" stroke="#4B4840" stroke-width="2.4" class="flow"/><path d="M 622.0 1078.5 C 658 1078.5, 658 976.9, 658 875.3 C 658 773.6, 662 672.0, 682 672.0" fill="none" stroke="#785620" stroke-width="2.4" class="flow"/>
 
   <!-- Right Callout Cards -->
   
-    <g transform="translate(696, 302)">
-      <circle cx="28" cy="28" r="20" fill="#23211E"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">05</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#4B4840">分批验收、90%+ 缓存与五层人格</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">先好的先交，反馈秒改，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">长期约定永不丢</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="308" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#1F1E1B">先好先交、引用结案</tspan>：10:06 先交 CLI，</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  10:07 战报页合入补件后引用原提问交付。</text><text x="24" y="104" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#2E633D">私有 Fork 90%+ 缓存</tspan>：本轮工具按 A→B→C</text><text x="24" y="133" class="font" font-size="19" fill="#454139">  跑完，下轮收敛为公开主线 A→C→D。</text><text x="24" y="174" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#785620">长期约定落盘</tspan>：10:10 格式规范写入本群</text><text x="24" y="203" class="font" font-size="19" fill="#454139">  material_index_ref，历史压缩也不丢。</text>
-    <rect x="24" y="226" width="512" height="60" rx="10" fill="#F3F0E7"/>
-    <text x="38" y="250" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">硬底线 &gt; 本轮要求 &gt; 本群约定 &gt; 个体性格</text><text x="38" y="272" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">&gt; 17 种内置岗位</text>
-  
+    <g transform="translate(682, 302)">
+      <circle cx="28" cy="30" r="22" fill="#23211E"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">05</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#4B4840">分批验收、90%+ 缓存与五层人格落盘</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">先好的先交，试玩秒改，长期约定永不丢</text>
+      <g transform="translate(0, 70)" filter="url(#cardShadow)">
+        <rect width="578" height="456" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#1F1E1B">谁先跑完先交付，引用原提问结案</tspan>：10:06 CLI 先交</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">  report.json；10:07 战报页合入补件并核对无误后，</text><text x="22" y="106" class="font" font-size="22" fill="#413D35">  引用 10:03 原提问交出成品，收到微调反馈几秒重打。</text><text x="22" y="154" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#2E633D">稳定公开主线 + 私有 Fork（90%+ 缓存命中）</tspan>：本轮</text><text x="22" y="188" class="font" font-size="22" fill="#413D35">  工具调用与中途插话按 A→B→C 运行，发布答复 D 后</text><text x="22" y="222" class="font" font-size="22" fill="#413D35">  下轮自动收敛为公开主线 A→C→D，极速且大幅省费。</text><text x="22" y="270" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#785620">五层人格与资料索引落盘</tspan>：10:10 拍板的格式规范写</text><text x="22" y="304" class="font" font-size="22" fill="#413D35">  入 <tspan class="mono">material_index_ref</tspan> (applies_to: room)，哪怕</text><text x="22" y="338" class="font" font-size="22" fill="#413D35">  后面聊几百轮触发历史压缩，全员依然永久自动遵守。</text>
+      <rect x="22" y="366" width="534" height="68" rx="11" fill="#F3F0E7"/>
+      <text x="36" y="392" class="mono" font-size="15.8" font-weight="600" fill="#4B4840">生效优先级：硬底线 &gt; 本轮要求 &gt; 本群约定</text><text x="36" y="417" class="mono" font-size="15.8" font-weight="600" fill="#4B4840">&gt; 个体性格 &gt; 17 种内置岗位</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 898.5)">
-      <circle cx="28" cy="28" r="20" fill="#395B75"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">06</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#325672">按用途分级配模型（P2 模型表）</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">快读、聊天、写代码，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">各用各的模型与思考档</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="358" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">直接复用本机已有的 Codex、Grok、Claude</text><text x="24" y="63" class="font" font-size="19" fill="#454139">登录订阅或 DeepSeek API：</text>
-        <rect x="24" y="82" width="512" height="52" rx="11" fill="#F6F4EE"/>
-        <text x="38" y="104" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">① 快读收件</text>
-        <text x="38" y="126" class="mono" font-size="14.5" fill="#4B4840">gpt-6.1-terra / deepseek · <tspan font-weight="700" fill="#2E633D">thinking: off</tspan></text>
+    <g transform="translate(682, 908.5)">
+      <circle cx="28" cy="30" r="22" fill="#395B75"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">06</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">按用途分级配模型（P2 用途模型表）</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">快读、聊天、写代码，分级配模型与思考档</text>
+      <g transform="translate(0, 70)" filter="url(#cardShadow)">
+        <rect width="578" height="404" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">直接复用你本机已有的 Codex、Grok、Claude 登录订</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">阅或 DeepSeek API，按任务阶段把好钢用在刀刃上：</text>
+        <rect x="22" y="94" width="534" height="60" rx="12" fill="#F6F4EE"/>
+        <text x="38" y="119" class="font" font-size="18" font-weight="700" fill="#1F1E1B">① 快读收件分流（零延迟低成本）</text>
+        <text x="38" y="144" class="mono" font-size="15.8" fill="#4B4840">gpt-6.1-terra / deepseek-flash · <tspan font-weight="700" fill="#2E633D">thinking: off</tspan></text>
       
-        <rect x="24" y="144" width="512" height="52" rx="11" fill="#F6F4EE"/>
-        <text x="38" y="166" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">② 群主对话</text>
-        <text x="38" y="188" class="mono" font-size="14.5" fill="#4B4840">gpt-6.1-terra / deepseek · <tspan font-weight="700" fill="#325672">thinking: high</tspan></text>
+        <rect x="22" y="164" width="534" height="60" rx="12" fill="#F6F4EE"/>
+        <text x="38" y="189" class="font" font-size="18" font-weight="700" fill="#1F1E1B">② 群主对话与拆解验收（稳准沟通）</text>
+        <text x="38" y="214" class="mono" font-size="15.8" fill="#4B4840">gpt-6.1-terra / deepseek-flash · <tspan font-weight="700" fill="#325672">thinking: high</tspan></text>
       
-        <rect x="24" y="206" width="512" height="52" rx="11" fill="#EEF3F7"/>
-        <text x="38" y="228" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">③ 独立 Pi &amp; Codex</text>
-        <text x="38" y="250" class="mono" font-size="14.5" fill="#4B4840">gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text>
+        <rect x="22" y="234" width="534" height="60" rx="12" fill="#EEF3F7"/>
+        <text x="38" y="259" class="font" font-size="18" font-weight="700" fill="#1F1E1B">③ 独立 Pi 与外部 Codex（攻坚重活）</text>
+        <text x="38" y="284" class="mono" font-size="15.8" fill="#4B4840">gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text>
       
-    <rect x="24" y="276" width="512" height="60" rx="10" fill="#F3F0E7"/>
-    <text x="38" y="300" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">usage.sqlite 按 fast_read / conversation /</text><text x="38" y="322" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">pi_session 独立精细记账</text>
-  
+      <rect x="22" y="314" width="534" height="68" rx="11" fill="#F3F0E7"/>
+      <text x="36" y="340" class="mono" font-size="15.8" font-weight="600" fill="#4B4840">usage.sqlite 按 fast_read / conversation /</text><text x="36" y="365" class="mono" font-size="15.8" font-weight="600" fill="#4B4840">pi_session 独立统计 Token 与费用明细</text>
+    
       </g>
     </g>
   

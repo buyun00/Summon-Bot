@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2177" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2308" width="100%" height="100%" style="display:block">
   <defs>
     <style>
-      .font { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .font { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
       .pulse { animation: pulse 2.2s ease-in-out infinite; }
       .flow { stroke-dasharray: 6 5; animation: dash 14s linear infinite; }
@@ -48,17 +48,17 @@
     </g>
   </defs>
 
-  <path d="M 0 0 H 1280 V 2177 H 0 Z" fill="url(#zh2-bg)"/>
-  <path d="M 0.75 0 V 2177 M 1279.25 0 V 2177" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 0 0 H 1280 V 2308 H 0 Z" fill="url(#zh2-bg)"/>
+  <path d="M 0.75 0 V 2308 M 1279.25 0 V 2308" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
 
   <!-- Left Continuous Chat Window -->
-  <g transform="translate(24, 0)" filter="url(#windowShadow)">
-    <path d="M 0 0 H 624 V 2177 H 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 0 V 2177 M 623.25 0 V 2177" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <g transform="translate(20, 0)" filter="url(#windowShadow)">
+    <path d="M 0 0 H 618 V 2308 H 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 0 V 2308 M 617.25 0 V 2308" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
-    <g transform="translate(103, 26)">
+    <g transform="translate(97, 26)">
       <path d="M 20 0 H 483 Q 503 0 503 20 V 139 Q 503 146 496 146 H 20 Q 0 146 0 126 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       
       <rect x="16" y="16" width="471" height="34" rx="7" fill="#D2DFD6"/>
@@ -70,8 +70,8 @@
       <rect x="303" y="154" width="200" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
       <text x="403" y="175.5" text-anchor="middle" class="font" font-size="15.2" fill="#433F37"><tspan font-weight="700" fill="#7A7366">快读摘要 · 3 位伙伴 ▾</tspan></text>
     
-      <rect x="-37" y="194" width="540" height="110" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
-      <text x="-21" y="221" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">关卡策划</tspan> 风暴 +1 勋章，立即更新海岸章表</text><text x="-21" y="249" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan> 仅调数值表，存档代码不变（静默）</text><text x="-21" y="277" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan> 关卡策划跟进平衡反馈（静默）</text>
+      <rect x="-33" y="194" width="536" height="110" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
+      <text x="-17" y="221" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">关卡策划</tspan> 风暴 +1 勋章，立即更新海岸章表</text><text x="-17" y="249" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan> 仅调数值表，存档代码不变（静默）</text><text x="-17" y="277" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan> 关卡策划跟进平衡反馈（静默）</text>
     
     </g>
   
@@ -82,7 +82,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">海岸章 v2 已更新：稳妥线 7 补给 3 勋章；</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">冒险线 3 补给 4 勋章，梯度拉开已置顶。</text>
     </g>
   
-    <g transform="translate(104, 496)">
+    <g transform="translate(98, 496)">
       <path d="M 20 0 H 482 Q 502 0 502 20 V 95 Q 502 102 495 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">舒服了！我刚放了一批 wav 音效，体积偏大</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">得压成 ogg，顺便能对比每次构建包体变化。</text>
       <text x="486" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:01</text>
@@ -113,7 +113,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">太好了，差点重装一遍！已用 cli-ffmpeg 把</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">海岸章音效全转成 ogg 了。</text>
     </g>
   
-    <g transform="translate(74, 1092)">
+    <g transform="translate(68, 1092)">
       <path d="M 20 0 H 512 Q 532 0 532 20 V 95 Q 532 102 525 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">漂亮！主控现在正式开工写海岸章结算与差</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">异 CLI，同时做一份可双击打开的战报 HTML。</text>
       <text x="516" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:03</text>
@@ -127,7 +127,7 @@
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">好，CLI 与离线战报 HTML 已拆成两路后台</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">开工。后台跑代码不卡聊天，先定「雪原章」？</text>
     </g>
   
-    <g transform="translate(80, 1358)">
+    <g transform="translate(74, 1358)">
       <path d="M 20 0 H 506 Q 526 0 526 20 V 95 Q 526 102 519 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">不用干等太爽了！雪原章加“暴风雪”天气，</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">连走两步露天节点冻伤多扣 1 补给，营地清零。</text>
       <text x="510" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:04</text>
@@ -137,11 +137,11 @@
     <g transform="translate(18, 1482)">
       <use href="#zh2-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:04</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 100 Q 582 120 562 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">有意思！我在雪原章表里加 frost_streak</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">计数，进营地重置 0，逼玩家在勋章和保命间取舍。</text>
     </g>
   
-    <g transform="translate(95, 1624)">
+    <g transform="translate(89, 1624)">
       <path d="M 20 0 H 491 Q 511 0 511 20 V 95 Q 511 102 504 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">对了刚想起！清单里 0 字节 blank.png 是有效</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">占位图，战报页要列出，前后大小放两列。</text>
       <text x="495" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:05</text>
@@ -154,68 +154,68 @@
   </g>
 
   <!-- Right Vertical Timeline Axis -->
-  <line x1="724" y1="0" x2="724" y2="2177" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="710" y1="0" x2="710" y2="2308" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
 
   <!-- Smooth Curved Connectors -->
-  <path d="M 632.0 275.0 C 668.0 275.0, 672 245.7, 696 245.7" fill="none" stroke="#477A54" stroke-width="2.4" class="flow"/><path d="M 613.0 859.0 C 668 859.0, 668 745.7, 668 632.4 C 668 519.0, 672 405.7, 696 405.7" fill="none" stroke="#B2634F" stroke-width="2.4" class="flow"/><path d="M 626.0 1290.0 C 668 1290.0, 668 1322.3, 668 1354.5 C 668 1386.8, 672 1419.0, 696 1419.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 632.0 1556.0 C 668.0 1556.0, 672 1554.0, 696 1554.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 632.0 1750.0 C 668.0 1750.0, 672 1938.0, 696 1938.0" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
+  <path d="M 622.0 275.0 C 658.0 275.0, 660 231.7, 682 231.7" fill="none" stroke="#477A54" stroke-width="2.4" class="flow"/><path d="M 609.0 859.0 C 658 859.0, 658 743.4, 658 627.9 C 658 512.3, 662 396.7, 682 396.7" fill="none" stroke="#B2634F" stroke-width="2.4" class="flow"/><path d="M 622.0 1290.0 C 658.0 1290.0, 660 1400.0, 682 1400.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 622.0 1556.0 C 658.0 1556.0, 660 1560.0, 682 1560.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 622.0 1750.0 C 658 1750.0, 658 1805.5, 658 1861.0 C 658 1916.5, 662 1972.0, 682 1972.0" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
 
   <!-- Right Callout Cards -->
   
-    <g transform="translate(696, 81.7)">
-      <circle cx="28" cy="28" r="20" fill="#477A54"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">02</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#2E633D">① 快读静默分流与免 @ 救场</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">4 个 Bot 绝不抢话，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">却能及时拦住弯路</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="296" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#1F1E1B">无关时当场 quiet</tspan>：每句话先跑关闭思考</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  的 ① <tspan font-weight="700" fill="#2E633D">快读层</tspan>。10:00 调勋章不改代码，</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  主控与 EggBot 静默结束，省 90% Token。</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#B2634F">免 @ 主动救场</tspan>：10:02 没人 @总接口 Bot，</text><text x="24" y="162" class="font" font-size="19" fill="#454139">  但它旁听到队友要重下 FFmpeg，立刻主</text><text x="24" y="191" class="font" font-size="19" fill="#454139">  动递上 <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> 拦住弯路！</text>
-    <rect x="24" y="214" width="512" height="60" rx="10" fill="#EBF4EE"/>
-    <text x="38" y="238" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">快读摘要走独立 room-message-summaries，</text><text x="38" y="260" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">绝不污染模型上下文</text>
-  
+    <g transform="translate(682, 81.7)">
+      <circle cx="28" cy="30" r="22" fill="#477A54"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">02</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#2E633D">① 快读静默分流与免 @ 主动救场</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">4 个 Bot 绝不抢话刷屏，却能及时拦弯路</text>
+      <g transform="translate(0, 70)" filter="url(#cardShadow)">
+        <rect width="578" height="374" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#1F1E1B">无关消息当场 quiet 静默</tspan>：群里每发一句话，所有成</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">  员先跑一层关闭思考的 ① <tspan font-weight="700" fill="#2E633D">快读层</tspan>，只把一句话事实</text><text x="22" y="106" class="font" font-size="22" fill="#413D35">  写进气泡下方的折叠摘要条。10:00 调勋章不改代码，</text><text x="22" y="140" class="font" font-size="22" fill="#413D35">  主控与 EggBot 当场静默，既不刷屏又省下 90% Token。</text><text x="22" y="188" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#B2634F">队友走弯路时免 @ 救场</tspan>：10:02 没有任何人 @总接口</text><text x="22" y="222" class="font" font-size="22" fill="#413D35">  Bot，但它旁听到策划准备写脚本重下 FFmpeg，立刻</text><text x="22" y="256" class="font" font-size="22" fill="#413D35">  主动唤醒自己递上 <tspan class="mono" font-weight="700">cli-ffmpeg</tspan>，当场拦住重复安装！</text>
+      <rect x="22" y="284" width="534" height="68" rx="11" fill="#EBF4EE"/>
+      <text x="36" y="310" class="mono" font-size="15.8" font-weight="600" fill="#2E633D">① 快读摘要走独立 room-message-summaries 通道，</text><text x="36" y="335" class="mono" font-size="15.8" font-weight="600" fill="#2E633D">绝不污染主模型上下文，也不触发多余回复</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 1250)">
-      <circle cx="28" cy="28" r="20" fill="#597C91"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">03</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#325672">聊干双层分离（多路并行不卡顿）</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">后台两路 Codex 狂飙，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">前台照常聊第二章</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="372" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">负责聊天的 ② <tspan font-weight="700" fill="#325672">群主对话</tspan> 与干重活的</text><text x="24" y="63" class="font" font-size="19" fill="#454139">③ <tspan font-weight="700" fill="#1F1E1B">后台执行会话</tspan> 完全分离，双路并行：</text>
-        <g transform="translate(24, 84)">
-          <rect width="512" height="88" rx="13" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">后台会话 #1 · 路线存档与差异 CLI</text>
-          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
-          <text x="18" y="76" class="mono" font-size="14.5" fill="#5CD49B">$ node diff.mjs → 实测通过</text>
+    <g transform="translate(682, 1250)">
+      <circle cx="28" cy="30" r="22" fill="#597C91"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">03</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">聊干双层分离（告别多会话人肉编排）</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">后台两路 Codex 狂飙，前台照常聊第二章</text>
+      <g transform="translate(0, 70)" filter="url(#cardShadow)">
+        <rect width="578" height="448" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">负责聊天的 ② <tspan font-weight="700" fill="#325672">群主对话</tspan> 与执行重活的 ③ <tspan font-weight="700" fill="#1F1E1B">后台会话</tspan> 彻底</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">解耦。你只需在一个群里定目标，主控自动拆解并在</text><text x="22" y="106" class="font" font-size="22" fill="#413D35">后台并行跑两路 Codex，前台照常秒回聊雪原章机制：</text>
+        <g transform="translate(22, 130)">
+          <rect width="534" height="98" rx="14" fill="#171C26"/>
+          <circle cx="20" cy="26" r="5.5" fill="#5CD49B" class="pulse"/>
+          <text x="36" y="32" class="font" font-size="18.5" font-weight="700" fill="#F3F4F8">后台会话 #1 · 路线存档与包体差异 CLI</text>
+          <text x="20" y="59" class="mono" font-size="15.2" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
+          <text x="20" y="84" class="mono" font-size="15.8" fill="#5CD49B">$ node diff.mjs → 实测通过 (exit 0)</text>
         </g>
       
-        <g transform="translate(24, 184)">
-          <rect width="512" height="88" rx="13" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">后台会话 #2 · 离线战报 HTML</text>
-          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
-          <text x="18" y="76" class="mono" font-size="14.5" fill="#E6AB55">$ node render.mjs → 正在构建</text>
+        <g transform="translate(22, 240)">
+          <rect width="534" height="98" rx="14" fill="#171C26"/>
+          <circle cx="20" cy="26" r="5.5" fill="#5CD49B" class="pulse"/>
+          <text x="36" y="32" class="font" font-size="18.5" font-weight="700" fill="#F3F4F8">后台会话 #2 · 离线战报 HTML 页面</text>
+          <text x="20" y="59" class="mono" font-size="15.2" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
+          <text x="20" y="84" class="mono" font-size="15.8" fill="#E6AB55">$ node render.mjs → 正在合入补件构建</text>
         </g>
       
-    <rect x="24" y="290" width="512" height="60" rx="10" fill="#EEF3F7"/>
-    <text x="38" y="314" class="mono" font-size="14.2" font-weight="600" fill="#325672">平台硬门禁禁止 ③ 执行器直接刷群</text><text x="38" y="336" class="mono" font-size="14.2" font-weight="600" fill="#325672">(403 room_send_forbidden)</text>
-  
+      <rect x="22" y="358" width="534" height="68" rx="11" fill="#EEF3F7"/>
+      <text x="36" y="384" class="mono" font-size="15.8" font-weight="600" fill="#325672">平台代码硬门禁禁止 ③ 执行器直接向群发消息</text><text x="36" y="409" class="mono" font-size="15.8" font-weight="600" fill="#325672">(403 room_send_forbidden)，群聊永不被日志淹没</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 1764)">
-      <circle cx="28" cy="28" r="20" fill="#2E8548"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">04</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#235E34">① 快读直转与工具群外自修</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">随口补话秒进 Codex，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">工具坏了静默自愈</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="267" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#235E34">补件秒级直转</tspan>：10:05 随口补充由主控</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  ① 快读按原生 <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan> 直塞进在途会话 #2，</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  无需中断重跑。</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#5E4B73">工具换版自修</tspan>：CLI 升级报错时找群外</text><text x="24" y="162" class="font" font-size="19" fill="#454139">  <tspan font-weight="700" fill="#1F1E1B">维护 Bot</tspan> 在线改好适配脚本，绝不刷群。</text>
-    <rect x="24" y="185" width="512" height="60" rx="10" fill="#E8F4EC"/>
-    <text x="38" y="209" class="mono" font-size="14.2" font-weight="600" fill="#235E34">预置「Bot 维护群」汇总 connection_usage，</text><text x="38" y="231" class="mono" font-size="14.2" font-weight="600" fill="#235E34">持续沉淀标准工具方法</text>
-  
+    <g transform="translate(682, 1812)">
+      <circle cx="28" cy="30" r="22" fill="#2E8548"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">04</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#235E34">① 快读直转（FORWARD）与工具群外自修</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">随口补话进后台 Codex，工具坏了静默自愈</text>
+      <g transform="translate(0, 70)" filter="url(#cardShadow)">
+        <rect width="578" height="374" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#235E34">补件秒级直转 (route: forward)</tspan>：10:05 你突然想起要</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">  补 0 字节 blank.png 与两列对比。主控 ① 快读精准</text><text x="22" y="106" class="font" font-size="22" fill="#413D35">  匹配在途会话 #2，无需打断重跑，直接按原生 <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan></text><text x="22" y="140" class="font" font-size="22" fill="#413D35">  把新要求塞进正在运行的 Codex 线程里！</text><text x="22" y="188" class="font" font-size="22" fill="#413D35">• <tspan font-weight="700" fill="#5E4B73">工具换版群外自修</tspan>：后台 CLI 若因升级报错，直接通</text><text x="22" y="222" class="font" font-size="22" fill="#413D35">  知群外 <tspan font-weight="700" fill="#1F1E1B">专责维护 Bot</tspan> 在线改好适配脚本并热更新，</text><text x="22" y="256" class="font" font-size="22" fill="#413D35">  绝不在业务群里刷满报错堆栈，长任务不中断。</text>
+      <rect x="22" y="284" width="534" height="68" rx="11" fill="#E8F4EC"/>
+      <text x="36" y="310" class="mono" font-size="15.8" font-weight="600" fill="#235E34">系统预置「Bot 维护群」每日汇总 connection_usage，</text><text x="36" y="335" class="mono" font-size="15.8" font-weight="600" fill="#235E34">自动复盘工具报错并沉淀可复用的标准方法</text>
+    
       </g>
     </g>
   

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1528" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1612" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
@@ -48,11 +48,11 @@
     </g>
   </defs>
 
-  <path d="M 28 0 H 1252 Q 1280 0 1280 28 V 1528 H 0 V 28 Q 0 0 28 0 Z" fill="url(#en1-bg)"/>
-  <path d="M 0.75 1528 V 28 Q 0.75 0.75 28 0.75 H 1252 Q 1279.25 0.75 1279.25 28 V 1528" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 28 0 H 1252 Q 1280 0 1280 28 V 1612 H 0 V 28 Q 0 0 28 0 Z" fill="url(#en1-bg)"/>
+  <path d="M 0.75 1612 V 28 Q 0.75 0.75 28 0.75 H 1252 Q 1279.25 0.75 1279.25 28 V 1612" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
-      <g transform="translate(30, 32)">
+      <g transform="translate(26, 32)">
         <rect x="0" y="0" width="330" height="34" rx="17" fill="#E5DFD0"/>
         <circle cx="18" cy="17" r="5" fill="#477A54" class="pulse"/>
         <text x="32" y="22.5" class="font" font-size="14.5" font-weight="700" fill="#4B4840">Continuous Room Walkthrough (1 / 3)</text>
@@ -62,42 +62,42 @@
     
 
   <!-- Left Continuous Chat Window -->
-  <g transform="translate(24, 174)" filter="url(#windowShadow)">
-    <path d="M 22 0 H 602 Q 624 0 624 22 V 1354 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 1354 V 22 Q 0.75 0.75 22 0.75 H 602 Q 623.25 0.75 623.25 22 V 1354" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <g transform="translate(20, 174)" filter="url(#windowShadow)">
+    <path d="M 22 0 H 596 Q 618 0 618 22 V 1438 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 1438 V 22 Q 0.75 0.75 22 0.75 H 596 Q 617.25 0.75 617.25 22 V 1438" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
       <g transform="translate(18, 20)">
         <circle cx="20" cy="25" r="19" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
         <rect x="12" y="18" width="16" height="14" rx="2.5" fill="none" stroke="#8A8478" stroke-width="1.6"/>
         <line x1="18" y1="18" x2="18" y2="32" stroke="#8A8478" stroke-width="1.6"/>
 
-        <g transform="translate(152, 0)" filter="url(#pillShadow)">
-          <rect width="284" height="50" rx="25" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
+        <g transform="translate(150, 0)" filter="url(#pillShadow)">
+          <rect width="282" height="50" rx="25" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
           <use href="#en1-av-lead" transform="translate(22.00 16.00) scale(0.07595)"/>
           <use href="#en1-av-egg" transform="translate(40.00 16.00) scale(0.07595)"/>
           <use href="#en1-av-tool" transform="translate(22.00 34.00) scale(0.07595)"/>
           <use href="#en1-av-plan" transform="translate(40.00 34.00) scale(0.07595)"/>
           <text x="58" y="31" class="font" font-size="16" font-weight="700" fill="#1F1E1B">New Game Project</text>
-          <text x="266" y="31" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 peers</text>
+          <text x="264" y="31" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 peers</text>
         </g>
-        <text x="588" y="31" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">Stop Active</text>
+        <text x="582" y="31" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">Stop Active</text>
       </g>
-    <text x="312" y="102" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">Today 09:55</text>
+    <text x="309" y="102" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">Today 09:55</text>
     <g transform="translate(50, 122)">
-      <path d="M 20 0 H 536 Q 556 0 556 20 V 126 Q 556 133 549 133 H 20 Q 0 133 0 113 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <path d="M 20 0 H 530 Q 550 0 550 20 V 126 Q 550 133 543 133 H 20 Q 0 133 0 113 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">I want a lightweight single-player game I can</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">play in short sessions and resume anytime.</text><text x="20" y="98" class="font" font-size="21" fill="#1E221E">What genre and core loop would work well?</text>
-      <text x="540" y="125" text-anchor="end" class="font" font-size="14" fill="#728577">09:55</text>
+      <text x="534" y="125" text-anchor="end" class="font" font-size="14" fill="#728577">09:55</text>
       
     </g>
   
     <g transform="translate(18, 277)">
       <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:55</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 131 Q 588 151 568 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 131 Q 582 151 562 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">How about a node-based maritime expedition?</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Each chapter is a sea map: spend supply to</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">pick routes &amp; earn medals. Combat or resource?</text>
     </g>
   
-    <g transform="translate(83, 450)">
+    <g transform="translate(77, 450)">
       <path d="M 20 0 H 503 Q 523 0 523 20 V 126 Q 523 133 516 133 H 20 Q 0 133 0 113 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Love maritime routes! Skip heavy combat—</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">focus on supply vs. risk/reward choices:</text><text x="20" y="98" class="font" font-size="21" fill="#1E221E">safe routes save supply, storms pay more.</text>
       <text x="507" y="125" text-anchor="end" class="font" font-size="14" fill="#728577">09:56</text>
@@ -107,11 +107,11 @@
     <g transform="translate(18, 605)">
       <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:56</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 100 Q 582 120 562 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Start with Coast (Camp, Storm, Ruin nodes),</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">then add Snowfield. Call it <tspan font-style="italic">Mistport Expedition</tspan>?</text>
     </g>
   
-    <g transform="translate(56, 747)">
+    <g transform="translate(50, 747)">
       <path d="M 20 0 H 530 Q 550 0 550 20 V 95 Q 550 102 543 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E"><tspan font-style="italic">Mistport Expedition</tspan> sounds great! 10 supply</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">(-1/step): Camp +2, Storm -2, Ruin 2 medals.</text>
       <text x="534" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">09:58</text>
@@ -121,7 +121,7 @@
     <g transform="translate(18, 871)">
       <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:58</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 100 Q 582 120 562 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">I will own route settlement &amp; save files.</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Still, chapter balance needs a dedicated owner.</text>
     </g>
   
@@ -141,31 +141,54 @@
     <g transform="translate(18, 1159)">
       <use href="#en1-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:59</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 131 Q 588 151 568 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 131 Q 582 151 562 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Hi all, I own <tspan font-style="italic">Mistport</tspan> economy! With 10 supply:</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Safe leaves 7 supply &amp; 2 medals; Risky (2</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">storms) leaves 3 supply &amp; 2 medals—too low?</text>
     </g>
   
   </g>
 
   <!-- Right Vertical Timeline Axis -->
-  <line x1="724" y1="224" x2="724" y2="1528" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="710" y1="210" x2="710" y2="1612" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
 
   <!-- Smooth Curved Connectors -->
-  <path d="M 612.0 1263.0 C 668.0 1263.0, 672 1277.0, 696 1277.0" fill="none" stroke="#A87932" stroke-width="2.4" class="flow"/>
+  <path d="M 608.0 1263.0 C 658.0 1263.0, 660 1320.0, 682 1320.0" fill="none" stroke="#A87932" stroke-width="2.4" class="flow"/>
 
   <!-- Right Callout Cards -->
   
-    <g transform="translate(696, 1023)">
-      <circle cx="28" cy="28" r="20" fill="#A87932"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">01</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#8C6223">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">From vague chat to an</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">auto-assembled team</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="354" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">Real projects never start with a rigid PRD.</text><text x="24" y="63" class="font" font-size="19" fill="#454139">You began with “a weekend game,” and</text><text x="24" y="92" class="font" font-size="19" fill="#454139"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed three turns to</text><text x="24" y="121" class="font" font-size="19" fill="#454139">shape <tspan font-style="italic">Mistport Expedition</tspan>.</text><text x="24" y="162" class="font" font-size="19" fill="#454139">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> spotted a role gap</text><text x="24" y="191" class="font" font-size="19" fill="#454139">in chapter economy tables. Unprompted,</text><text x="24" y="220" class="font" font-size="19" fill="#454139">it called <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn</text><text x="24" y="249" class="font" font-size="19" fill="#454139"><tspan font-weight="700" fill="#2E633D">@LevelDesigner</tspan> and hand off context.</text>
-    <rect x="24" y="272" width="512" height="60" rx="10" fill="#F6F2E8"/>
-    <text x="38" y="296" class="mono" font-size="14.2" font-weight="600" fill="#785620">EggBot observes room checkpoints →</text><text x="38" y="318" class="mono" font-size="14.2" font-weight="600" fill="#785620">spots role gaps &amp; hands off context</text>
+    <g transform="translate(682, 210)">
+      <circle cx="28" cy="30" r="22" fill="#597C91"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">00</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">AT A GLANCE · THREE-LAYER RUNTIME</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">One clean group chat,</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">three decoupled layers</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="334" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Left is the calm messenger UI you talk in; underneath,</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">every message flows through three clean layers:</text>
+        <rect x="22" y="88" width="534" height="64" rx="12" fill="#EBF4EE" stroke="none"/>
+        <text x="38" y="113" class="font" font-size="17.5" font-weight="700" fill="#2E633D">① Fast-Read (thinking: off · read-only)</text>
+        <text x="38" y="139" class="font" font-size="15.8" fill="#4A453D">Decides in ms to stay quiet, rescue peers, or steer live jobs</text>
+      
+        <rect x="22" y="162" width="534" height="64" rx="12" fill="#EEF3F7" stroke="none"/>
+        <text x="38" y="187" class="font" font-size="17.5" font-weight="700" fill="#325672">② Main Room Chat (thinking: high · peers)</text>
+        <text x="38" y="213" class="font" font-size="15.8" fill="#4A453D">Brainstorms goals, splits tasks, verifies work &amp; saves rules</text>
+      
+        <rect x="22" y="236" width="534" height="64" rx="12" fill="#F6F2E8" stroke="none"/>
+        <text x="38" y="261" class="font" font-size="17.5" font-weight="700" fill="#785620">③ Background Exec (Codex / Pi · parallel)</text>
+        <text x="38" y="287" class="font" font-size="15.8" fill="#4A453D">Runs heavy code &amp; builds in isolation—never spams the room</text>
+      
+      </g>
+    </g>
   
+    <g transform="translate(682, 1043)">
+      <circle cx="28" cy="30" r="22" fill="#A87932"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">01</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#8C6223">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">From vague chat to an</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">auto-assembled team</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="415" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Real projects never start with a rigid upfront PRD.</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">You began with “a weekend game,” and <tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan></text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">brainstormed across three turns to shape the maritime</text><text x="22" y="131" class="font" font-size="20.5" fill="#413D35">loop, supply rules, and <tspan font-style="italic">Mistport Expedition</tspan>.</text><text x="22" y="176" class="font" font-size="20.5" fill="#413D35">By message #6, quietly observing <tspan font-weight="700" fill="#785620">EggBot</tspan> spotted a</text><text x="22" y="207" class="font" font-size="20.5" fill="#413D35">long-term ownership gap in chapter balance tables.</text><text x="22" y="238" class="font" font-size="20.5" fill="#413D35">Without being asked, it called <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn</text><text x="22" y="269" class="font" font-size="20.5" fill="#413D35"><tspan font-weight="700" fill="#2E633D">@LevelDesigner</tspan>, invite her in, and hand off context—</text><text x="22" y="300" class="font" font-size="20.5" fill="#413D35">her very first message already simulates both routes.</text>
+      <rect x="22" y="325" width="534" height="68" rx="11" fill="#F6F2E8"/>
+      <text x="36" y="351" class="mono" font-size="14.8" font-weight="600" fill="#785620">EggBot observes room checkpoints → spots role gaps,</text><text x="36" y="376" class="mono" font-size="14.8" font-weight="600" fill="#785620">spawns specialists &amp; hands off full context</text>
+    
       </g>
     </g>
   

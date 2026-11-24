@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1484" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1492" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
@@ -48,20 +48,20 @@
     </g>
   </defs>
 
-  <path d="M 0 0 H 1280 V 1456 Q 1280 1484 1252 1484 H 28 Q 0 1484 0 1456 Z" fill="url(#en3-bg)"/>
-  <path d="M 0.75 0 V 1456 Q 0.75 1483.25 28 1483.25 H 1252 Q 1279.25 1483.25 1279.25 1456 V 0" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 0 0 H 1280 V 1464 Q 1280 1492 1252 1492 H 28 Q 0 1492 0 1464 Z" fill="url(#en3-bg)"/>
+  <path d="M 0.75 0 V 1464 Q 0.75 1491.25 28 1491.25 H 1252 Q 1279.25 1491.25 1279.25 1464 V 0" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
 
   <!-- Left Continuous Chat Window -->
-  <g transform="translate(24, 0)" filter="url(#windowShadow)">
-    <path d="M 0 0 H 624 V 1428 Q 624 1450 602 1450 H 22 Q 0 1450 0 1428 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 0 V 1428 Q 0.75 1449.25 22 1449.25 H 602 Q 623.25 1449.25 623.25 1428 V 0" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <g transform="translate(20, 0)" filter="url(#windowShadow)">
+    <path d="M 0 0 H 618 V 1436 Q 618 1458 596 1458 H 22 Q 0 1458 0 1436 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 0 V 1436 Q 0.75 1457.25 22 1457.25 H 596 Q 617.25 1457.25 617.25 1436 V 0" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
     <g transform="translate(18, 26)">
       <use href="#en3-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:06</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 146 Q 588 166 568 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 146 Q 582 166 562 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">CLI finished first &amp; passed checks (+30 B).</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Your 0-byte &amp; 2-col steer is in the HTML job:</text>
         <rect x="76" y="112" width="155" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
         <text x="153.5" y="134.5" text-anchor="middle" class="font" font-size="15.5" font-weight="600" fill="#3F3C35">📄 report.json</text>
@@ -82,7 +82,7 @@
         <text x="14" y="21" class="mono" font-size="13" fill="#7D7669">sh</text>
         <text x="456" y="21" text-anchor="end" class="font" font-size="13" fill="#7D7669">Copy</text>
         <line x1="0" y1="30" x2="470" y2="30" stroke="#D7D1C3"/>
-        <text x="14" y="52" class="mono" font-size="13.8" fill="#3B3831">node diff.mjs before.json after.json &gt; report.json</text><text x="14" y="76" class="mono" font-size="13.8" fill="#3B3831">node render.mjs report.json report.html</text>
+        <text x="14" y="52" class="mono" font-size="13.6" fill="#3B3831">node diff.mjs before.json after.json &gt; report.json</text><text x="14" y="76" class="mono" font-size="13.6" fill="#3B3831">node render.mjs report.json report.html</text>
       </g>
     
         <rect x="76" y="266" width="155" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
@@ -93,24 +93,24 @@
       <text x="76" y="327" class="font" font-size="14.8" fill="#8A8478">↩ Reply　　⧉ Copy　　📌 Pin</text>
     </g>
   
-    <g transform="translate(54, 584)">
-      <path d="M 20 0 H 532 Q 552 0 552 20 V 95 Q 552 102 545 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+    <g transform="translate(50, 584)">
+      <path d="M 20 0 H 530 Q 550 0 550 20 V 95 Q 550 102 543 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Looks super clear! Add a path filter and a</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">“Removed only” toggle; drop the row drawer.</text>
-      <text x="536" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:08</text>
+      <text x="534" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:08</text>
       
     </g>
   
     <g transform="translate(18, 708)">
       <use href="#en3-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:09</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 146 Q 588 166 568 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 146 Q 582 166 562 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Re-bundled report.html: removed row drawer</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">and added live filter + “Removed only” toggle:</text>
         <rect x="76" y="112" width="155" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
         <text x="153.5" y="134.5" text-anchor="middle" class="font" font-size="15.5" font-weight="600" fill="#3F3C35">📄 report.html</text>
       
     </g>
   
-    <g transform="translate(66, 896)">
+    <g transform="translate(60, 896)">
       <path d="M 20 0 H 520 Q 540 0 540 20 V 95 Q 540 102 533 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Perfect! Keep this exact report format for</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">all future chapters here. On to Snowfield!</text>
       <text x="524" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:10</text>
@@ -127,7 +127,7 @@
     <g transform="translate(18, 1162)">
       <use href="#en3-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
       <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:10</tspan></text>
-      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 100 Q 582 120 562 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Drafted Snowfield v1 with frost_streak across</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">3 campfire-branching routes—posting now!</text>
     </g>
   
@@ -136,62 +136,62 @@
         <text x="20" y="16" class="font" font-size="15.5" font-weight="600" fill="#7D7669">Executions (3)</text>
       </g>
       <g transform="translate(22, 1354)" filter="url(#pillShadow)">
-        <rect width="580" height="60" rx="30" fill="#FFFDF9" stroke="#DFD9CC" stroke-width="1.3"/>
+        <rect width="574" height="60" rx="30" fill="#FFFDF9" stroke="#DFD9CC" stroke-width="1.3"/>
         <circle cx="30" cy="30" r="19" fill="#F2EFE7" stroke="#E5E0D5"/>
         <text x="30" y="37" text-anchor="middle" class="font" font-size="22" fill="#4B4840">+</text>
         <text x="64" y="36" class="font" font-size="16.5" fill="#B0A99B">Message…</text>
-        <text x="508" y="36" class="font" font-size="18" fill="#8A8478">@</text>
-        <circle cx="550" cy="30" r="19" fill="#23211E"/>
-        <text x="550" y="36" text-anchor="middle" class="font" font-size="16" font-weight="700" fill="#FFF">↑</text>
+        <text x="502" y="36" class="font" font-size="18" fill="#8A8478">@</text>
+        <circle cx="544" cy="30" r="19" fill="#23211E"/>
+        <text x="544" y="36" text-anchor="middle" class="font" font-size="16" font-weight="700" fill="#FFF">↑</text>
       </g>
     
   </g>
 
   <!-- Right Vertical Timeline Axis -->
-  <line x1="724" y1="0" x2="724" y2="1414" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+  <line x1="710" y1="0" x2="710" y2="1422" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
 
   <!-- Smooth Curved Connectors -->
-  <path d="M 608.0 402.0 C 668.0 402.0, 672 476.0, 696 476.0" fill="none" stroke="#4B4840" stroke-width="2.4" class="flow"/><path d="M 616.0 1094.0 C 668 1094.0, 668 980.8, 668 867.5 C 668 754.3, 672 641.0, 696 641.0" fill="none" stroke="#785620" stroke-width="2.4" class="flow"/>
+  <path d="M 604.0 402.0 C 658.0 402.0, 660 484.0, 682 484.0" fill="none" stroke="#4B4840" stroke-width="2.4" class="flow"/><path d="M 612.0 1094.0 C 658 1094.0, 658 996.5, 658 899.0 C 658 801.5, 662 704.0, 682 704.0" fill="none" stroke="#785620" stroke-width="2.4" class="flow"/>
 
   <!-- Right Callout Cards -->
   
-    <g transform="translate(696, 302)">
-      <circle cx="28" cy="28" r="20" fill="#23211E"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">05</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#4B4840">STAGED DELIVERY, 90%+ CACHE &amp; MEMORY</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Deliver as ready, iterate</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">fast &amp; save room rules</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="308" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#1F1E1B">Staged verified delivery</tspan>: CLI delivers at</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  10:06; steered HTML quotes 10:03 at 10:07.</text><text x="24" y="104" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#2E633D">90%+ cache hit fork</tspan>: Mid-turn tools run</text><text x="24" y="133" class="font" font-size="19" fill="#454139">  A→B→C, collapsing cleanly to A→C→D.</text><text x="24" y="174" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#785620">5-Layer Persona &amp; Index</tspan>: 10:10 room rule</text><text x="24" y="203" class="font" font-size="19" fill="#454139">  persists in material_index_ref forever.</text>
-    <rect x="24" y="226" width="512" height="60" rx="10" fill="#F3F0E7"/>
-    <text x="38" y="250" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">Hard Guardrails &gt; Turn &gt; Room &gt;</text><text x="38" y="272" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">Individual &gt; 17 Built-in Roles</text>
-  
+    <g transform="translate(682, 302)">
+      <circle cx="28" cy="30" r="22" fill="#23211E"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">05</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#4B4840">STAGED DELIVERY, 90%+ CACHE &amp; MEMORY</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Deliver as ready, iterate</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">fast &amp; save room rules</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="429" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#1F1E1B">Staged verified delivery</tspan>: CLI delivers report.json at</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">  10:06; steered HTML finishes at 10:07 quoting 10:03.</text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">  Playtest UI tweaks re-bundle in seconds.</text><text x="22" y="145" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#2E633D">Stable Trunk + Private Fork (90%+ cache)</tspan>: Mid-turn</text><text x="22" y="176" class="font" font-size="20.5" fill="#413D35">  tools run A→B→C and collapse cleanly to public</text><text x="22" y="207" class="font" font-size="20.5" fill="#413D35">  trunk A→C→D on the next turn for speed &amp; savings.</text><text x="22" y="252" class="font" font-size="20.5" fill="#413D35">• <tspan font-weight="700" fill="#785620">5-Layer Persona &amp; Material Index</tspan>: Your 10:10 rule</text><text x="22" y="283" class="font" font-size="20.5" fill="#413D35">  persists into <tspan class="mono">material_index_ref</tspan> (applies_to: room),</text><text x="22" y="314" class="font" font-size="20.5" fill="#413D35">  surviving long threads and history compaction.</text>
+      <rect x="22" y="339" width="534" height="68" rx="11" fill="#F3F0E7"/>
+      <text x="36" y="365" class="mono" font-size="14.8" font-weight="600" fill="#4B4840">Priority: Hard Guardrails &gt; Turn &gt; Room</text><text x="36" y="390" class="mono" font-size="14.8" font-weight="600" fill="#4B4840">&gt; Individual Persona &gt; 17 Built-in Roles</text>
+    
       </g>
     </g>
   
-    <g transform="translate(696, 914)">
-      <circle cx="28" cy="28" r="20" fill="#395B75"/>
-      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">06</text>
-      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#325672">PURPOSE-BASED MODEL ROUTING (P2)</text>
-      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Right model &amp; thinking</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">effort for every stage</text>
-      <g transform="translate(0, 94)" filter="url(#cardShadow)">
-        <rect width="560" height="358" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="24" y="34" class="font" font-size="19" fill="#454139">Reuse your existing local Codex, Grok, or</text><text x="24" y="63" class="font" font-size="19" fill="#454139">Claude subscriptions and DeepSeek API:</text>
-        <rect x="24" y="82" width="512" height="52" rx="11" fill="#F6F4EE"/>
-        <text x="38" y="104" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">① Fast-Read Triage</text>
-        <text x="38" y="126" class="mono" font-size="14.5" fill="#4B4840">gpt-6.1-terra / deepseek · <tspan font-weight="700" fill="#2E633D">thinking: off</tspan></text>
+    <g transform="translate(682, 924)">
+      <circle cx="28" cy="30" r="22" fill="#395B75"/>
+      <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">06</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">PURPOSE-BASED MODEL ROUTING (P2)</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Right model &amp; thinking</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">effort for every stage</text>
+      <g transform="translate(0, 102)" filter="url(#cardShadow)">
+        <rect width="578" height="398" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Reuse your existing local Codex, Grok, or Claude</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">subscriptions and DeepSeek API by task tier:</text>
+        <rect x="22" y="88" width="534" height="60" rx="12" fill="#F6F4EE"/>
+        <text x="38" y="113" class="font" font-size="18" font-weight="700" fill="#1F1E1B">① Fast-Read Triage (instant &amp; cheap)</text>
+        <text x="38" y="138" class="mono" font-size="15.8" fill="#4B4840">gpt-6.1-terra / deepseek-flash · <tspan font-weight="700" fill="#2E633D">thinking: off</tspan></text>
       
-        <rect x="24" y="144" width="512" height="52" rx="11" fill="#F6F4EE"/>
-        <text x="38" y="166" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">② Main Room Chat</text>
-        <text x="38" y="188" class="mono" font-size="14.5" fill="#4B4840">gpt-6.1-terra / deepseek · <tspan font-weight="700" fill="#325672">thinking: high</tspan></text>
+        <rect x="22" y="158" width="534" height="60" rx="12" fill="#F6F4EE"/>
+        <text x="38" y="183" class="font" font-size="18" font-weight="700" fill="#1F1E1B">② Main Room Chat &amp; Review (sharp)</text>
+        <text x="38" y="208" class="mono" font-size="15.8" fill="#4B4840">gpt-6.1-terra / deepseek-flash · <tspan font-weight="700" fill="#325672">thinking: high</tspan></text>
       
-        <rect x="24" y="206" width="512" height="52" rx="11" fill="#EEF3F7"/>
-        <text x="38" y="228" class="font" font-size="15.5" font-weight="700" fill="#1F1E1B">③ Pi &amp; Codex Exec</text>
-        <text x="38" y="250" class="mono" font-size="14.5" fill="#4B4840">gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text>
+        <rect x="22" y="228" width="534" height="60" rx="12" fill="#EEF3F7"/>
+        <text x="38" y="253" class="font" font-size="18" font-weight="700" fill="#1F1E1B">③ Standalone Pi &amp; Codex (heavy work)</text>
+        <text x="38" y="278" class="mono" font-size="15.8" fill="#4B4840">gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text>
       
-    <rect x="24" y="276" width="512" height="60" rx="10" fill="#F3F0E7"/>
-    <text x="38" y="300" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">usage.sqlite tracks fast_read /</text><text x="38" y="322" class="mono" font-size="14.2" font-weight="600" fill="#4B4840">conversation / pi_session separately</text>
-  
+      <rect x="22" y="308" width="534" height="68" rx="11" fill="#F3F0E7"/>
+      <text x="36" y="334" class="mono" font-size="14.8" font-weight="600" fill="#4B4840">usage.sqlite tracks fast_read / conversation /</text><text x="36" y="359" class="mono" font-size="14.8" font-weight="600" fill="#4B4840">pi_session token &amp; cost ledgers separately</text>
+    
       </g>
     </g>
   
