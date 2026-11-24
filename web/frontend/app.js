@@ -6,7 +6,7 @@ const $ = (selector, root = document) => {
 };
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.20';
+const UI_BUILD = '2026.11.24';
 const themePreferenceKey = 'summon:theme:v1';
 const systemDarkMedia = matchMedia('(prefers-color-scheme: dark)');
 let themePreference = (() => {
@@ -115,19 +115,208 @@ function syncDisplaySettingsControls() {
   if (!$('.display-settings')) return;
   const settings = displayPreferences[displayMode()];
   for (const key of ['zoom', 'font']) {
-    $(`#display-${key}`).value = settings[key];
-    $(`#display-${key}-value`).textContent = `${settings[key]}%`;
+    const input = $(`#display-${key}`), output = $(`#display-${key}-value`);
+    if (input) input.value = settings[key];
+    if (output) output.textContent = `${settings[key]}%`;
   }
-  $('#display-device').textContent = displayMode() === 'desktop' ? '电脑显示设置' : '手机显示设置';
-  $('#display-save-status').textContent = displaySaved ? '即时生效并自动保存到当前浏览器。电脑和手机分别设置。' : '已在当前页面生效；浏览器暂不允许保存，刷新后会恢复默认。';
+  const deviceEl = $('#display-device');
+  if (deviceEl) deviceEl.textContent = displayMode() === 'desktop' ? '电脑显示' : '手机显示';
+  const statusEl = $('#display-save-status');
+  if (statusEl) statusEl.textContent = displaySaved ? '即时生效并自动保存到本机（电脑和手机分别保存）' : '当前页面已生效；浏览器暂不允许保存，刷新后会恢复默认';
+  for (const button of $$('[data-action="display-preset"]')) {
+    const active = Number(button.dataset.zoom) === settings.zoom;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
 }
-function openDisplaySettings() {
-  displayDiagnosticSnapshot = captureDisplayDiagnostics();
-  ui.menu = null; renderTopbar();
-  const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.remove('create-bot-modal');
-  $('#modal-content').innerHTML = `<div class="display-settings"><div class="modal-header"><div><h2 id="display-device">显示设置</h2><p id="display-save-status"></p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 22)}</button></div><div class="display-settings-body"><div class="display-setting"><div class="display-setting-label"><span>外观材质</span></div><p>浅色采用暖棉纸片风，暗色切换磨砂类玻璃与扁平彩透头像。</p><div class="display-theme-bar" role="group" aria-label="外观材质"><button type="button" data-action="set-theme" data-theme="system">跟随系统</button><button type="button" data-action="set-theme" data-theme="light">☀ 浅色纸片</button><button type="button" data-action="set-theme" data-theme="dark">☾ 暗色玻璃</button></div></div><div class="display-setting"><div class="display-setting-label"><label for="display-zoom">页面缩放</label><output id="display-zoom-value" for="display-zoom"></output></div><p>一起调整头像、控件、间距与文字的大小。</p><input id="display-zoom" type="range" min="50" max="160" step="1" aria-label="页面缩放"><div class="display-presets"><button data-action="display-preset" data-zoom="85">紧凑 85%</button><button data-action="display-preset" data-zoom="100">默认 100%</button><button data-action="display-preset" data-zoom="115">宽松 115%</button></div></div><div class="display-setting"><div class="display-setting-label"><label for="display-font">文字大小</label><output id="display-font-value" for="display-font"></output></div><p>全站统一调整聊天、统计、管理页面及操作记录的文字大小。</p><input id="display-font" type="range" min="90" max="160" step="5" aria-label="文字大小"><div class="display-range-labels"><span>较小 90%</span><span>较大 160%</span></div></div><div class="display-text-preview"><strong>显示效果预览</strong><p>聊天内容、工具调用与操作结果</p><code>Bot 正在读取文件…</code><small class="display-build">界面版本：${UI_BUILD}</small><button class="text-button" data-action="copy-display-diagnostics">复制显示诊断</button></div></div><div class="modal-footer"><button class="secondary-button" data-action="display-reset">恢复默认</button><button class="primary-button" data-action="close-modal">完成</button></div></div>`;
-  syncDisplaySettingsControls(); applyTheme(); showModal(modal);
+const SETTINGS_TABS = [
+  { id: 'general', title: '通用', icon: 'settings' },
+  { id: 'connection', title: '连接', icon: 'link' },
+  { id: 'updates', title: '更新', icon: 'install' },
+];
+function renderSettingsPanelBody(tab) {
+  const connected = ui.streamConnected && ui.protocolReady;
+  if (tab === 'general') {
+    const hostLabel = location.host || location.origin;
+    return `<div class="settings-section">
+      <h3 class="settings-group-label">账户</h3>
+      <div class="settings-card">
+        <div class="settings-row settings-account-row">
+          <div class="settings-account-main">
+            ${avatar('user', 42)}
+            <div class="settings-row-copy">
+              <strong>${esc(ownerName())}</strong>
+              <small><i class="settings-status-dot ${connected ? 'is-ok' : 'is-warn'}" aria-hidden="true"></i>${connected ? '已连接' : '连接中断'} · ${esc(hostLabel)}</small>
+            </div>
+          </div>
+          ${!connected ? '<button type="button" class="secondary-button small-button" data-action="refresh">重新连接</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="settings-section display-settings">
+      <div class="settings-group-head">
+        <h3 class="settings-group-label">外观与显示</h3>
+        <span id="display-device" class="settings-group-badge"></span>
+      </div>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>主题</strong>
+            <small>浅色采用暖棉纸片风，暗色切换磨砂类玻璃</small>
+          </div>
+          <div class="display-theme-bar" role="group" aria-label="外观材质">
+            <button type="button" data-action="set-theme" data-theme="system">跟随系统</button>
+            <button type="button" data-action="set-theme" data-theme="light">浅色</button>
+            <button type="button" data-action="set-theme" data-theme="dark">暗色</button>
+          </div>
+        </div>
+        <div class="settings-row settings-row-stack">
+          <div class="settings-row-head">
+            <div class="settings-row-copy">
+              <label for="display-zoom"><strong>页面缩放</strong></label>
+              <small>一起调整头像、控件、间距与文字的大小</small>
+            </div>
+            <div class="settings-zoom-meta">
+              <output id="display-zoom-value" for="display-zoom"></output>
+              <div class="display-presets">
+                <button type="button" data-action="display-preset" data-zoom="85">85%</button>
+                <button type="button" data-action="display-preset" data-zoom="100">100%</button>
+                <button type="button" data-action="display-preset" data-zoom="115">115%</button>
+              </div>
+            </div>
+          </div>
+          <input id="display-zoom" class="settings-range" type="range" min="50" max="160" step="1" aria-label="页面缩放">
+        </div>
+        <div class="settings-row settings-row-stack">
+          <div class="settings-row-head">
+            <div class="settings-row-copy">
+              <label for="display-font"><strong>文字大小</strong></label>
+              <small>统一调整聊天与界面的文字尺寸</small>
+            </div>
+            <output id="display-font-value" for="display-font"></output>
+          </div>
+          <input id="display-font" class="settings-range" type="range" min="90" max="160" step="5" aria-label="文字大小">
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>预览效果</strong>
+            <small id="display-save-status"></small>
+          </div>
+          <button type="button" class="secondary-button small-button" data-action="display-reset">恢复默认</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  if (tab === 'connection') {
+    const isDesktop = Boolean(window.SummonDesktop?.openConnectionSettings);
+    const localInstance = document.documentElement.dataset.localInstance === 'true' || location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+    const summary = globalThis.SummonModels?.current?.();
+    const chatModel = summary?.chat?.configured === false ? '尚未配置' : [summary?.chat?.name, summary?.chat?.model].filter(Boolean).join(' · ') || '点击查看';
+    const workEngine = summary?.work?.enabled === false || summary?.work?.configured === false ? '待接入' : [summary?.work?.name, summary?.work?.model].filter(Boolean).join(' · ') || '点击查看';
+    const connCount = (state.connections || []).length;
+    const wsCount = (state.workspaces || []).length;
+    return `<div class="settings-section">
+      <h3 class="settings-group-label">实例</h3>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>${isDesktop ? (localInstance ? '本机正式实例' : '远程实例') : '当前服务入口'}</strong>
+            <small><i class="settings-status-dot ${connected ? 'is-ok' : 'is-warn'}" aria-hidden="true"></i>${esc(location.origin)} · ${connected ? '实时连接正常' : '连接中断'}</small>
+          </div>
+          <div class="settings-row-actions">
+            <button type="button" class="secondary-button small-button" data-action="refresh">重新连接</button>
+            ${isDesktop ? '<button type="button" class="primary-button small-button" data-action="desktop-connection">切换实例</button>' : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3 class="settings-group-label">模型与执行</h3>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>默认聊天模型</strong>
+            <small>${esc(chatModel)}</small>
+          </div>
+          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="models">配置</button>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>工作引擎</strong>
+            <small>${esc(workEngine)}</small>
+          </div>
+          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="models">配置</button>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>执行连接与目录</strong>
+            <small>${connCount} 个执行连接 · ${wsCount} 个执行目录</small>
+          </div>
+          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="connections">管理</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<div class="settings-section">
+    <h3 class="settings-group-label">客户端下载与更新</h3>
+    <div class="settings-card settings-card-clients">
+      <div class="client-release-content" id="client-release-content"></div>
+    </div>
+  </div>
+  <div class="settings-section">
+    <h3 class="settings-group-label">网页界面与诊断</h3>
+    <div class="settings-card">
+      <div class="settings-row">
+        <div class="settings-row-copy">
+          <strong>网页界面</strong>
+          <small>版本 ${esc(UI_BUILD)} · 服务端更新后重新加载生效</small>
+        </div>
+        <button type="button" class="secondary-button small-button" data-action="update-app">重新加载</button>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-copy">
+          <strong>显示诊断信息</strong>
+          <small>复制视口、缩放与布局参数用于排查界面问题</small>
+        </div>
+        <button type="button" class="secondary-button small-button" data-action="copy-display-diagnostics">复制诊断</button>
+      </div>
+    </div>
+  </div>`;
 }
+function renderSettingsModalShell(tab = ui.settingsTab || 'general') {
+  const current = SETTINGS_TABS.find(item => item.id === tab) || SETTINGS_TABS[0];
+  ui.settingsTab = current.id;
+  return `<div class="settings-shell">
+    <nav class="settings-nav" aria-label="设置分类">
+      ${SETTINGS_TABS.map(item => `<button type="button" class="settings-nav-item ${item.id === current.id ? 'active' : ''}" data-action="settings-tab" data-tab="${item.id}" aria-current="${item.id === current.id ? 'page' : 'false'}">${icon(item.icon, 17)}<span>${item.title}</span></button>`).join('')}
+    </nav>
+    <div class="settings-main">
+      <header class="settings-main-header">
+        <h2>${current.title}</h2>
+        <button type="button" class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 19)}</button>
+      </header>
+      <div class="settings-main-body">${renderSettingsPanelBody(current.id)}</div>
+    </div>
+  </div>`;
+}
+function openSettingsModal(tab = 'general', releasesUrl = ui.releasesUrl) {
+  const modal = $('#modal');
+  const alreadySettings = modal.open && modal.classList.contains('settings-modal');
+  if (!alreadySettings) {
+    displayDiagnosticSnapshot = captureDisplayDiagnostics();
+    captureMotion($('#modal-content'));
+  }
+  ui.menu = null;
+  renderTopbar();
+  modal.classList.remove('create-bot-modal');
+  modal.classList.add('settings-modal');
+  $('#modal-content').innerHTML = renderSettingsModalShell(tab);
+  if (ui.settingsTab === 'general') { syncDisplaySettingsControls(); applyTheme(); }
+  if (ui.settingsTab === 'updates') window.SummonClients?.mount?.(releasesUrl || ui.releasesUrl);
+  if (!modal.open) showModal(modal);
+}
+window.SummonOpenSettings = openSettingsModal;
+function openDisplaySettings() { return openSettingsModal('general'); }
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icons = {
   chat: '<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z"/>',
@@ -212,7 +401,7 @@ const resourceLabels = {
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
+  view:'chat', lastPanelView:'members', settingsTab:'general', roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomActivities:[], roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -1053,7 +1242,7 @@ async function restoreCachedState() {
 
 async function navigate(view) {
   ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view;
-  if (view !== 'chat') ui.creatingRoom = false;
+  if (view !== 'chat') { ui.creatingRoom = false; ui.lastPanelView = view; }
   if (view === 'chat' && !ui.creatingRoom) await restoreRoomMessages(ui.roomId);
   render();
   await loadCurrent();
@@ -1954,10 +2143,14 @@ async function act(action, element) {
   if (action === 'navigate') return navigate(element.dataset.view);
   if (action === 'refresh') return refresh(true);
   if (action === 'close-modal') return closeModal();
-  if (action === 'client-downloads') return window.SummonClients?.open(ui.releasesUrl);
+  if (action === 'open-settings') return openSettingsModal(element.dataset.tab || 'general');
+  if (action === 'settings-tab') return openSettingsModal(element.dataset.tab || 'general');
+  if (action === 'settings-navigate') { await closeModal(); return navigate(element.dataset.view); }
+  if (action === 'open-panel') return navigate(ui.lastPanelView || 'members');
+  if (action === 'client-downloads') return openSettingsModal('updates', ui.releasesUrl);
   if (action === 'desktop-connection') return window.SummonDesktop?.openConnectionSettings();
   if (action === 'update-app') { await persistClientSession(); location.reload(); return; }
-  if (action === 'display-settings') return openDisplaySettings();
+  if (action === 'display-settings') return openSettingsModal('general');
   if (action === 'copy-display-diagnostics') {
     await navigator.clipboard.writeText(JSON.stringify({ beforeSettings:displayDiagnosticSnapshot,current:captureDisplayDiagnostics() },null,2));
     return toast('显示诊断已复制');
@@ -2185,7 +2378,7 @@ function botOptions() { return state.bots.map(bot => ({ value: bot.id, label: bo
 function openModal(title, description, content, save, submitLabel = '保存') {
   const modal = $('#modal');
   captureMotion($('#modal-content'));
-  modal.classList.remove('create-bot-modal'); ui.menu = null; renderTopbar();
+  modal.classList.remove('create-bot-modal', 'settings-modal'); ui.menu = null; renderTopbar();
   const header = `<div class="modal-header"><div><h2>${esc(title)}</h2>${description ? `<p>${esc(description)}</p>` : ''}</div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close',17)}</button></div>`;
   $('#modal-content').innerHTML = header + (save ? `<form id="modal-form" class="modal-form">${content}<div class="form-error" role="alert"></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button class="primary-button" type="submit">${esc(submitLabel)}</button></div></form>`
     : `<div class="modal-form read-modal">${content}</div>`);
@@ -2757,11 +2950,8 @@ function renderTopbar() {
     }
   }
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
-    ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
-    ${window.SummonDesktop?.openConnectionSettings ? `<button data-action="desktop-connection">${icon('computer', 19)}实例连接</button>` : ''}
-    <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
-    <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
-    <button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
+    <button data-action="open-panel">${icon('layers', 18)}<span>面板</span></button>
+    <button data-action="open-settings">${icon('settings', 18)}<span>设置</span></button></div>` : '';
   const connected = ui.streamConnected && ui.protocolReady;
   const creatingActive = ui.view === 'chat' && ui.creatingRoom;
   const html = `<div class="sidebar-toolbar"><summon-wordmark></summon-wordmark>
@@ -2774,7 +2964,7 @@ function renderTopbar() {
       <div class="rail-quick-actions">
         <button type="button" class="rail-action-btn ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 20)}</button>
         <button type="button" class="rail-action-btn ${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members" title="团队成员" aria-label="团队成员">${icon('people', 18)}</button>
-        <button type="button" class="rail-action-btn" data-action="display-settings" title="显示设置" aria-label="显示设置">${icon('settings', 18)}</button>
+        <button type="button" class="rail-action-btn" data-action="open-settings" title="设置" aria-label="设置">${icon('settings', 18)}</button>
       </div>
       <nav class="sidebar-shortcuts" aria-label="常用功能">
       <button class="${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members">${icon('people', 17)}<span>成员</span></button>
@@ -3929,7 +4119,7 @@ function openCreateBot() {
   ui.avatarCustomOpen = false;
   ui.avatarDraft = window.SummonAvatars.normalize({ shape: 'cercle',color:'#7D824B' });
   ui.menu = null; render();
-  const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.add('create-bot-modal');
+  const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.remove('settings-modal'); modal.classList.add('create-bot-modal');
   $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><button type="button" id="create-avatar-preview" class="create-avatar-preview" data-action="avatar-greet" aria-label="和 Bot 打招呼">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true, followPointer: true })}</button><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
   $('#modal-form').onsubmit = async event => {
     event.preventDefault(); const form = event.target, button = $('#create-bot-submit', form), name = $('#create-bot-name', form).value.trim(), avatar = { ...ui.avatarDraft }; if (!name) return;
