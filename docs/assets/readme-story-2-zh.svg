@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2200" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1776" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
@@ -52,8 +52,8 @@
     </g>
   </defs>
 
-  <path d="M 0 0 H 1280 V 2172 Q 1280 2200 1252 2200 H 28 Q 0 2200 0 2172 Z" fill="url(#pageBg2)"/>
-  <path d="M 0.75 0 V 2172 Q 0.75 2199.25 28 2199.25 H 1252 Q 1279.25 2199.25 1279.25 2172 V 0" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 0 0 H 1280 V 1748 Q 1280 1776 1252 1776 H 28 Q 0 1776 0 1748 Z" fill="url(#pageBg2)"/>
+  <path d="M 0.75 0 V 1748 Q 0.75 1775.25 28 1775.25 H 1252 Q 1279.25 1775.25 1279.25 1748 V 0" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   <g transform="translate(42, 0)" filter="url(#windowShadow)">
     <path d="M 0 0 H 650 V 1706 Q 650 1730 626 1730 H 24 Q 0 1730 0 1706 Z" fill="#F8F6F1"/>
@@ -260,72 +260,6 @@
         <text x="14" y="96" class="mono" font-size="11.2" fill="#1F1E1B">③ 独立 Pi 与外部 Codex：gpt-6.2-sol / astra · <tspan font-weight="700" fill="#A87932">xhigh / max</tspan></text></g>
       <rect x="22" y="171" width="464" height="28" rx="8" fill="#F3F0E7"/>
       <text x="34" y="189" class="mono" font-size="10.8" fill="#4B4840">usage.sqlite 按 fast_read / conversation / pi_session 独立记账</text>
-    </g>
-  </g>
-
-  <g transform="translate(46, 1786)">
-    <text x="0" y="0" class="font" font-size="23" font-weight="800" fill="#1F1E1B">为什么选 Summon Bot？（对比直接用 Codex 与主流 Agent 产品）</text>
-
-    <g transform="translate(0, 24)">
-      <rect width="282" height="168" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
-      <rect x="20" y="18" width="176" height="24" rx="12" fill="#EEF3F7"/>
-      <text x="108" y="34" text-anchor="middle" class="font" font-size="11.5" font-weight="700" fill="#395B75">🆚 直接用 Codex / Claude</text>
-      <text x="20" y="66" class="font" font-size="15.5" font-weight="800" fill="#1F1E1B">告别单线程终端干等</text>
-      <text x="20" y="92" class="font" font-size="13" fill="#5C564B">不是取代 Codex，而是把 Codex</text>
-      <text x="20" y="112" class="font" font-size="13" fill="#5C564B">作为后台 ③ 引擎被群主控调度。</text>
-      <text x="20" y="132" class="font" font-size="13" fill="#5C564B">前台群聊秒回、随口补件直转，</text>
-      <text x="20" y="152" class="font" font-size="13" fill="#5C564B">多路重活同时跑。</text>
-    </g>
-
-    <g transform="translate(302, 24)">
-      <rect width="282" height="168" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
-      <rect x="20" y="18" width="144" height="24" rx="12" fill="#F6F2E8"/>
-      <text x="92" y="34" text-anchor="middle" class="font" font-size="11.5" font-weight="700" fill="#785620">🆚 Grokbot (xAI)</text>
-      <text x="20" y="66" class="font" font-size="15.5" font-weight="800" fill="#1F1E1B">100% 本地自托管主权</text>
-      <text x="20" y="92" class="font" font-size="13" fill="#5C564B">不绑死单一厂商的高价云电脑。</text>
-      <text x="20" y="112" class="font" font-size="13" fill="#5C564B">跑在你自己的主机上，直接读写</text>
-      <text x="20" y="132" class="font" font-size="13" fill="#5C564B">本地工作区，自由混搭本机已有</text>
-      <text x="20" y="152" class="font" font-size="13" fill="#5C564B">Codex/Grok 订阅与 DeepSeek。</text>
-    </g>
-
-    <g transform="translate(604, 24)">
-      <rect width="282" height="168" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
-      <rect x="20" y="18" width="166" height="24" rx="12" fill="#EBF4EE"/>
-      <text x="103" y="34" text-anchor="middle" class="font" font-size="11.5" font-weight="700" fill="#2E633D">🆚 OpenBot / Hermes</text>
-      <text x="20" y="66" class="font" font-size="15.5" font-weight="800" fill="#1F1E1B">内核级分流与原生四端</text>
-      <text x="20" y="92" class="font" font-size="13" fill="#5C564B">不止于提示词交接或借壳 IM。</text>
-      <text x="20" y="112" class="font" font-size="13" fill="#5C564B">从运行时实现 ① 快读静默分流、</text>
-      <text x="20" y="132" class="font" font-size="13" fill="#5C564B">EggBot 自动建制、CLI 脚本自修</text>
-      <text x="20" y="152" class="font" font-size="13" fill="#5C564B">与自带摘要条的全原生四端。</text>
-    </g>
-
-    <g transform="translate(906, 24)">
-      <rect width="282" height="168" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
-      <rect x="20" y="18" width="164" height="24" rx="12" fill="#F4F1FA"/>
-      <text x="102" y="34" text-anchor="middle" class="font" font-size="11.5" font-weight="700" fill="#5E4B73">🆚 DSH SuperAgent</text>
-      <text x="20" y="66" class="font" font-size="15.5" font-weight="800" fill="#1F1E1B">去中心化同伴 + 硬门禁</text>
-      <text x="20" y="92" class="font" font-size="13" fill="#5C564B">无单一中心主 Session 路由瓶颈，</text>
-      <text x="20" y="112" class="font" font-size="13" fill="#5C564B">前台也不带 bash 裸奔。每位 Bot</text>
-      <text x="20" y="132" class="font" font-size="13" fill="#5C564B">拥有独立跨群人格与记忆，平台</text>
-      <text x="20" y="152" class="font" font-size="13" fill="#5C564B">强制校验目录授权与乐观锁。</text>
-    </g>
-
-    <g transform="translate(0, 210)">
-      <rect width="1188" height="132" rx="18" fill="url(#darkCard2)" filter="url(#cardShadow)"/>
-      <text x="36" y="40" class="font" font-size="16.5" font-weight="800" fill="#F3F4F8">📱 全原生四端实时同步（Protocol 3） · 纸片几何动画头像（Bloub） · 按用途精细记账</text>
-      <text x="36" y="66" class="font" font-size="13.2" fill="#A2AAB8">所有对话、SQLite 状态库、工具回执与模型凭据均保存在你自己的正式数据根，出门用手机随时查看家里主机上的 Codex 进度：</text>
-
-      <rect x="36" y="84" width="262" height="32" rx="9" fill="#252B3B"/>
-      <text x="167" y="105" text-anchor="middle" class="font" font-size="12.5" font-weight="700" fill="#E8EEF5">🌐 普通网页 (Paper / Midnight)</text>
-
-      <rect x="314" y="84" width="280" height="32" rx="9" fill="#252B3B"/>
-      <text x="454" y="105" text-anchor="middle" class="font" font-size="12.5" font-weight="700" fill="#E8EEF5">💻 Electron 桌面 (Win x64 / Mac arm64)</text>
-
-      <rect x="610" y="84" width="280" height="32" rx="9" fill="#252B3B"/>
-      <text x="750" y="105" text-anchor="middle" class="font" font-size="12.5" font-weight="700" fill="#5CD49B">🍎 iOS 26 原生 (SwiftUI Liquid Glass)</text>
-
-      <rect x="906" y="84" width="246" height="32" rx="9" fill="#252B3B"/>
-      <text x="1029" y="105" text-anchor="middle" class="font" font-size="12.5" font-weight="700" fill="#5CD49B">🤖 Android 原生 (Jetpack Compose)</text>
     </g>
   </g>
 </svg>
