@@ -350,9 +350,6 @@ class SummonStore(private val app: Context) {
         }
     }
 
-    suspend fun openDirectMessage(bot: SummonBot): SummonRoom =
-        rooms.firstOrNull { !it.isGroup && bot.id in it.members } ?: createRoom(bot.name, listOf(bot.id), mode = "direct")
-
     suspend fun createBot(name: String, avatar: SummonAvatar, instructions: String): SummonBot {
         val body = SummonJson.obj("name" to SummonJson.Str(name), "instructions" to SummonJson.Str(instructions), "avatar" to avatar.toJson())
         return SummonBot.parse(request("/api/bots", "POST", body, newID())).also(::upsertBot)
@@ -370,17 +367,55 @@ class SummonStore(private val app: Context) {
         return SummonBot.parse(result).also(::upsertBot)
     }
 
-    suspend fun createGroup(name: String, members: List<String>): SummonRoom {
-        val room = createRoom(name, members, mode = "group")
+    suspend fun createGroup(name: String, members: List<String>, workspaceID: String? = null, skipWelcome: Boolean = false): SummonRoom {
+        val room = createRoom(name, members, mode = "group", workspaceID = workspaceID, skipWelcome = skipWelcome)
         refresh()
         return room
     }
 
-    private suspend fun createRoom(name: String, members: List<String>, mode: String): SummonRoom {
+    suspend fun createConversationalGroup(rawText: String, suggestedTitle: String = "", workspaceID: String? = null): SummonRoom {
+        val text = rawText.trim()
+        if (text.isEmpty() || !protocolReady) throw SummonApiException.invalidResponse
+        val title = deriveInitialGroupTitle(text, suggestedTitle)
+        val room = createRoom(title, emptyList(), mode = "group", workspaceID = workspaceID, skipWelcome = true)
+        refresh()
+        val egg = bots.firstOrNull { it.roleId == "eggbot" && !it.isPaused }
+        val mentions = if (egg != null && egg.id in room.members) listOf(egg.id) else emptyList()
+        val id = newID()
+        val message = SummonMessage(
+            id = "local-$id",
+            roomId = room.id,
+            senderId = "user",
+            content = text,
+            mentions = mentions,
+            clientId = id,
+            createdAt = Instant.now().toString(),
+        )
+        pendingMessages = pendingMessages + SummonPendingMessage(id, message, "queued", null)
+        deliver(id, queryFirst = false)
+        return room
+    }
+
+    private fun deriveInitialGroupTitle(rawText: String, suggestedTitle: String = ""): String {
+        val suggested = suggestedTitle.trim()
+        if (suggested.isNotEmpty()) return suggested.take(24)
+        val firstLine = rawText.trim().lineSequence().firstOrNull().orEmpty()
+        val cleaned = firstLine
+            .replace(Regex("^(?:你好|嗨|hi|hello|请|麻烦|帮我|给我|我要|我想|想|想要|准备|打算|可以)?\\s*(?:新建|创建|建立|建|开|搭|组建|拉)?(?:一个|个)?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^(?:关于|用来|用于|专门)?\\s*"), "")
+            .replace(Regex("[，。！？；：、,.!?;:~～]+.*$"), "")
+            .replace(Regex("(?:的)?(?:群聊|群|工作群|项目群|协作群|小群)$"), "")
+            .trim()
+        return if (cleaned.isEmpty()) "新群聊" else cleaned.take(16)
+    }
+
+    private suspend fun createRoom(name: String, members: List<String>, mode: String, workspaceID: String? = null, skipWelcome: Boolean = false): SummonRoom {
         val body = SummonJson.Obj(buildMap {
             put("members", members.toJsonStrings())
             put("mode", SummonJson.Str(mode))
             if (name.isNotEmpty()) put("title", SummonJson.Str(name))
+            if (!workspaceID.isNullOrEmpty()) put("workspace", SummonJson.Str(workspaceID))
+            if (skipWelcome) put("skip_welcome", SummonJson.Bool(true))
         })
         return SummonRoom.parse(request("/api/rooms", "POST", body, newID())).also(::upsertRoom)
     }

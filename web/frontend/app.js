@@ -177,13 +177,41 @@ const tabs = [
   { id:'models', title:'模型与用量', icon:'computer' }, { id:'usage', title:'Token 统计', icon:'layers' },
 ];
 const protocolVersion = 3;
+const DRAFT_ROOM_ID = '__new_group__';
+const BOT_MAINTENANCE_ROOM_ID = 'room-default-bot-maintenance';
+const NEW_GROUP_SUGGESTIONS = [
+  {
+    id: 'dev',
+    title: '软件与网页开发',
+    desc: '写代码、做网页或应用，按需配前端与测试专员',
+    prompt: '我想建一个软件与网页开发群，用来推进架构、代码和界面实现，先帮我配好团队并确认要绑定的项目目录。',
+  },
+  {
+    id: 'schedule',
+    title: '个人日程与事务',
+    desc: '排差旅、管待办，个人习惯说一遍永久记住',
+    prompt: '我想建一个个人日程与日常事务群，帮我整理待办、规划行程并长期记住我的习惯偏好。',
+  },
+  {
+    id: 'ops',
+    title: '服务器运维排障',
+    desc: '查日志、盯告警，高风险操作主动拦住',
+    prompt: '我想建一个线上服务运维与排障群，负责查日志、处理故障并长期维护运维手册。',
+  },
+  {
+    id: 'research',
+    title: '专题研究与写作',
+    desc: '查资料、磨方案，把讨论沉淀成活文档',
+    prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
+  },
+];
 const state = { bots: [], archivedBots: [], roles: [], rooms: [], executions: [], detached: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
+  view:'chat', roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomActivities:[], roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -639,17 +667,18 @@ function preserveView() {
 function render() {
   persistClientSession();
   const activeEl = document.activeElement;
-  if (ui.composing && (activeEl?.id === 'message-input' && activeEl.form?.dataset.roomId === ui.roomId ||
+  const activeChatKey = ui.creatingRoom ? DRAFT_ROOM_ID : ui.roomId;
+  if (ui.composing && (activeEl?.id === 'message-input' && activeEl.form?.dataset.roomId === activeChatKey ||
       activeEl?.matches?.('.prompt-custom-input, .exec-prompt-input'))) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
   const saved = preserveView();
-  const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? 'chat:' + ui.roomId : 'list') : ui.view);
+  const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? 'chat:' + activeChatKey : 'list') : ui.view);
   renderTopbar();
   const views = { chat:renderChat, members:renderMembers, executions:renderExecutions, files:renderFiles, wakeups:renderWakeups, connections:renderConnections,
     models:() => globalThis.SummonModels.render({ esc, icon }), usage:() => globalThis.SummonUsage.render({ esc, icon }) };
-  const key = ui.view + ':' + ({ chat:ui.roomId, members:ui.botId, executions:refKey(ui.executionRef), files:ui.fileId }[ui.view] || '');
+  const key = ui.view + ':' + ({ chat:activeChatKey, members:ui.botId, executions:refKey(ui.executionRef), files:ui.fileId }[ui.view] || '');
   const main = $('#main-content'), html = views[ui.view](), signature = renderSignature(html);
-  const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView:saved.key === key, ready:ui.messagesRoomId === ui.roomId, wasReady:saved.chatReady });
+  const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView:saved.key === key, ready:ui.creatingRoom || ui.messagesRoomId === ui.roomId, wasReady:saved.chatReady });
   if (ui.lastMainHtml !== signature || main.dataset.viewKey !== key) {
     const motion = captureMotion(main);
     $('.messages')?._summonChatScroll?.stop();
@@ -665,12 +694,14 @@ function restoreFocus(saved) { if (!saved.focusId) return; const target = docume
 function updateComposerButton(input) {
   const button = input?.form?.querySelector('.composer-send');
   if (!button) return;
-  const hasContent = Boolean(input.value.trim() || attachmentDrafts(input.form.dataset.roomId).length || ui.draftReferences[input.form.dataset.roomId]?.length);
-  const label = '发送消息';
+  const targetRoomId = input.form.dataset.roomId;
+  const isDraft = targetRoomId === DRAFT_ROOM_ID;
+  const hasContent = Boolean(input.value.trim() || (!isDraft && (attachmentDrafts(targetRoomId).length || ui.draftReferences[targetRoomId]?.length)));
+  const label = isDraft ? '创建并发送' : '发送消息';
   button.innerHTML = icon('send', 22);
   button.title = label;
   button.setAttribute('aria-label', label);
-  button.disabled = sendBusy(input.form.dataset.roomId) || !hasContent;
+  button.disabled = (isDraft ? (!ui.protocolReady || ui.creatingRoomBusy) : sendBusy(targetRoomId)) || !hasContent;
 }
 function resizeComposer(input) { if (!input) return; updateComposerButton(input); input.style.height = 'auto'; const height = input.scrollHeight, limit = parseFloat(getComputedStyle(input).maxHeight) || 150; input.style.height = `${Math.min(limit, height)}px`; input.style.overflowY = height > limit ? 'auto' : 'hidden'; }
 
@@ -747,10 +778,12 @@ async function refresh(force = false) {
       void readList('/api/workspaces').then(list => { if (Array.isArray(list)) state.workspaces = list; }).catch(() => {});
     }
     globalThis.SummonModels.sync(state.modelSettings);
-    globalThis.SummonModels.bind({ api,render,toast,refresh });
+    globalThis.SummonModels.start({ api,render,toast,refresh });
     void globalThis.SummonCache?.writeState(synced);
-    if (!roomById(ui.roomId)) {
-      ui.roomId = state.rooms.find(room => room.members.includes('user'))?.id ?? null;
+    if (!ui.creatingRoom && (!roomById(ui.roomId) || directRoom(roomById(ui.roomId)))) {
+      const nextGroup = defaultGroupRoom();
+      ui.roomId = nextGroup?.id ?? null;
+      if (!ui.roomId) ui.creatingRoom = true;
       await restoreRoomMessages(ui.roomId);
     }
     if (!botById(ui.botId)) ui.botId = state.bots[0]?.id ?? null;
@@ -1005,7 +1038,10 @@ async function restoreCachedState() {
       ui.stateSnapshot = cached.snapshot; ui.stateCursor = cached.cursor;
       Object.assign(state, cached.snapshot);
       globalThis.SummonModels.sync(state.modelSettings);
-      if (!roomById(ui.roomId)) ui.roomId = state.rooms[0]?.id ?? null;
+      if (!ui.creatingRoom && (!roomById(ui.roomId) || directRoom(roomById(ui.roomId)))) {
+        ui.roomId = defaultGroupRoom()?.id ?? null;
+        if (!ui.roomId) ui.creatingRoom = true;
+      }
       await restoreRoomMessages(ui.roomId);
       ui.loading = false;
     }
@@ -1022,7 +1058,8 @@ async function restoreCachedState() {
 
 async function navigate(view) {
   ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view;
-  if (view === 'chat') await restoreRoomMessages(ui.roomId);
+  if (view !== 'chat') ui.creatingRoom = false;
+  if (view === 'chat' && !ui.creatingRoom) await restoreRoomMessages(ui.roomId);
   render();
   await loadCurrent();
   render();
@@ -1065,9 +1102,115 @@ async function readList(endpoint, firstPage) {
   return items;
 }
 
+function groupRooms() {
+  return state.rooms.filter(room => !directRoom(room) && room.members.includes('user'));
+}
+
+function defaultGroupRoom() {
+  const groups = groupRooms().sort(recentConversations);
+  return groups.find(room => room.id !== BOT_MAINTENANCE_ROOM_ID) || groups[0] || null;
+}
+
+function eggBotMember() {
+  return state.bots.find(bot => bot.role_id === 'eggbot' && bot.enabled)
+    || state.bots.find(bot => bot.role_id === 'eggbot')
+    || null;
+}
+
+function deriveInitialGroupTitle(rawText, suggestedTitle = '') {
+  if (suggestedTitle) return suggestedTitle.trim().slice(0, 24);
+  const firstLine = String(rawText || '').trim().split(/\r?\n/)[0] || '';
+  const cleaned = firstLine
+    .replace(/^(?:你好|嗨|hi|hello|请|麻烦|帮我|给我|我要|我想|想|想要|准备|打算|可以)?\s*(?:新建|创建|建立|建|开|搭|组建|拉)?(?:一个|个)?\s*/i, '')
+    .replace(/^(?:关于|用来|用于|专门)?\s*/, '')
+    .replace(/[，。！？；：、,.!?;:~～]+.*$/, '')
+    .replace(/(?:的)?(?:群聊|群|工作群|项目群|协作群|小群)$/, '')
+    .trim();
+  if (!cleaned) return '新群聊';
+  return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
+}
+
+async function openNewGroupDraft() {
+  ui.navigationSeq++;
+  ui.creatingRoom = true;
+  ui.view = 'chat';
+  ui.mobileRoom = true;
+  ui.menu = null;
+  ui.detailOpen = false;
+  ui.profileBotId = null;
+  ui.avatarEditing = false;
+  ui.openRoomExecution = null;
+  location.hash = 'chat';
+  if ((!Array.isArray(state.workspaces) || !state.workspaces.length) && ui.protocolReady) {
+    void readList('/api/workspaces').then(list => {
+      if (Array.isArray(list)) {
+        state.workspaces = list;
+        if (ui.creatingRoom) render();
+      }
+    }).catch(() => {});
+  }
+  render();
+  if (!matchMedia('(pointer: coarse)').matches) $('#message-input')?.focus();
+}
+
+async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
+  const text = String(rawText || '').trim();
+  if (!text || !ui.protocolReady || ui.creatingRoomBusy) return;
+  ui.creatingRoomBusy = true;
+  render();
+  const title = deriveInitialGroupTitle(text, suggestedTitle);
+  const workspace = ui.draftWorkspaceId || '';
+  try {
+    const room = await api('/api/rooms', 'POST', {
+      members: [],
+      mode: 'group',
+      title,
+      skip_welcome: true,
+      ...(workspace ? { workspace } : {}),
+    });
+    const latestBots = await readList('/api/bots').catch(() => null);
+    if (latestBots) state.bots = latestBots;
+    if (!state.rooms.some(item => item.id === room.id)) state.rooms.push(room);
+    ui.creatingRoom = false;
+    ui.creatingRoomBusy = false;
+    ui.draftWorkspaceId = '';
+    ui.drafts[DRAFT_ROOM_ID] = '';
+    ui.navigationSeq++;
+    ui.roomId = room.id;
+    ui.view = 'chat';
+    ui.mobileRoom = true;
+    ui.menu = null;
+    ui.detailOpen = false;
+    ui.profileBotId = null;
+    ui.avatarEditing = false;
+    ui.messagesRoomId = room.id;
+    ui.messages = [];
+    ui.historyCursor = null;
+    ui.roomMessageStates = {};
+    ui.roomChainState = null;
+    ui.roomStaleWaits = [];
+    ui.roomSuspendedRuns = [];
+    ui.roomActivities = [];
+    ui.openRoomExecution = null;
+    ui.activityTickerIndex = 0;
+    location.hash = 'chat';
+    const egg = eggBotMember();
+    const mentions = egg?.enabled && room.members.includes(egg.id) ? [egg.id] : [];
+    const entry = queueLocalMessage(room.id, { text, mentions, references: [], attachments: [] }, []);
+    await sendLocalMessage(entry, true);
+    await loadCurrent();
+    render();
+  } catch (error) {
+    ui.creatingRoomBusy = false;
+    ui.drafts[DRAFT_ROOM_ID] = text;
+    render();
+    throw error;
+  }
+}
+
 async function selectRoom(id) {
   if (!id) return;
-  ui.navigationSeq++; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
+  ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
   ui.roomMessageStates = {}; ui.roomChainState = null; ui.roomStaleWaits = []; ui.roomSuspendedRuns = []; ui.roomActivities = [];
   ui.openRoomExecution = null; ui.activityTickerIndex = 0;
@@ -1092,35 +1235,10 @@ function memberChoices(selected = [], { excludeBuiltin = false, legend = 'Bot �
   }).join('')}</fieldset>`;
 }
 
-function defaultGroupMembersField() {
-  const egg = state.bots.find(bot => bot.role_id === 'eggbot');
-  const onboarding = state.bots.find(bot => bot.role_id === 'tool-onboarding');
-  return `<fieldset class="form-field required-members-field"><legend>默认必含成员（自动加入）</legend>
-    <div class="required-members-list">
-      <div class="required-member-item"><span class="required-member-badge">主控</span><div><strong>群主控 Bot</strong><small>建群同步创建，开启并主持本群对话</small></div></div>
-      <div class="required-member-item">${egg ? avatar(egg.id, 28) : '<span class="required-member-badge">孵化</span>'}<div><strong>${esc(egg?.name || 'EggBot')}</strong><small>后台观察分工与按需增配成员</small></div></div>
-      <div class="required-member-item">${onboarding ? avatar(onboarding.id, 28) : '<span class="required-member-badge">接口</span>'}<div><strong>${esc(onboarding?.name || '接口 Bot')}</strong><small>外部工具接入、查询与连接维护</small></div></div>
-    </div></fieldset>`;
-}
-
 async function roomWorkspaceField(current) {
   const choices = (await readList('/api/workspaces')).filter(item => item.write !== false || item.id === current);
   return selectField('群项目目录', 'workspace', [{ value:'', label:'未绑定' },
     ...choices.map(item => ({ value:item.id, label:item.name + ' · ' + item.path }))],current || '');
-}
-
-async function openRoomForm() {
-  const workspaceField = await roomWorkspaceField();
-  const extraMembers = memberChoices([], { excludeBuiltin: true, legend: '附加其他成员（可选）' });
-  openModal('创建群聊', '默认包含群主控、EggBot 与接口 Bot', field('群名称', 'title', '', { placeholder:'选填，例如：项目开发' }) + workspaceField + defaultGroupMembersField() + extraMembers, async data => {
-    const title = data.get('title').trim();
-    const workspace = data.get('workspace');
-    const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), mode:'group', ...(workspace ? {workspace} : {}), ...(title ? { title } : {}) });
-    const latestBots = await readList('/api/bots').catch(() => null);
-    if (latestBots) state.bots = latestBots;
-    if (!state.rooms.some(item => item.id === room.id)) state.rooms.push(room);
-    await selectRoom(room.id);
-  }, '创建群聊');
 }
 
 async function openRoomEdit() {
@@ -1816,24 +1934,31 @@ async function act(action, element) {
   if (action === 'display-preset') return changeDisplayPreference('zoom',Number(element.dataset.zoom));
   if (action === 'display-reset') { displayPreferences[displayMode()] = { ...displayDefaults[displayMode()] }; return changeDisplayPreference('zoom',displayDefaults[displayMode()].zoom); }
   if (action === 'toggle-search') { ui.searchOpen = !ui.searchOpen; if (!ui.searchOpen) ui.roomQuery = ''; renderTopbar(); $('#room-search')?.focus(); return; }
-  if (['toggle-create','toggle-apps','toggle-chat-menu','toggle-mention-menu'].includes(action)) {
-    const menu = action === 'toggle-mention-menu' ? 'mentions' : action.slice(7);
+  if (['toggle-apps','toggle-chat-menu','toggle-mention-menu','toggle-draft-workspace'].includes(action)) {
+    const menu = action === 'toggle-mention-menu' ? 'mentions' : action === 'toggle-draft-workspace' ? 'draft-workspace' : action.slice(7);
     ui.menu = ui.menu === menu ? null : menu; return render();
   }
   if (action === 'select-room') return selectRoom(id);
   if (action === 'room-back') { ui.mobileRoom = false; ui.detailOpen = false; return render(); }
-  if (action === 'new-room') return openRoomForm();
+  if (action === 'new-room') return openNewGroupDraft();
+  if (action === 'draft-suggestion') {
+    const item = NEW_GROUP_SUGGESTIONS.find(s => s.id === id);
+    if (!item) return;
+    return submitDraftGroupMessage(item.prompt, { suggestedTitle: item.title });
+  }
+  if (action === 'select-draft-workspace') {
+    ui.draftWorkspaceId = id || '';
+    ui.menu = null;
+    return render();
+  }
+  if (action === 'clear-draft-workspace') {
+    ui.draftWorkspaceId = '';
+    return render();
+  }
   if (action === 'edit-room') return openRoomEdit();
   if (action === 'stop-room') return stopCurrentRoom();
   if (action === 'delete-group') return deleteGroup();
   if (action === 'older-messages') return loadOlderMessages();
-  if (action === 'dm-bot') {
-    const bot = botById(id);
-    if (!bot) return;
-    let room = botConversation(id);
-    if (!room) { room = await api('/api/rooms','POST',{ title:bot.name,members:[id],mode:'direct' }); state.rooms.push(room); }
-    return selectRoom(room.id);
-  }
   if (action === 'toggle-details' || action === 'open-bot-details') {
     if (!ui.roomId && action === 'open-bot-details') { ui.botId = id; return navigate('members'); }
     ui.detailOpen = action === 'open-bot-details' || !ui.detailOpen;
@@ -2067,7 +2192,7 @@ function closeFloatingMenus() {
   ui.menu = null;
   if (hadMenu) ui.lastSidebarHtml = null;
   for (const menu of document.querySelectorAll('.context-menu,.floating-context-menu')) menu.remove();
-  for (const button of document.querySelectorAll('[data-action="toggle-apps"],[data-action="toggle-create"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"]')) button.setAttribute('aria-expanded', 'false');
+  for (const button of document.querySelectorAll('[data-action="toggle-apps"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"],[data-action="toggle-draft-workspace"]')) button.setAttribute('aria-expanded', 'false');
 }
 function openFloatingContextMenu(x, y, html) {
   closeFloatingMenus();
@@ -2086,12 +2211,10 @@ function openHomeEntryContextMenu(key, x, y) {
   if (!entry) return;
   const pinned = isPinnedEntry(key);
   const currentFolder = folderIdForEntry(key);
-  const avatarHtml = entry.kind === 'room'
-    ? groupAvatar(entry.room, 28, `ctx:group:${entry.id}`)
-    : avatar(entry.id, 28, `ctx:${entry.id}`);
+  const avatarHtml = groupAvatar(entry.room, 28, `ctx:group:${entry.id}`);
   const folderOptions = `
     <button type="button" class="floating-menu-sub-item" data-action="home-move" data-key="${esc(key)}" data-folder="">
-      ${icon('folder', 15)}<span>主要</span>${currentFolder === null ? icon('check', 15) : ''}
+      ${icon('folder', 15)}<span>${entry.isSystem ? '系统' : '群聊'}</span>${currentFolder === null ? icon('check', 15) : ''}
     </button>
     ${homeOrg.folders.map(f => `<button type="button" class="floating-menu-sub-item" data-action="home-move" data-key="${esc(key)}" data-folder="${esc(f.id)}">
       ${icon('folder', 15)}<span>${esc(f.name)}</span>${currentFolder === f.id ? icon('check', 15) : ''}
@@ -2107,8 +2230,7 @@ function openHomeEntryContextMenu(key, x, y) {
     <button type="button" class="floating-menu-item" data-action="home-pin" data-key="${esc(key)}">${icon('pin', 16)}<span>${pinned ? '取消置顶' : '置顶'}</span></button>
     <button type="button" class="floating-menu-item" data-action="home-toggle-move">${icon('folder', 16)}<span>移动到</span>${icon('chevronDown', 15)}</button>
     <div class="floating-menu-sub" hidden>${folderOptions}</div>
-    ${entry.roomId ? `<button type="button" class="floating-menu-item" data-action="home-details" data-room="${esc(entry.roomId)}">${icon('info', 16)}<span>会话详情</span></button>`
-      : `<button type="button" class="floating-menu-item" data-action="home-details" data-bot="${esc(entry.botId)}">${icon('settings', 16)}<span>Bot 设置</span></button>`}
+    <button type="button" class="floating-menu-item" data-action="home-details" data-room="${esc(entry.roomId)}">${icon('info', 16)}<span>群聊详情</span></button>
     <div class="floating-menu-sep"></div>
     <button type="button" class="floating-menu-item danger" data-action="home-hide" data-key="${esc(key)}">${icon('eyeOff', 16)}<span>隐藏</span></button>
   `);
@@ -2260,7 +2382,7 @@ document.addEventListener('compositionend', event => {
   if (event.target.matches?.('.prompt-custom-input, .exec-prompt-input')) { ui.composing = false; if (ui.renderDeferred) render(); }
 });
 document.addEventListener('paste', event => {
-  if (!ui.roomId || ui.view !== 'chat') return;
+  if (!ui.roomId || ui.creatingRoom || ui.view !== 'chat') return;
   const target = event.target;
   if (target && !target.closest?.('.conversation') && target.id !== 'message-input') return;
   const files = [...(event.clipboardData?.files || [])];
@@ -2269,13 +2391,13 @@ document.addEventListener('paste', event => {
   void addAttachments(ui.roomId, files);
 });
 document.addEventListener('dragover', event => {
-  if (!ui.roomId || ui.view !== 'chat') return;
+  if (!ui.roomId || ui.creatingRoom || ui.view !== 'chat') return;
   if (event.dataTransfer?.types?.includes('Files') && event.target?.closest?.('.conversation')) {
     event.preventDefault();
   }
 });
 document.addEventListener('drop', event => {
-  if (!ui.roomId || ui.view !== 'chat') return;
+  if (!ui.roomId || ui.creatingRoom || ui.view !== 'chat') return;
   if (!event.target?.closest?.('.conversation')) return;
   const files = [...(event.dataTransfer?.files || [])];
   if (!files.length) return;
@@ -2291,6 +2413,9 @@ document.addEventListener('submit', event => {
 });
 
 async function submitRoomMessage(form) {
+  if (form.dataset.roomId === DRAFT_ROOM_ID) {
+    return submitDraftGroupMessage(form.elements.content.value);
+  }
   const room = roomById(form.dataset.roomId);
   if (!room || sendBusy(room.id)) return;
   const text = form.elements.content.value, attachments = attachmentDrafts(room.id), references = ui.draftReferences[room.id] || [];
@@ -2407,7 +2532,7 @@ function roomReadMarkers() {
 }
 function saveRoomReadMarkers() { try { localStorage.setItem('summon:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
 function markCurrentRoomRead() {
-  if (ui.view !== 'chat' || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
+  if (ui.view !== 'chat' || ui.creatingRoom || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
   const last = ui.messages.at(-1);
   if (!last?.createdAt) return;
   const markers = roomReadMarkers();
@@ -2428,9 +2553,6 @@ function unreadRoomBadge(room) {
   if (last.senderId === 'user' || compareMessagePosition(last, markers[room.id]) <= 0) return '';
   const known = ui.messageCache.get(room.id)?.messages?.filter(message => message.senderId !== 'user' && compareMessagePosition(message, markers[room.id]) > 0).length;
   return known ? `<span class="unread-count" aria-label="${known} 条未读">${known > 99 ? '99+' : known}</span>` : '<i class="unread-dot" aria-label="有新消息"></i>';
-}
-function botConversation(botId) {
-  return state.rooms.filter(room => directRoom(room) && room.members.includes(botId)).sort(recentConversations)[0];
 }
 function conversationUpdatedAt(room) { return room?.lastMessage?.createdAt || room?.updatedAt || room?.createdAt || ''; }
 function recentConversations(a, b) { return String(conversationUpdatedAt(b)).localeCompare(String(conversationUpdatedAt(a))); }
@@ -2509,18 +2631,38 @@ function deleteHomeFolder(id) {
   homeOrg.collapsedIds = homeOrg.collapsedIds.filter(x => x !== id);
   saveHomeOrg(); renderTopbar();
 }
-function buildHomeEntries() {
-  const dmByBot = new Map();
-  for (const bot of state.bots) {
-    const dm = botConversation(bot.id);
-    if (dm) dmByBot.set(bot.id, dm);
+function roomExclusiveLiveBot(room) {
+  const members = (room?.members || []).filter(id => id !== 'user');
+  const candidates = [];
+  if (room?.lead_bot_id) {
+    const lead = botById(room.lead_bot_id);
+    if (lead) candidates.push(lead);
   }
-  const primaryDirectIds = new Set([...dmByBot.values()].map(r => r.id));
+  for (const id of members) {
+    if (id === room?.lead_bot_id) continue;
+    const bot = botById(id);
+    if (!bot || isBuiltinGroupBot(bot)) continue;
+    const roomCount = state.rooms.filter(r => !directRoom(r) && r.members.includes(id)).length;
+    if (roomCount <= 1) candidates.push(bot);
+  }
+  for (const bot of candidates) {
+    const act = botActivity(bot);
+    if (['running', 'waiting'].includes(act.kind)) return { bot, activity: act };
+  }
+  return null;
+}
+
+function buildHomeEntries() {
+  const live = ui.streamConnected && !ui.connectionNotice;
   const entries = [];
   for (const room of state.rooms) {
-    if (primaryDirectIds.has(room.id)) continue;
+    if (directRoom(room)) continue;
     const last = room.lastMessage;
-    const preview = last ? roomPreview(room) : '开始聊天';
+    const active = live ? roomExclusiveLiveBot(room) : null;
+    const running = Boolean(active);
+    const preview = active
+      ? `${active.bot.name} · ${active.activity.text}`
+      : last ? roomPreview(room) : '开始聊天';
     const fullPreview = last?.content?.trim() || preview;
     entries.push({
       key: `room:${room.id}`,
@@ -2529,68 +2671,32 @@ function buildHomeEntries() {
       room,
       roomId: room.id,
       botId: null,
+      isSystem: room.id === BOT_MAINTENANCE_ROOM_ID,
       title: room.name,
       preview,
       fullPreview,
       sortDate: conversationUpdatedAt(room),
-      running: false,
-      paused: false,
-      live: ui.streamConnected && !ui.connectionNotice,
-      selected: room.id === ui.roomId && ui.view === 'chat',
-    });
-  }
-  const activeBot = currentBot();
-  for (const bot of state.bots) {
-    const dm = dmByBot.get(bot.id) || null;
-    const activity = botActivity(bot);
-    const live = ui.streamConnected && !ui.connectionNotice;
-    const running = live && ['running', 'waiting'].includes(activity.kind);
-    const paused = activity.kind === 'paused';
-    const preview = running || paused ? activity.text : dm?.lastMessage ? roomPreview(dm) : '发起对话';
-    const fullPreview = paused ? '该 Bot 当前已暂停。' : dm?.lastMessage?.content?.trim() || preview;
-    entries.push({
-      key: `bot:${bot.id}`,
-      kind: 'bot',
-      id: bot.id,
-      bot,
-      room: dm,
-      roomId: dm?.id || null,
-      botId: bot.id,
-      title: bot.name,
-      preview,
-      fullPreview,
-      sortDate: conversationUpdatedAt(dm),
       running,
-      paused,
+      paused: false,
       live,
-      activity,
-      selected: ui.view === 'chat' && activeBot?.id === bot.id && !ui.profileBotId,
+      selected: room.id === ui.roomId && ui.view === 'chat' && !ui.creatingRoom,
     });
   }
   return entries.sort((a, b) => String(b.sortDate).localeCompare(String(a.sortDate)) || a.title.localeCompare(b.title, 'zh-Hans-CN'));
 }
 function renderHomePinnedTile(entry) {
-  const avatarHtml = entry.kind === 'room'
-    ? groupAvatar(entry.room, 60, `pinned:group:${entry.id}`)
-    : avatar(entry.id, 60, `pinned:${entry.id}`);
+  const avatarHtml = groupAvatar(entry.room, 60, `pinned:group:${entry.id}`);
   const badge = entry.room ? unreadRoomBadge(entry.room) : '';
-  return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="${entry.kind === 'room' ? 'select-room' : 'dm-bot'}" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}">
+  return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}">
     <span class="pinned-tile-avatar">${avatarHtml}${badge}</span>
     <span class="pinned-tile-title">${esc(entry.title)}</span>
   </button>`;
 }
 function renderHomeEntryRow(entry) {
-  if (entry.kind === 'room') {
-    return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
-      <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.id}`)}</span>
-      <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${renderContactTime(entry.room)}</span><span class="contact-preview">${esc(entry.preview)}</span></span>
-      ${unreadRoomBadge(entry.room)}
-    </button>`;
-  }
-  return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} style="--member-color:${esc(botAvatar(entry.bot).color)}" title="${esc(entry.title)} · ${esc(entry.live ? entry.activity.text : '状态待同步')}">
-    <span class="contact-avatar-wrap">${avatar(entry.id, 44, `sidebar:${entry.id}`)}<i class="presence-dot ${entry.live ? entry.activity.kind : 'unknown'}" aria-hidden="true"></i></span>
+  return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
+    <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.id}`)}${entry.running ? '<i class="presence-dot running" aria-hidden="true"></i>' : ''}</span>
     <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
-    ${entry.room ? unreadRoomBadge(entry.room) : ''}
+    ${unreadRoomBadge(entry.room)}
   </button>`;
 }
 function renderTopbar() {
@@ -2607,48 +2713,57 @@ function renderTopbar() {
   const pinnedSet = new Set(homeOrg.pinnedKeys);
   const unpinnedEntries = query ? filteredEntries : filteredEntries.filter(entry => !pinnedSet.has(entry.key));
   const assignedKeys = new Set(homeOrg.folders.flatMap(f => f.keys || []));
-  const defaultEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key));
+  const defaultEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key) && !entry.isSystem);
+  const systemEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key) && entry.isSystem);
   let contactsHtml = '';
   if (pinnedEntries.length) {
     contactsHtml += `<section class="sidebar-section pinned-section"><div class="pinned-shelf">${pinnedEntries.map(renderHomePinnedTile).join('')}</div></section>`;
   }
   if (query) {
-    contactsHtml += `<section class="sidebar-section"><div class="bot-contacts">${filteredEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">没有匹配的对话</p>'}</div></section>`;
+    contactsHtml += `<section class="sidebar-section"><div class="bot-contacts">${filteredEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">没有匹配的群聊</p>'}</div></section>`;
   } else {
     if (defaultEntries.length || !homeOrg.folders.length) {
       const collapsed = isFolderCollapsed('__default__');
-      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span class="folder-header-label"><span>主要</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length}</span></button>
-        <div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">还没有对话</p>'}</div></section>`;
+      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span class="folder-header-label"><span>群聊</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length}</span></button>
+        <div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">点右上角 + 开始建一个新群</p>'}</div></section>`;
     }
     for (const folder of homeOrg.folders) {
       const folderKeys = new Set(folder.keys || []);
       const folderEntries = unpinnedEntries.filter(entry => folderKeys.has(entry.key));
       const collapsed = isFolderCollapsed(folder.id);
       contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span class="folder-header-label"><span>${esc(folder.name)}</span>${icon('chevronDown', 13)}</span><span class="folder-count">${folderEntries.length}</span></button>
-        <div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意对话可移入此分组</p>'}</div></section>`;
+        <div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意群聊可移入此分组</p>'}</div></section>`;
+    }
+    if (systemEntries.length) {
+      const collapsed = isFolderCollapsed('__system__');
+      contactsHtml += `<section class="sidebar-section folder-section system-folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__system__"><span class="folder-header-label"><span>系统</span>${icon('chevronDown', 13)}</span><span class="folder-count">${systemEntries.length}</span></button>
+        <div class="bot-contacts">${systemEntries.map(renderHomeEntryRow).join('')}</div></section>`;
     }
   }
-  const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button></div>` : '';
   const hiddenCount = allEntries.filter(entry => hiddenSet.has(entry.key)).length;
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
     ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
-    ${hiddenCount ? `<button data-action="manage-hidden">${icon('eyeOff', 19)}已隐藏对话（${hiddenCount}）</button>` : ''}
+    ${hiddenCount ? `<button data-action="manage-hidden">${icon('eyeOff', 19)}已隐藏群聊（${hiddenCount}）</button>` : ''}
     ${window.SummonDesktop?.openConnectionSettings ? `<button data-action="desktop-connection">${icon('computer', 19)}实例连接</button>` : ''}
     <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
     <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
     <button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
   const connected = ui.streamConnected && ui.protocolReady;
+  const creatingActive = ui.view === 'chat' && ui.creatingRoom;
   const html = `<div class="sidebar-toolbar"><summon-wordmark></summon-wordmark>
-      <div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索会话与 Bot" aria-label="搜索会话与 Bot">` : ''}
-        <button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 20)}</button></div>
-      <div class="menu-anchor"><button class="round-button create-button" data-action="toggle-create" aria-label="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 23)}</button>${menu}</div></div>
+      <div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索群聊" aria-label="搜索群聊">` : ''}
+        <button class="round-button" data-action="toggle-search" title="搜索群聊" aria-label="搜索群聊">${icon('search', 20)}</button></div>
+      <button class="round-button ${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members" title="团队成员" aria-label="团队成员" aria-pressed="${ui.view === 'members'}">${icon('people', 19)}</button>
+      <button class="round-button create-button ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 23)}</button></div>
     <div class="contacts-scroll">${contactsHtml}</div>
     <div class="sidebar-controls">
       <div class="rail-quick-actions">
-        <div class="menu-anchor"><button type="button" class="rail-action-btn" data-action="toggle-create" title="新建" aria-label="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 20)}</button>${menu}</div>
+        <button type="button" class="rail-action-btn ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 20)}</button>
+        <button type="button" class="rail-action-btn ${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members" title="团队成员" aria-label="团队成员">${icon('people', 18)}</button>
         <button type="button" class="rail-action-btn" data-action="display-settings" title="显示设置" aria-label="显示设置">${icon('settings', 18)}</button>
       </div>
       <nav class="sidebar-shortcuts" aria-label="常用功能">
+      <button class="${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members">${icon('people', 17)}<span>成员</span></button>
       <button class="${ui.view === 'executions' ? 'selected' : ''}" data-action="navigate" data-view="executions">${icon('computer', 17)}<span>执行</span></button>
       <button class="${ui.view === 'files' ? 'selected' : ''}" data-action="navigate" data-view="files">${icon('knowledge', 17)}<span>资料</span></button></nav>
     <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor">
@@ -3126,8 +3241,77 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
     </div>${renderDelivery(message)}${actions}</div></article>`;
 }
 
+function renderNewGroupDraft() {
+  const egg = eggBotMember();
+  const eggAppearance = egg ? botAvatar(egg) : window.SummonAvatars.defaults('bot-default-eggbot-local');
+  const accent = eggAppearance.color || '#7D824B';
+  const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
+    ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
+        <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
+    : '';
+  const writableWorkspaces = (state.workspaces || []).filter(item => item.write !== false);
+  const selectedWs = writableWorkspaces.find(item => item.id === ui.draftWorkspaceId) || null;
+  const wsMenu = ui.menu === 'draft-workspace' && writableWorkspaces.length
+    ? `<div class="context-menu draft-workspace-menu" aria-label="选择群项目目录">
+        ${writableWorkspaces.map(ws => `<button type="button" class="draft-ws-option ${ws.id === ui.draftWorkspaceId ? 'selected' : ''}" data-action="select-draft-workspace" data-id="${esc(ws.id)}">
+          <span class="draft-ws-copy"><strong>${esc(ws.name)}</strong><small>${esc(ws.path)}</small></span>
+          ${ws.id === ui.draftWorkspaceId ? icon('check', 15) : ''}
+        </button>`).join('')}
+        ${selectedWs ? `<button type="button" class="draft-ws-option clear" data-action="select-draft-workspace" data-id="">${icon('close', 14)}<span>暂不绑定目录</span></button>` : ''}
+      </div>`
+    : '';
+  const wsPicker = writableWorkspaces.length
+    ? `<div class="draft-composer-bar"><div class="menu-anchor">
+        <button type="button" class="draft-ws-pill ${selectedWs ? 'has-value' : ''}" data-action="toggle-draft-workspace" aria-expanded="${ui.menu === 'draft-workspace'}" ${ui.creatingRoomBusy ? 'disabled' : ''}>
+          ${icon('folder', 15)}<span>${selectedWs ? `目录：${esc(selectedWs.name)}` : '绑定项目目录（可选）'}</span>
+        </button>${wsMenu}</div>
+        ${selectedWs ? `<button type="button" class="draft-ws-clear" data-action="clear-draft-workspace" aria-label="取消绑定目录" title="取消绑定目录">${icon('close', 14)}</button>` : ''}
+      </div>`
+    : '';
+  const draftText = ui.drafts[DRAFT_ROOM_ID] || '';
+  const header = `<div class="floating-header"><div class="header-left"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回群聊列表">${icon('chevronBack',23)}</button>
+    <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
+    <div class="chat-header-actions"></div></div>`;
+  const suggestions = NEW_GROUP_SUGGESTIONS.map(item => `
+    <button type="button" class="draft-suggestion-card" data-action="draft-suggestion" data-id="${esc(item.id)}" ${!ui.protocolReady || ui.creatingRoomBusy ? 'disabled' : ''}>
+      <strong>${esc(item.title)}</strong>
+      <small>${esc(item.desc)}</small>
+    </button>`).join('');
+  return `<div data-room-id="${DRAFT_ROOM_ID}" data-ready="true" class="chat-layout draft-group-layout" style="--accent:${esc(accent)}">
+    <section class="conversation">
+      ${header}
+      <div class="messages draft-group-stage" role="region" aria-label="开启新群聊">
+        ${modelBanner}
+        <div class="draft-group-hero">
+          <div class="draft-group-avatar" aria-hidden="true">
+            ${face(eggAppearance, 116, { key: 'draft-group:eggbot', identity: egg ? `bot:${egg.id}` : 'draft:eggbot', preview: true, intro: true, followPointer: true, state: ui.creatingRoomBusy ? 'work' : 'idle' })}
+          </div>
+          <div class="draft-group-bubble">
+            <span class="draft-group-sender">${esc(egg?.name || 'EggBot')} · 团队孵化</span>
+            <h1>${ui.creatingRoomBusy ? '正在为你建群并安排伙伴…' : '你想要建一个什么群呢？'}</h1>
+            <p>${ui.creatingRoomBusy ? '群主控、EggBot 与接口 Bot 正在就位，马上进入对话。' : '直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。'}</p>
+          </div>
+          <div class="draft-group-suggestions" role="group" aria-label="默认建群建议">
+            ${suggestions}
+          </div>
+        </div>
+      </div>
+      <div class="composer-wrap draft-composer-wrap">
+        ${wsPicker}
+        <form id="message-form" class="composer" data-room-id="${DRAFT_ROOM_ID}">
+          <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="描述你想建的群" placeholder="说说想建什么群、要做什么事，或点上方建议直接开始…" ${ui.creatingRoomBusy ? 'disabled' : ''}>${esc(draftText)}</textarea>
+          <button type="submit" class="composer-send" ${!ui.protocolReady || ui.creatingRoomBusy || !draftText.trim() ? 'disabled' : ''} aria-label="创建并发送">${icon('send',22)}</button>
+        </form>
+        <div class="composer-hint">Enter 创建并发送<span> · </span>Shift + Enter 换行</div>
+      </div>
+    </section>
+  </div>`;
+}
+
 function renderChat() {
+  if (ui.creatingRoom) return renderNewGroupDraft();
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = !directRoom(room);
+  if (!room) return renderNewGroupDraft();
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
   const title = room?.name || '消息';
   const timeline = mergedRoomMessages(ui.roomId, ui.messages);
@@ -3152,12 +3336,11 @@ function renderChat() {
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
         <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
     : '';
-  const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
+  const body = `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
       ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}</div>
       ${renderRoomPendingPrompts()}
-      ${renderChatComposer(room, members)}` : `<div class="conversation-empty">${modelBanner}<p>${ui.protocolNotice || '选择一位伙伴或创建会话'}</p>
-        ${ui.protocolReady ? '<button class="secondary-button" data-action="new-room">创建会话</button>' : ''}</div>`;
+      ${renderChatComposer(room, members)}`;
   return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}"
     style="--accent:${esc(currentAccent())}"><section class="conversation">${header}${body}</section>${ui.detailOpen && room ? renderDetailPanel(room, ui.profileBotId ? profileBot() : null) : ''}</div>`;
 }
@@ -3590,11 +3773,17 @@ function renderMembers() {
     `<button class="profile-record record-button member-row ${item.id === ui.botId ? 'selected' : ''}" data-action="select-bot" data-id="${esc(item.id)}">
       ${avatar(item.id,36)}<span><strong>${esc(item.name)}</strong><small>已归档</small></span></button>`).join('')}</details>` : '';
   const roleEntry = bot?.role_id && (state.roles || []).find(r => r.id === bot.role_id);
+  const botGroups = bot ? groupRooms().filter(room => room.members.includes(bot.id)) : [];
+  const groupsHtml = botGroups.length
+    ? `<div class="member-groups-section"><span class="subtle" style="font-size:var(--text-caption)">所在群聊</span><div class="member-groups-list">${botGroups.map(room => `<button type="button" class="member-group-chip" data-action="select-room" data-id="${esc(room.id)}">${groupAvatar(room, 22, '')}<span>${esc(room.name)}</span></button>`).join('')}</div></div>`
+    : '';
   const controls = bot ? `<h2>${esc(bot.name)}${bot.archived_at ? '（已归档）' : ''}</h2>
     <p class="subtle" style="margin:6px 0 4px;font-size:var(--text-caption)">修订 r${esc(bot.revision ?? 1)} · 角色：${esc(roleEntry ? `${roleEntry.name} (${roleEntry.id})` : (bot.role_id || '未指定'))}</p>
     <p class="subtle" style="margin:0 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p>
+    ${bot.public_duty ? `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-meta);color:var(--ink-2)">${esc(bot.public_duty)}</p>` : ''}
+    ${groupsHtml}
     <p class="profile-prompt">${esc(bot.instructions || '')}</p>${renderBotMemorySection(bot)}<div class="execution-actions">
-    ${!bot.archived_at ? `<button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>` : ''}${renderBotControls(bot)}</div>` : '';
+    ${!bot.archived_at ? `<button class="primary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>` : ''}${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
     <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}${archived}</section><section class="object-detail">${controls}</section></div></div>`;
 }
@@ -3724,7 +3913,7 @@ function openCreateBot() {
   $('#modal-form').onsubmit = async event => {
     event.preventDefault(); const form = event.target, button = $('#create-bot-submit', form), name = $('#create-bot-name', form).value.trim(), avatar = { ...ui.avatarDraft }; if (!name) return;
     button.disabled = true; $('.form-error', event.target).textContent = '';
-    try { const bot = await api('/api/bots', 'POST', { name, instructions:'', avatar }); const ownsDialog = modal.open && $('#modal-form') === form; if (ownsDialog) await closeModal(modal); const stillOwns = $('#modal-form') === form; if (ownsDialog && stillOwns) ui.avatarDraft = null; await refresh(); if (ownsDialog && stillOwns && $('#modal-form') === form) await act('dm-bot', { dataset: { id: bot.id } }); else toast(`${bot.name} 已创建`); }
+    try { const bot = await api('/api/bots', 'POST', { name, instructions:'', avatar }); const ownsDialog = modal.open && $('#modal-form') === form; if (ownsDialog) await closeModal(modal); const stillOwns = $('#modal-form') === form; if (ownsDialog && stillOwns) ui.avatarDraft = null; ui.botId = bot.id; await refresh(); toast(`${bot.name} 已创建`); }
     catch (error) { if (form.isConnected) $('.form-error', form).textContent = error.message; else toast(error.message, true); } finally { button.disabled = false; }
   };
   showModal(modal);

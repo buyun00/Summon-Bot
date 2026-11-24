@@ -1,6 +1,6 @@
 'use strict';
 globalThis.SummonModels = (() => {
-  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null, codexDraft: null };
+  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, refreshingUsage: false, login: null, loadedAt: 0, quotaId: null, codexDraft: null };
   let bindings, loginTimer, usageTimer, loading, invalidateSidebar;
   const kinds = { codex: 'Codex 订阅', grok: 'Grok 订阅', api: '通用 API' };
   const purposeCategories = [['deepseek', 'DeepSeek API'], ['openai', 'OpenAI API'], ['codex', 'Codex 订阅']];
@@ -45,10 +45,11 @@ globalThis.SummonModels = (() => {
     : /每周|周额|week/i.test(window.name || '') ? 10080 : /(?:5\s*小时|5\s*hour)/i.test(window.name || '') ? 300 : null;
   function signal(item, esc) {
     const executor = item.role === 'executor';
-    const awaiting = executor ? !item.enabled : !item.configured;
+    const awaiting = executor ? (item.enabled === false || item.configured === false) : item.configured === false;
     const usage = awaiting ? null : item.usage, windows = percents(usage), money = balances(usage);
     const loading = item.connecting || !awaiting && (!usage || usage.status === 'loading');
-    const primaryWindows = windows;
+    const codexWindows = windows.filter(window => window.limitId === 'codex');
+    const primaryWindows = codexWindows.length ? codexWindows : windows;
     const isApi = item.kind === 'api', weekly = primaryWindows.find(window => duration(window) === 10080);
     const fiveHours = primaryWindows.find(window => duration(window) === 300);
     const main = weekly || primaryWindows[0] || null;
@@ -59,10 +60,11 @@ globalThis.SummonModels = (() => {
     const percentage = main ? `${Math.round(Math.max(0, Math.min(100, main.remainingPercent)))}%` : '';
     let value = '';
     if (loading) value = item.connecting ? '配置中' : '读取中';
-    else if (awaiting) value = item.label || '待配置';
+    else if (awaiting) value = item.label || (executor ? '待接入' : '待配置');
     else if (isApi) value = balance ? formatMoney(balance) : '暂无余额';
-    else if (dots === null) value = percentage || '暂无额度';
-    const role = '当前模型';
+    else if (dots === null) value = percentage || (usage?.unsupported ? '已连接' : '暂无额度');
+    const roleShort = executor ? (item.roleLabel || '工作引擎') : '默认模型';
+    const role = executor ? roleShort : '默认模型 · Pi';
     const details = [role, item.name, item.model, awaiting ? item.note || '待手动接入，尚未读取额度' : isApi ? '圆环常满 · 底部显示余额' : main ? `圆环：${main.name}，剩余 ${Math.round(main.remainingPercent)}%` : '暂未取得订阅额度'];
     if (loading) details.push(item.connecting ? '正在配置引擎' : '正在读取额度');
     else if (awaiting) details.push('点击查看接入设置');
@@ -80,20 +82,25 @@ globalThis.SummonModels = (() => {
     const low = isApi ? balance?.amount <= 0 : ring !== null && ring < 10 || short?.remainingPercent < 10;
     const points = [[21, 49], [28.5, 51.5], [35.5, 51.5], [43, 49]];
     const brand = loading ? '<i class="quota-signal-spinner" aria-hidden="true"></i>' : awaiting ? '' : globalThis.SummonModelIcons.svg(item);
-    return `<button class="quota-signal ${ring === null ? 'is-unknown' : ''} ${low ? 'is-low' : ''} ${usage?.status === 'error' ? 'is-stale' : ''}" data-action="models-quota" data-id="${esc(item.id || item.role)}" aria-label="${esc(description)}" aria-busy="${Boolean(loading)}" aria-expanded="${view.quotaId === (item.id || item.role)}" aria-controls="model-quota-popover">
+    return `<button class="quota-signal ${executor ? 'executor' : ''} ${ring === null ? 'is-unknown' : ''} ${low ? 'is-low' : ''} ${usage?.status === 'error' ? 'is-stale' : ''}" data-action="models-quota" data-id="${esc(item.id || item.role)}" aria-label="${esc(description)}" aria-busy="${Boolean(loading)}" aria-expanded="${view.quotaId === (item.id || item.role)}" aria-controls="model-quota-popover">
       <span class="quota-signal-visual"><svg class="quota-signal-face" viewBox="0 0 64 59" aria-hidden="true" focusable="false"><path class="quota-signal-track" d="M15.74 45.26 A23 23 0 1 1 48.26 45.26" pathLength="100"/><path class="quota-signal-progress" d="M15.74 45.26 A23 23 0 1 1 48.26 45.26" pathLength="100" stroke-dasharray="${ring === null ? 0 : Math.max(0, Math.min(100, ring))} 100"/>
         ${dots === null ? '' : points.map(([x, y], index) => `<circle class="quota-signal-dot ${index < dots ? 'on' : ''}" cx="${x}" cy="${y}" r="1.9"/>`).join('')}</svg><span class="quota-signal-brand">${brand}</span>${value ? `<span class="quota-signal-value ${balance && !loading ? 'is-money' : ''}" aria-hidden="true">${esc(value)}</span>` : ''}</span>
-      <span class="quota-signal-role">模型</span></button>`;
+      <span class="quota-signal-role">${esc(roleShort)}</span></button>`;
   }
   function sidebar({ esc, icon, invalidate }) {
     invalidateSidebar = invalidate;
     const current = view.summary;
     const active = current?.chat;
-    const rows = active && current.activeId ? [{ ...active, role: 'model' }] : [];
+    const work = current?.work;
+    const rows = [];
+    if (active && current.activeId) rows.push({ ...active, role: 'model' });
+    if (work) rows.push({ ...work, role: 'executor' });
     if (!rows.length) return '';
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
-    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>模型连接</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div><footer><button data-action="navigate" data-view="models">管理模型连接 ${icon('arrow', 14)}</button></footer></aside>` : '';
-    return `<section class="sidebar-models" aria-label="模型连接额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
+    const popoverEyebrow = selected?.role === 'executor' ? (selected.roleLabel || '工作引擎') : '默认模型';
+    const popoverMeta = [selected?.model, selected?.identity].filter(Boolean).join(' · ');
+    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${esc(popoverEyebrow)}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${popoverMeta ? `<p class="quota-popover-model">${esc(popoverMeta)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div><footer><button data-action="navigate" data-view="models">管理模型连接 ${icon('arrow', 14)}</button></footer></aside>` : '';
+    return `<section class="sidebar-models" aria-label="模型与工作引擎额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
   }
   function closeQuota() {
     view.quotaId = null; document.querySelector('.quota-popover')?.remove();
@@ -198,16 +205,26 @@ globalThis.SummonModels = (() => {
     const codexSection = `<section class="models-purpose-card"><div class="models-section-heading"><div><p class="models-eyebrow">EXTERNAL CODEX</p><h2>③ 外部 Codex 推荐模型组合（软推荐）</h2></div><button type="button" class="secondary-button" data-action="models-codex-add-row" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}添加组合</button></div><p class="models-purpose-subtitle">保存在 <code>model-connections.json</code> 中，通过 <code>read(connection)</code> 动态提供给 ② 主对话按任务难度自主选择；修改后即时生效且不破坏 ② 前缀缓存，也不拦截用户显式点名的其他型号。</p>
       <form id="model-codex-rec-form"><div class="models-codex-list">${codexRows.map((row, idx) => `<div class="models-codex-row"><input data-codex-idx="${idx}" data-codex-field="model" list="models-choices-codex" value="${esc(row.model)}" placeholder="例如 gpt-6.2-sol" required><input data-codex-idx="${idx}" data-codex-field="efforts" value="${esc(row.efforts)}" placeholder="思考档（逗号分隔，如 xhigh, max）" required><button type="button" class="text-button models-remove" data-action="models-codex-remove-row" data-idx="${idx}" ${codexRows.length <= 1 || view.busy ? 'disabled' : ''}>删除</button></div>`).join('')}</div>
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : '保存 Codex 推荐组合'}</button></div></form></section>`;
-    return `<div class="page models-page">${globalThis.SummonPageNav?.('models') || ''}<header class="models-header"><div><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型连接</h1><p>查看和配置 Pi 使用的模型连接与用途默认表。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>
+    const work = summary.work;
+    const workCard = work ? `<section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>${esc(work.roleLabel || '工作引擎')}</h2><span>${esc(kinds[work.kind] || work.kind || '引擎')}</span></div><strong>${esc(work.name || '工作引擎')}</strong><p>${esc([work.model, work.identity].filter(Boolean).join(' · '))}</p>${work.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(work.usage, esc)}</section>` : '';
+    return `<div class="page models-page">${globalThis.SummonPageNav?.('models') || ''}<header class="models-header"><div><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型连接</h1><p>查看和配置 Pi 使用的模型连接与用途默认表。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy || view.refreshingUsage ? 'disabled' : ''}>${icon('refresh', 15)}${view.refreshingUsage ? '正在刷新…' : '刷新额度'}</button></header>
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
-      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>默认模型</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${active?.effectivePurposes ? `<div class="models-effective-summary">${purposeLabels.map(([k, t]) => `<span class="models-effective-pill">${esc(t)}：${esc(active.effectivePurposes[k]?.id || '—')} · ${esc(active.effectivePurposes[k]?.thinking_level ?? '默认')}</span>`).join('')}</div>` : ''}${active?.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(summary.chat?.usage, esc)}</section></div>
+      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>默认模型</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${active?.effectivePurposes ? `<div class="models-effective-summary">${purposeLabels.map(([k, t]) => `<span class="models-effective-pill">${esc(t)}：${esc(active.effectivePurposes[k]?.id || '—')} · ${esc(active.effectivePurposes[k]?.thinking_level ?? '默认')}</span>`).join('')}</div>` : ''}${active?.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(summary.chat?.usage, esc)}</section>${workCard}</div>
       <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.configured === false ? '<small class="models-unconfigured">待连接</small>' : ''}${item.active ? '<i class="models-selected-dot" role="img" aria-label="当前默认" title="当前默认"></i>' : ''}</button>`).join('')}</div><p class="models-list-note">新建 Bot 默认跟随全局默认连接及下方用途表。</p></section>${form}</div>
       ${purposeSection}${codexSection}</div>`;
   }
   async function updateUsage(force) {
     if (!bindings) return;
-    try { view.summary = await bindings.api('/api/model-settings/usage', 'POST', { force }); await bindings.refresh?.(); bindings.render(); }
-    catch (error) { if (force) bindings.toast(error.message, true); }
+    if (force) { view.refreshingUsage = true; bindings.render(); }
+    try {
+      const summary = await bindings.api('/api/model-settings/usage', 'POST', { force });
+      view.summary = summary;
+      invalidateSidebar?.();
+      bindings.render();
+    } catch (error) { if (force) bindings.toast(error.message, true); }
+    finally {
+      if (force) { view.refreshingUsage = false; bindings.render(); }
+    }
   }
   async function fetchChoices(id, discover = false) {
     const value = await bindings.api(`/api/model-settings/connections/${encodeURIComponent(id)}/models${discover ? '?discover=1' : ''}`);
@@ -385,5 +402,5 @@ globalThis.SummonModels = (() => {
         .map(level => new Option(level === 'off' ? '关闭思考' : level, level)));
     }
   });
-  return { sidebar, start, load, render, act, thinkingChoices, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary, bind: provided => { bindings = provided; } };
+  return { sidebar, start, load, render, act, thinkingChoices, sync: summary => { if (summary) { view.summary = summary; invalidateSidebar?.(); } }, current: () => view.summary, bind: provided => { bindings = provided; } };
 })();

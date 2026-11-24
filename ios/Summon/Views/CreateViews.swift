@@ -4,16 +4,15 @@ import UIKit
 struct CreateBotView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    let onCreated: (SummonRoom) -> Void
+    let onCreated: (SummonBot) -> Void
     @State private var name = ""
     @State private var avatar = SummonAvatar()
     @State private var busy = false
-    @State private var createdBot: SummonBot?
     @State private var errorMessage: String?
 
     private var canSubmit: Bool {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !busy && store.protocolReady && (createdBot != nil || (!title.isEmpty && title.utf16.count <= 100))
+        return !busy && store.protocolReady && !title.isEmpty && title.utf16.count <= 100
     }
 
     private var buttonColor: Color {
@@ -39,19 +38,15 @@ struct CreateBotView: View {
                 VStack(spacing: 28) {
                     GreetingAvatar(avatar: avatar)
                         .padding(.top, 28).padding(.bottom, 10)
-                    if let createdBot {
-                        Text("\(createdBot.name) 已创建")
-                    } else {
-                        TextField("为 Bot 取个名字", text: $name)
-                            .summonFont(.title3, weight: .medium).multilineTextAlignment(.center)
-                            .padding(18)
-                            .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
-                            .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
-                        if name.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 100 {
-                            InlineError(message: "Bot 名称不能超过 100 个字符。")
-                        }
-                        AvatarPicker(avatar: $avatar)
+                    TextField("为 Bot 取个名字", text: $name)
+                        .summonFont(.title3, weight: .medium).multilineTextAlignment(.center)
+                        .padding(18)
+                        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                        .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                    if name.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 100 {
+                        InlineError(message: "Bot 名称不能超过 100 个字符。")
                     }
+                    AvatarPicker(avatar: $avatar)
                     if let errorMessage { InlineError(message: errorMessage) }
                 }.padding(24)
             }
@@ -61,7 +56,7 @@ struct CreateBotView: View {
                 } label: {
                     HStack(spacing: 10) {
                         if busy { ProgressView().tint(buttonForeground) }
-                        Text(createdBot == nil ? "创建" : "打开聊天").summonFont(.headline)
+                        Text("创建").summonFont(.headline)
                     }
                     .frame(maxWidth: .infinity, minHeight: 54)
                     .foregroundStyle(buttonForeground)
@@ -85,14 +80,8 @@ struct CreateBotView: View {
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
-            let bot: SummonBot
-            if let createdBot { bot = createdBot }
-            else {
-                bot = try await store.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), avatar: avatar, instructions: "")
-                createdBot = bot
-            }
-            let room = try await store.openDirectMessage(bot: bot)
-            dismiss(); onCreated(room)
+            let bot = try await store.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), avatar: avatar, instructions: "")
+            dismiss(); onCreated(bot)
         } catch { errorMessage = error.localizedDescription }
     }
 }
@@ -161,85 +150,226 @@ struct AvatarPicker: View {
     }
 }
 
-struct CreateRoomView: View {
+private struct NewGroupSuggestion: Identifiable {
+    let id: String
+    let title: String
+    let desc: String
+    let prompt: String
+}
+
+private let newGroupSuggestions: [NewGroupSuggestion] = [
+    NewGroupSuggestion(
+        id: "dev",
+        title: "软件与网页开发",
+        desc: "写代码、做网页或应用，按需配前端与测试专员",
+        prompt: "我想建一个软件与网页开发群，用来推进架构、代码和界面实现，先帮我配好团队并确认要绑定的项目目录。"
+    ),
+    NewGroupSuggestion(
+        id: "schedule",
+        title: "个人日程与事务",
+        desc: "排差旅、管待办，个人习惯说一遍永久记住",
+        prompt: "我想建一个个人日程与日常事务群，帮我整理待办、规划行程并长期记住我的习惯偏好。"
+    ),
+    NewGroupSuggestion(
+        id: "ops",
+        title: "服务器运维排障",
+        desc: "查日志、盯告警，高风险操作主动拦住",
+        prompt: "我想建一个线上服务运维与排障群，负责查日志、处理故障并长期维护运维手册。"
+    ),
+    NewGroupSuggestion(
+        id: "research",
+        title: "专题研究与写作",
+        desc: "查资料、磨方案，把讨论沉淀成活文档",
+        prompt: "我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。"
+    ),
+]
+
+struct NewGroupDraftView: View {
     @Environment(SummonStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
     let onCreated: (SummonRoom) -> Void
-    @State private var name = ""
-    @State private var members: Set<String> = []
+    @State private var draftText = ""
+    @State private var workspaces: [SummonJSONValue] = []
+    @State private var selectedWorkspaceID: String?
     @State private var busy = false
     @State private var errorMessage: String?
+    @FocusState private var inputFocused: Bool
 
-    private var eggBot: SummonBot? { store.bots.first { $0.role_id == "eggbot" } }
-    private var onboardingBot: SummonBot? { store.bots.first { $0.role_id == "tool-onboarding" } }
-    private var optionalBots: [SummonBot] {
-        store.bots.filter { !["eggbot", "tool-onboarding"].contains($0.role_id ?? "") }
+    private var eggBot: SummonBot? {
+        store.bots.first { $0.role_id == "eggbot" && !$0.isPaused }
+            ?? store.bots.first { $0.role_id == "eggbot" }
+    }
+
+    private var eggAvatar: SummonAvatar {
+        eggBot?.resolvedAvatar ?? SummonAvatar.defaultAvatar(for: "bot-default-eggbot-local")
+    }
+
+    private var writableWorkspaces: [SummonJSONValue] {
+        workspaces.filter { $0["write"].bool != false && !$0["id"].stringValue.isEmpty }
+    }
+
+    private var selectedWorkspaceName: String? {
+        guard let selectedWorkspaceID else { return nil }
+        return writableWorkspaces.first { $0["id"].stringValue == selectedWorkspaceID }?["name"].string
+    }
+
+    private var canSend: Bool {
+        !busy && store.protocolReady && !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                TextField("群名称（可选）", text: $name)
-                Section("默认必含成员（自动加入）") {
-                    HStack(spacing: 12) {
-                        Image(systemName: "crown.fill")
-                            .foregroundStyle(SummonTheme.ok)
-                            .frame(width: 32, height: 32)
-                            .background(SummonTheme.ok.opacity(0.14), in: Circle())
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("群主控 Bot").summonFont(.subheadline, weight: .semibold)
-                            Text("建群同步创建，开启并主持本群对话").summonFont(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    HStack(spacing: 12) {
-                        if let eggBot { MemberAvatar(bot: eggBot, size: 32) }
-                        else { Image(systemName: "sparkles").frame(width: 32, height: 32) }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(eggBot?.name ?? "EggBot").summonFont(.subheadline, weight: .semibold)
-                            Text("后台观察分工与按需增配成员").summonFont(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    HStack(spacing: 12) {
-                        if let onboardingBot { MemberAvatar(bot: onboardingBot, size: 32) }
-                        else { Image(systemName: "wrench.and.screwdriver").frame(width: 32, height: 32) }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(onboardingBot?.name ?? "接口 Bot").summonFont(.subheadline, weight: .semibold)
-                            Text("外部工具接入、查询与连接维护").summonFont(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+        ScrollView {
+            VStack(spacing: 18) {
+                GreetingAvatar(avatar: eggAvatar)
+                    .scaleEffect(0.84)
+                    .frame(height: 124)
+                    .padding(.top, 20)
+
+                VStack(spacing: 8) {
+                    Text("\(eggBot?.name ?? "EggBot") · 团队孵化")
+                        .summonFont(.caption, weight: .semibold)
+                        .foregroundStyle(Color(summonHex: PaperLibrary.paperColor(eggAvatar.color, shape: eggAvatar.shape)))
+                    Text(busy ? "正在为你建群并安排伙伴…" : "你想要建一个什么群呢？")
+                        .summonFont(.title3, weight: .bold)
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.center)
+                    Text(busy ? "群主控、EggBot 与接口 Bot 正在就位，马上进入对话。" : "直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。")
+                        .summonFont(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                if !optionalBots.isEmpty {
-                    Section("附加其他成员（可选）") {
-                        ForEach(optionalBots) { bot in
-                            Toggle(isOn: Binding(get: { members.contains(bot.id) }, set: { included in
-                                if included { members.insert(bot.id) } else { members.remove(bot.id) }
-                            })) {
-                                Label { Text(bot.name) } icon: { MemberAvatar(bot: bot, size: 32) }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+                .frame(maxWidth: .infinity)
+                .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 10)], spacing: 10) {
+                    ForEach(newGroupSuggestions) { item in
+                        Button {
+                            Task { await startGroup(text: item.prompt, suggestedTitle: item.title) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title)
+                                    .summonFont(.subheadline, weight: .semibold)
+                                    .foregroundStyle(.primary)
+                                Text(item.desc)
+                                    .summonFont(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.leading)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
                         }
+                        .buttonStyle(SummonPressStyle(compact: true))
+                        .disabled(busy || !store.protocolReady)
                     }
                 }
-                if let errorMessage { InlineError(message: errorMessage) }
-            }
-            .navigationTitle("创建群聊")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("创建") { Task { await create() } }.disabled(busy || !store.protocolReady)
+
+                if let errorMessage {
+                    InlineError(message: errorMessage)
                 }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 24)
+        }
+        .background(SummonTheme.background)
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 8) {
+                if !writableWorkspaces.isEmpty {
+                    HStack(spacing: 6) {
+                        Menu {
+                            ForEach(writableWorkspaces, id: \.prettyPrinted) { item in
+                                let wsID = item["id"].stringValue
+                                let wsName = item["name"].stringValue.isEmpty ? wsID : item["name"].stringValue
+                                Button {
+                                    selectedWorkspaceID = wsID
+                                } label: {
+                                    Label(wsName, systemImage: selectedWorkspaceID == wsID ? "checkmark" : "folder")
+                                }
+                            }
+                            if selectedWorkspaceID != nil {
+                                Divider()
+                                Button("暂不绑定目录", role: .destructive) { selectedWorkspaceID = nil }
+                            }
+                        } label: {
+                            Label(selectedWorkspaceName.map { "目录：\($0)" } ?? "绑定项目目录（可选）", systemImage: "folder")
+                                .summonFont(.caption, weight: .medium)
+                                .foregroundStyle(selectedWorkspaceID == nil ? .secondary : .primary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(SummonTheme.surface, in: Capsule())
+                                .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+                        }
+                        .disabled(busy)
+                        Spacer()
+                    }
+                }
+
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextField("说说想建什么群、要做什么事…", text: $draftText, axis: .vertical)
+                        .lineLimit(1...5)
+                        .focused($inputFocused)
+                        .disabled(busy)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                        .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                        .onSubmit {
+                            if canSend { Task { await startGroup(text: draftText) } }
+                        }
+
+                    Button {
+                        Task { await startGroup(text: draftText) }
+                    } label: {
+                        Group {
+                            if busy { ProgressView().tint(.white) }
+                            else { Image(systemName: "arrow.up").font(.system(size: 16, weight: .bold)) }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(canSend ? Color.accentColor : Color(uiColor: .systemGray4), in: Circle())
+                    }
+                    .buttonStyle(SummonPressStyle(compact: true))
+                    .disabled(!canSend)
+                    .accessibilityLabel("创建并发送")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+            .background(SummonTheme.background.opacity(0.96))
+        }
+        .navigationTitle("新建群聊")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if let list = try? await store.list("/api/workspaces") {
+                workspaces = list
             }
         }
     }
 
-    private func create() async {
-        guard !busy else { return }
+    private func startGroup(text: String, suggestedTitle: String = "") async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !busy, store.protocolReady else { return }
         busy = true
+        errorMessage = nil
+        inputFocused = false
         defer { busy = false }
         do {
-            let room = try await store.createGroup(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                   members: optionalBots.map(\.id).filter(members.contains))
-            dismiss()
+            let room = try await store.createConversationalGroup(
+                text: trimmed,
+                suggestedTitle: suggestedTitle,
+                workspaceID: selectedWorkspaceID
+            )
+            draftText = ""
+            selectedWorkspaceID = nil
             onCreated(room)
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }

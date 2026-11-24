@@ -237,11 +237,13 @@ data class SummonRoom(
     val updatedAt: String?,
     val deletable: Boolean = false,
     val leadBotId: String? = null,
+    val mode: String? = null,
 ) {
-    val isGroup: Boolean get() = members.size != 2 || "user" !in members
+    val isGroup: Boolean get() = if (mode != null) mode != "direct" else members.size != 2 || "user" !in members
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name), "members" to members.toJsonStrings(),
+        "mode" to mode.strOrNull(),
         "deletable" to SummonJson.Bool(deletable),
         "lead_bot_id" to leadBotId.strOrNull(),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
@@ -261,6 +263,7 @@ data class SummonRoom(
             createdAt = json["createdAt"].string,
             updatedAt = json["updatedAt"].string,
             leadBotId = json["lead_bot_id"].string,
+            mode = json["mode"].string,
         )
     }
 }

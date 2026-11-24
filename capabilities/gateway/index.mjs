@@ -13,7 +13,7 @@ import { ChatroomService } from '../chatroom/service.mjs';
 import { ModelConnections } from '../models/service.mjs';
 import { protocolVersion, reject, user } from '../platform/contract.mjs';
 import { SummonPlatform } from '../platform/platform.mjs';
-import { SummonConnections } from '../services/connections.mjs';
+import { SummonConnections, connectionRecords } from '../services/connections.mjs';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync, syncPages } from '../shared/sync.mjs';
 import { PushService } from './push.mjs';
@@ -104,7 +104,7 @@ export async function startGateway(options = {}) {
   if (history?.status && history.status !== 'complete') throw new Error('Offline history maintenance is incomplete');
   const historyEpoch = history?.historyEpoch ?? null;
   const clients = new Set(), requests = new Set(), stores = [];
-  let platform, runtime, models, connections, push, server, url, timer, heartbeatTimer, activeTick, activeConnectionTick, closeTask, installation;
+  let platform, runtime, models, connections, push, server, url, timer, heartbeatTimer, usageTimer, activeTick, activeConnectionTick, closeTask, installation;
   let closing = false;
   let drainSnapshot;
   function store(name) {
@@ -163,6 +163,7 @@ export async function startGateway(options = {}) {
       closing = true;
       clearInterval(timer);
       clearInterval(heartbeatTimer);
+      clearInterval(usageTimer);
       for (const client of clients) client.end();
       const closed = server?.listening ? new Promise(done => server.close(done)) : null;
       server?.closeIdleConnections();
@@ -189,6 +190,7 @@ export async function startGateway(options = {}) {
       onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
       onProgressChange: () => emit('execution'),
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
+    models.attachConnections(() => connections.store.list(connectionRecords));
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, connections });
     platform.initializeDefaults();
@@ -303,6 +305,10 @@ export async function startGateway(options = {}) {
       }
     }, 20_000);
     heartbeatTimer.unref();
+    const warmUsage = () => { if (!closing && !platform.draining) void models.refreshUsage(false).catch(() => {}); };
+    usageTimer = setInterval(warmUsage, 120_000);
+    usageTimer.unref();
+    warmUsage();
     queueTick();
     return { url, token, platform, close, installationDrain };
   } catch (error) {

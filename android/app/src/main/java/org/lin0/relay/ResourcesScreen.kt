@@ -143,7 +143,7 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
         if (!loading && items.isEmpty() && section in listOf(ResourceSection.Files, ResourceSection.Executions)) Text("暂无记录", color = Color.Gray)
     }
 
-    if (createBot) CreateBotSheet(store, onOpenRoom = { }, onDismiss = { createBot = false })
+    if (createBot) CreateBotSheet(store, onCreated = { scope.launch { reload() } }, onDismiss = { createBot = false })
     editor?.let { route ->
         val close = { editor = null; scope.launch { reload() }; Unit }
         when (route.kind) {

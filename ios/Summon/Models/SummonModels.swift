@@ -212,6 +212,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var deletable: Bool?
     var id: String
     var name: String
+    var mode: String?
     var members: [String]
     var lead_bot_id: String?
     var pins: [SummonReference]?
@@ -220,7 +221,10 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var createdAt: String?
     var updatedAt: String?
 
-    var isGroup: Bool { members.count != 2 || !members.contains("user") }
+    var isGroup: Bool {
+        if let mode { return mode != "direct" }
+        return members.count != 2 || !members.contains("user")
+    }
 }
 
 struct SummonDelivery: Codable, Sendable {

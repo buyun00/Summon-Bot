@@ -37,6 +37,10 @@ function titleOf(value, fallback) {
   return value.trim();
 }
 
+function normalizeRoomNameKey(name) {
+  return String(name ?? '').trim().toLowerCase();
+}
+
 function normalizePrompt(raw) {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) fail('选择框格式无效');
@@ -247,8 +251,11 @@ export class ChatroomService {
   }
 
   projectRoom(room) {
-    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id } = room;
-    return { id, ref: { kind: 'room', id }, name, members, mode, pins, deletable: mode === 'group' && id !== botMaintenanceRoomId,
+    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt } = room;
+    return { id, ref: { kind: 'room', id }, name, members, mode, pins,
+      deletable: mode === 'group' && id !== botMaintenanceRoomId,
+      archivable: mode === 'group' && id !== botMaintenanceRoomId,
+      archived_at: archivedAt || null,
       ...(lead_bot_id ? { lead_bot_id } : {}),
       workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
@@ -429,7 +436,28 @@ export class ChatroomService {
     this.createRoom({ title: 'Bot 维护群', members: [bot.id], mode: 'group' }, 'user', { id: botMaintenanceRoomId });
   }
 
-  createRoom({ title, members, mode, workspace, lead_name }, actor, { id = randomUUID() } = {}) {
+  findDuplicateGroup(name, excludeId = null) {
+    const targetKey = normalizeRoomNameKey(name);
+    if (!targetKey) return null;
+    return this.store.list('rooms').find(item =>
+      item.mode === 'group' && item.id !== excludeId && normalizeRoomNameKey(item.name) === targetKey) || null;
+  }
+
+  uniqueGroupTitle(baseTitle) {
+    const existingKeys = new Set(
+      this.store.list('rooms').filter(item => item.mode === 'group').map(item => normalizeRoomNameKey(item.name)),
+    );
+    const base = String(baseTitle || '新群聊').trim().slice(0, 160) || '新群聊';
+    if (!existingKeys.has(normalizeRoomNameKey(base))) return base;
+    let index = 2;
+    while (true) {
+      const suffix = ` ${index++}`;
+      const candidate = `${base.slice(0, Math.max(1, 160 - suffix.length))}${suffix}`;
+      if (!existingKeys.has(normalizeRoomNameKey(candidate))) return candidate;
+    }
+  }
+
+  createRoom({ title, members, mode, workspace, lead_name, skip_welcome, auto_title }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const requested = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
     let createdLead = null;
@@ -442,13 +470,24 @@ export class ChatroomService {
       const isStandardGroup = mode === 'group' && id !== botMaintenanceRoomId;
       let roomName;
       if (title !== undefined) {
-        roomName = titleOf(title, '新会话');
+        const requestedName = titleOf(title, '新会话');
+        if (mode === 'group') {
+          if (auto_title) {
+            roomName = this.uniqueGroupTitle(requestedName);
+          } else {
+            const dup = this.findDuplicateGroup(requestedName);
+            if (dup) {
+              fail(dup.archivedAt
+                ? `已有同名已归档群聊「${dup.name}」，请换一个名称`
+                : `群聊名称「${dup.name}」已存在，请换一个名称`, 409);
+            }
+            roomName = requestedName;
+          }
+        } else {
+          roomName = requestedName;
+        }
       } else if (isStandardGroup) {
-        const existingNames = new Set(this.store.list('rooms').map(item => item.name));
-        let candidate = '新群聊';
-        let index = 2;
-        while (existingNames.has(candidate)) candidate = `新群聊 ${index++}`;
-        roomName = candidate;
+        roomName = this.uniqueGroupTitle('新群聊');
       } else {
         const fallback = requested.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
         roomName = fallback.slice(0, 160) || '新会话';
@@ -481,7 +520,7 @@ export class ChatroomService {
         ...(leadBotId ? { lead_bot_id: leadBotId } : {}),
         workspace: boundWorkspace,
       });
-      if (isStandardGroup && leadBotId) {
+      if (isStandardGroup && leadBotId && !skip_welcome) {
         const leadRecord = this.store.get('platform-bots', leadBotId);
         const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
         const welcomeText = wsLabel
@@ -527,6 +566,7 @@ export class ChatroomService {
     if (pinAdd.some(ref => pinRemove.has(refKey(ref)))) fail('同一引用不能同时添加和移除');
     const saved = this.store.transaction(() => {
       const room = this.room(id, actor);
+      if (room.archivedAt) fail('该群聊已归档，请先移出归档后再修改', 409);
       assertRevision(room.revision, input.revision);
       const added = [...add].filter(member => !room.members.includes(member));
       const removed = room.members.filter(member => remove.has(member));
@@ -540,6 +580,15 @@ export class ChatroomService {
       this.validateMembers(added, actor);
       const members = [...room.members.filter(member => !remove.has(member)), ...added];
       const mode = room.mode === 'direct' && members.length > 2 ? 'group' : room.mode;
+      const nextName = titleOf(input.title, room.name);
+      if (mode === 'group' && input.title !== undefined && normalizeRoomNameKey(nextName) !== normalizeRoomNameKey(room.name)) {
+        const dup = this.findDuplicateGroup(nextName, id);
+        if (dup) {
+          fail(dup.archivedAt
+            ? `已有同名已归档群聊「${dup.name}」，请换一个名称`
+            : `群聊名称「${dup.name}」已存在，请换一个名称`, 409);
+        }
+      }
       if (mode === 'group' && room.mode === 'direct') {
         const onboarding = this.manager.onboardingBot();
         if (onboarding?.enabled && !members.includes(onboarding.id) && !remove.has(onboarding.id) &&
@@ -556,13 +605,42 @@ export class ChatroomService {
         pins.set(refKey(ref), ref);
       }
       const updated = this.store.save('rooms', {
-        id, name: titleOf(input.title, room.name), members, mode, pins: [...pins.values()], revision: room.revision + 1,
+        id, name: nextName, members, mode, pins: [...pins.values()], revision: room.revision + 1,
         ...(input.workspace !== undefined && { workspace: this.platform.bindRoomWorkspace(input.workspace, actor, mode) }),
       });
       for (const member of removed) if (member !== 'user') this.platform.removeRoomBase(member, id);
       const changedMembers = mode !== room.mode ? members : added;
       for (const member of changedMembers) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return updated;
+    });
+    const projection = this.projectRoom(saved);
+    this.emit('room', projection);
+    return projection;
+  }
+
+  archiveRoom(id, revision, actor) {
+    id = idOf(id, 'room');
+    if (identity(actor).kind !== 'user') fail('只有宿主能归档群聊', 403);
+    const saved = this.store.transaction(() => {
+      const room = this.room(id, actor);
+      if (room.mode !== 'group' || id === botMaintenanceRoomId) fail('此会话不能归档', 403);
+      if (revision !== undefined) assertRevision(room.revision, revision);
+      if (room.archivedAt) return room;
+      return this.store.save('rooms', { id, archivedAt: new Date().toISOString(), revision: room.revision + 1 });
+    });
+    const projection = this.projectRoom(saved);
+    this.emit('room', projection);
+    return projection;
+  }
+
+  restoreRoom(id, revision, actor) {
+    id = idOf(id, 'room');
+    if (identity(actor).kind !== 'user') fail('只有宿主能恢复群聊', 403);
+    const saved = this.store.transaction(() => {
+      const room = this.room(id, actor);
+      if (revision !== undefined) assertRevision(room.revision, revision);
+      if (!room.archivedAt) return room;
+      return this.store.save('rooms', { id, archivedAt: null, revision: room.revision + 1 });
     });
     const projection = this.projectRoom(saved);
     this.emit('room', projection);
@@ -619,6 +697,7 @@ export class ChatroomService {
     let updatedPromptMessage = null;
     const result = this.store.transaction(() => {
       const room = this.room(id, actor);
+      if (room.archivedAt) fail('该群聊已归档，请先移出归档后再发送消息', 409);
       const eventId = options.eventId || callId || randomUUID();
       const existing = rowMessage(this.messageRow.get(eventId));
       if (existing) {

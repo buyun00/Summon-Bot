@@ -392,11 +392,6 @@ final class SummonStore {
         return (a.createdAt ?? "", a.id) < (b.createdAt ?? "", b.id)
     }
 
-    func openDirectMessage(bot: SummonBot) async throws -> SummonRoom {
-        if let room = rooms.first(where: { !$0.isGroup && $0.members.contains(bot.id) }) { return room }
-        return try await createRoom(name: bot.name, members: [bot.id], mode: "direct")
-    }
-
     func fetchBot(_ id: String) async throws -> SummonBot {
         try await business(SummonBot.self, "/api/bots/\(SummonAPIClient.component(id))", "GET", nil)
     }
@@ -426,18 +421,70 @@ final class SummonStore {
         return result
     }
 
-    func createGroup(name: String, members: [String]) async throws -> SummonRoom {
-        let room = try await createRoom(name: name, members: members, mode: "group")
+    func createGroup(name: String, members: [String], workspaceID: String? = nil, skipWelcome: Bool = false) async throws -> SummonRoom {
+        let room = try await createRoom(name: name, members: members, mode: "group", workspaceID: workspaceID, skipWelcome: skipWelcome)
         await refresh()
         return room
     }
 
-    private func createRoom(name: String, members: [String], mode: String) async throws -> SummonRoom {
+    static func deriveInitialGroupTitle(from rawText: String, suggestedTitle: String = "") -> String {
+        let suggested = suggestedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !suggested.isEmpty { return String(suggested.prefix(24)) }
+        let firstLine = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        var cleaned = firstLine
+        let leadingPatterns = [
+            "^(?:你好|嗨|hi|hello|请|麻烦|帮我|给我|我要|我想|想|想要|准备|打算|可以)?\\s*(?:新建|创建|建立|建|开|搭|组建|拉)?(?:一个|个)?\\s*",
+            "^(?:关于|用来|用于|专门)?\\s*",
+        ]
+        for pattern in leadingPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(cleaned.startIndex..<cleaned.endIndex, in: cleaned)
+                cleaned = regex.stringByReplacingMatches(in: cleaned, range: range, withTemplate: "")
+            }
+        }
+        if let sepRange = cleaned.range(of: "[，。！？；：、,.!?;:~～]+.*$", options: .regularExpression) {
+            cleaned.removeSubrange(sepRange)
+        }
+        if let suffixRange = cleaned.range(of: "(?:的)?(?:群聊|群|工作群|项目群|协作群|小群)$", options: .regularExpression) {
+            cleaned.removeSubrange(suffixRange)
+        }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { return "新群聊" }
+        return String(cleaned.prefix(16))
+    }
+
+    func createConversationalGroup(text rawText: String, suggestedTitle: String = "", workspaceID: String? = nil) async throws -> SummonRoom {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, protocolReady else { throw SummonAPIError.invalidResponse }
+        let title = Self.deriveInitialGroupTitle(from: text, suggestedTitle: suggestedTitle)
+        let room = try await createRoom(name: title, members: [], mode: "group", workspaceID: workspaceID, skipWelcome: true)
+        await refresh()
+        let egg = bots.first { $0.role_id == "eggbot" && !$0.isPaused }
+        let mentions = (egg != nil && room.members.contains(egg!.id)) ? [egg!.id] : []
+        let id = Self.newID()
+        let message = SummonMessage(
+            id: "local-\(id)",
+            roomId: room.id,
+            senderId: "user",
+            content: text,
+            mentions: mentions,
+            clientId: id,
+            createdAt: ISO8601DateFormatter().string(from: Date())
+        )
+        pendingMessages.append(SummonPendingMessage(clientID: id, message: message, status: "queued"))
+        await deliver(id, queryFirst: false)
+        return room
+    }
+
+    private func createRoom(name: String, members: [String], mode: String, workspaceID: String? = nil, skipWelcome: Bool = false) async throws -> SummonRoom {
         var body: [String: SummonJSONValue] = [
             "members": .array(members.map(SummonJSONValue.string)),
             "mode": .string(mode)
         ]
         if !name.isEmpty { body["title"] = .string(name) }
+        if let workspaceID, !workspaceID.isEmpty { body["workspace"] = .string(workspaceID) }
+        if skipWelcome { body["skip_welcome"] = .bool(true) }
         let result = try await business(SummonRoom.self, "/api/rooms", "POST", .object(body), clientID: Self.newID())
         upsertRoom(result)
         return result

@@ -106,43 +106,33 @@ private struct HomeOrganization: Codable, Equatable, Sendable {
     }
 }
 
-private struct HomeEntry: Identifiable {
-    enum Kind {
-        case room(SummonRoom)
-        case bot(SummonBot, SummonRoom?)
-    }
+private let botMaintenanceRoomID = "room-default-bot-maintenance"
 
+private enum ConversationRoute: Hashable {
+    case room(String)
+    case newGroup
+}
+
+private struct HomeEntry: Identifiable {
     let key: String
-    let kind: Kind
+    let room: SummonRoom
     let title: String
     let preview: String
     let fullPreview: String
     let timestamp: String
     let sortDate: String
-    let isPaused: Bool
+    let isSystem: Bool
+    let isWorking: Bool
 
     var id: String { key }
-    var roomID: String? {
-        switch kind {
-        case .room(let room): room.id
-        case .bot(_, let room): room?.id
-        }
-    }
-    var botID: String? {
-        switch kind {
-        case .room: nil
-        case .bot(let bot, _): bot.id
-        }
-    }
+    var roomID: String { room.id }
 }
 
 private enum DetailsSheetTarget: Identifiable {
     case room(String)
-    case bot(String)
     var id: String {
         switch self {
         case .room(let id): "room:\(id)"
-        case .bot(let id): "bot:\(id)"
         }
     }
 }
@@ -151,7 +141,7 @@ struct ConversationListView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(SummonDisplayKey.appearance) private var appearanceRaw = SummonAppearance.system.rawValue
-    @State private var path: [String] = []
+    @State private var path: [ConversationRoute] = []
     @State private var query = ""
     @State private var org = HomeOrganization()
     @State private var showSettings = false
@@ -161,8 +151,6 @@ struct ConversationListView: View {
     @State private var showProfileMenu = false
     @State private var profileDestination: ProfileDestination?
     @State private var quotaItem: SummonJSONValue?
-    @State private var showCreateBot = false
-    @State private var showCreateRoom = false
     @State private var showModels = false
     @State private var detailsTarget: DetailsSheetTarget?
     @State private var newFolderAlert = false
@@ -171,26 +159,37 @@ struct ConversationListView: View {
     @State private var renamingFolder: HomeFolder?
     @State private var renameFolderText = ""
     @State private var resourceSection: ResourceSection?
-    @State private var openingBot = false
     @State private var openingPush = false
     @FocusState private var searchFocused: Bool
 
-    private var allEntries: [HomeEntry] {
-        let directRoomsByBot: [String: SummonRoom] = Dictionary(
-            store.bots.compactMap { bot in
-                directRoom(bot).map { (bot.id, $0) }
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let primaryDirectRoomIDs = Set(directRoomsByBot.values.map(\.id))
+    private func exclusiveWorkingBot(in room: SummonRoom) -> SummonBot? {
+        var candidates: [SummonBot] = []
+        if let leadID = room.lead_bot_id, let lead = store.bots.first(where: { $0.id == leadID }) {
+            candidates.append(lead)
+        }
+        let allGroups = store.rooms.filter(\.isGroup)
+        for memberID in room.members where memberID != "user" && memberID != room.lead_bot_id {
+            guard let bot = store.bots.first(where: { $0.id == memberID }),
+                  !["eggbot", "tool-onboarding"].contains(bot.role_id ?? "") else { continue }
+            let roomCount = allGroups.filter { $0.members.contains(memberID) }.count
+            if roomCount <= 1 { candidates.append(bot) }
+        }
+        return candidates.first { $0.resolvedActivity == "working" }
+    }
 
-        let groupEntries: [HomeEntry] = store.rooms
-            .filter { room in !primaryDirectRoomIDs.contains(room.id) }
+    private var allEntries: [HomeEntry] {
+        store.rooms
+            .filter(\.isGroup)
             .map { room in
                 let last = room.lastMessage
+                let activeBot = store.isConnected ? exclusiveWorkingBot(in: room) : nil
                 let singleLine: String
                 let fullText: String
-                if let last {
+                if let activeBot {
+                    singleLine = "\(activeBot.name) · 正在处理…"
+                    let raw = last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    fullText = raw.isEmpty ? singleLine : raw
+                } else if let last {
                     let body = messageBodySummary(last)
                     singleLine = "\(store.name(for: last.senderId))：\(body)"
                     let raw = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -202,49 +201,20 @@ struct ConversationListView: View {
                 let date = last?.createdAt ?? room.updatedAt ?? room.createdAt ?? ""
                 return HomeEntry(
                     key: "room:\(room.id)",
-                    kind: .room(room),
+                    room: room,
                     title: room.name,
                     preview: singleLine,
                     fullPreview: fullText,
                     timestamp: SummonFormat.time(last?.createdAt),
                     sortDate: date,
-                    isPaused: false
+                    isSystem: room.id == botMaintenanceRoomID,
+                    isWorking: activeBot != nil
                 )
             }
-
-        let botEntries: [HomeEntry] = store.bots.map { bot in
-            let room = directRoomsByBot[bot.id]
-            let last = room?.lastMessage
-            let singleLine: String
-            let fullText: String
-            if bot.isPaused {
-                singleLine = "已暂停"
-                fullText = "该 Bot 当前已暂停。"
-            } else if let last {
-                singleLine = messageBodySummary(last)
-                let raw = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                fullText = raw.isEmpty ? singleLine : raw
-            } else {
-                singleLine = "开始聊天"
-                fullText = "发一条消息给 \(bot.name)。"
+            .sorted {
+                if $0.sortDate != $1.sortDate { return $0.sortDate > $1.sortDate }
+                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
-            let date = last?.createdAt ?? room?.updatedAt ?? room?.createdAt ?? ""
-            return HomeEntry(
-                key: "bot:\(bot.id)",
-                kind: .bot(bot, room),
-                title: bot.name,
-                preview: singleLine,
-                fullPreview: fullText,
-                timestamp: SummonFormat.time(last?.createdAt),
-                sortDate: date,
-                isPaused: bot.isPaused
-            )
-        }
-
-        return (groupEntries + botEntries).sorted {
-            if $0.sortDate != $1.sortDate { return $0.sortDate > $1.sortDate }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-        }
     }
 
     private var visibleEntries: [HomeEntry] {
@@ -283,7 +253,12 @@ struct ConversationListView: View {
 
     private var defaultFolderEntries: [HomeEntry] {
         let assigned = Set(org.folders.flatMap(\.keys))
-        return unpinnedEntries.filter { !assigned.contains($0.key) }
+        return unpinnedEntries.filter { !assigned.contains($0.key) && !$0.isSystem }
+    }
+
+    private var systemFolderEntries: [HomeEntry] {
+        let assigned = Set(org.folders.flatMap(\.keys))
+        return unpinnedEntries.filter { !assigned.contains($0.key) && $0.isSystem }
     }
 
     var body: some View {
@@ -309,7 +284,7 @@ struct ConversationListView: View {
                     }
                 } else {
                     if !defaultFolderEntries.isEmpty {
-                        folderHeaderRow(id: "__default__", title: "主要", customFolder: nil)
+                        folderHeaderRow(id: "__default__", title: "群聊", customFolder: nil)
                         if !org.isCollapsed("__default__") {
                             ForEach(defaultFolderEntries) { entry in
                                 conversationRowCell(entry)
@@ -323,7 +298,7 @@ struct ConversationListView: View {
                         folderHeaderRow(id: folder.id, title: folder.name, customFolder: folder)
                         if !org.isCollapsed(folder.id) {
                             if entries.isEmpty {
-                                Text("长按任意对话可移动到此分组")
+                                Text("长按任意群聊可移动到此分组")
                                     .summonFont(.caption)
                                     .foregroundStyle(.tertiary)
                                     .listRowInsets(EdgeInsets(top: 8, leading: 22, bottom: 14, trailing: 22))
@@ -336,15 +311,24 @@ struct ConversationListView: View {
                             }
                         }
                     }
+
+                    if !systemFolderEntries.isEmpty {
+                        folderHeaderRow(id: "__system__", title: "系统", customFolder: nil)
+                        if !org.isCollapsed("__system__") {
+                            ForEach(systemFolderEntries) { entry in
+                                conversationRowCell(entry)
+                            }
+                        }
+                    }
                 }
 
-                if store.bots.isEmpty && store.rooms.isEmpty && !store.isLoading && store.protocolReady {
+                if allEntries.isEmpty && !store.isLoading && store.protocolReady {
                     ContentUnavailableView {
                         Label("你的工作空间", systemImage: "bubble.left.and.bubble.right")
                     } description: {
-                        Text(store.errorMessage == nil ? "创建第一位 Bot，开始聊天。" : "暂时无法获取记录，请检查服务连接。")
+                        Text(store.errorMessage == nil ? "点击右上角 +，说出你想建的群，立即组建专属团队。" : "暂时无法获取记录，请检查服务连接。")
                     } actions: {
-                        Button("创建 Bot") { showCreateBot = true }.buttonStyle(.glass)
+                        Button("新建群聊") { path.append(.newGroup) }.buttonStyle(.glass)
                         Button("连接设置") { showSettings = true }
                     }
                     .padding(.top, 70)
@@ -410,16 +394,30 @@ struct ConversationListView: View {
                             .onDisappear { presentProfileDestination() }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("创建新 Bot", systemImage: "person.badge.plus") { showCreateBot = true }
-                        Button("创建群聊", systemImage: "person.2.badge.plus") { showCreateRoom = true }
-                    } label: {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { resourceSection = .bots } label: {
+                        Image(systemName: "person.2").summonFont(.body)
+                    }
+                    .accessibilityLabel("团队成员")
+                    .disabled(!store.protocolReady)
+
+                    Button { path.append(.newGroup) } label: {
                         Image(systemName: "plus").summonFont(.title2)
-                    }.accessibilityLabel("新建").disabled(!store.protocolReady)
+                    }
+                    .accessibilityLabel("新建群聊")
+                    .disabled(!store.protocolReady)
                 }
             }
-            .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
+            .navigationDestination(for: ConversationRoute.self) { route in
+                switch route {
+                case .room(let id):
+                    ChatView(roomID: id)
+                case .newGroup:
+                    NewGroupDraftView { room in
+                        path = [.room(room.id)]
+                    }
+                }
+            }
             .onAppear { org = HomeOrganization.load(for: store.settings.baseURL) }
             .onChange(of: store.settings.baseURL) { _, newURL in
                 org = HomeOrganization.load(for: newURL)
@@ -463,26 +461,12 @@ struct ConversationListView: View {
                 NavigationStack {
                     switch target {
                     case .room(let id): RoomDetailsView(roomID: id)
-                    case .bot(let id):
-                        BotDetailsView(botID: id)
-                            .toolbar {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button("关闭", systemImage: "xmark") { detailsTarget = nil }
-                                        .labelStyle(.iconOnly)
-                                }
-                            }
                     }
                 }
             }
             .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) {
                 if let quotaItem { ModelQuotaDetailsView(item: quotaItem) }
             }
-            .summonSheet(isPresented: $showCreateBot) {
-                CreateBotView { room in openRoom(room.id) }
-                    .presentationDragIndicator(.visible)
-                    .presentationCornerRadius(28)
-            }
-            .summonSheet(isPresented: $showCreateRoom) { CreateRoomView { room in openRoom(room.id) } }
             .summonSheet(isPresented: $showModels) { ModelSettingsView() }
             .summonSheet(item: $resourceSection) { section in ResourcesView(section: section) }
         }
@@ -505,7 +489,7 @@ struct ConversationListView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(.secondary)
-                    TextField("搜索", text: $query)
+                    TextField("搜索群聊", text: $query)
                         .focused($searchFocused)
                         .submitLabel(.search)
                         .textInputAutocapitalization(.never)
@@ -617,7 +601,14 @@ struct ConversationListView: View {
         return Button { openEntry(entry) } label: {
             HStack(spacing: 15) {
                 entryAvatar(entry, size: 52)
-                    .opacity(entry.isPaused ? 0.45 : 1)
+                    .overlay(alignment: .bottomTrailing) {
+                        if entry.isWorking {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 11, height: 11)
+                                .overlay { Circle().strokeBorder(SummonTheme.background, lineWidth: 2) }
+                        }
+                    }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(entry.title)
@@ -633,7 +624,7 @@ struct ConversationListView: View {
                     }
                     Text(entry.preview)
                         .summonFont(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(entry.isWorking ? Color.orange : Color.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -716,12 +707,7 @@ struct ConversationListView: View {
 
     @ViewBuilder
     private func entryAvatar(_ entry: HomeEntry, size: CGFloat, bots: [SummonBot]? = nil, background: Color = SummonTheme.background) -> some View {
-        switch entry.kind {
-        case .room(let room):
-            RoomAvatar(room: room, size: size, background: background, bots: bots)
-        case .bot(let bot, _):
-            MemberAvatar(bot: bot, size: size)
-        }
+        RoomAvatar(room: entry.room, size: size, background: background, bots: bots)
     }
 
     @ViewBuilder
@@ -737,7 +723,7 @@ struct ConversationListView: View {
             Button {
                 org.move(entry.key, toFolder: nil)
             } label: {
-                Label("主要", systemImage: currentFolderID == nil ? "checkmark" : "folder")
+                Label(entry.isSystem ? "系统" : "群聊", systemImage: currentFolderID == nil ? "checkmark" : "folder")
             }
             ForEach(org.folders) { folder in
                 Button {
@@ -753,14 +739,8 @@ struct ConversationListView: View {
                 newFolderAlert = true
             }
         }
-        if let roomID = entry.roomID {
-            Button("会话详情", systemImage: "info.circle") {
-                detailsTarget = .room(roomID)
-            }
-        } else if let botID = entry.botID {
-            Button("Bot 设置", systemImage: "slider.horizontal.3") {
-                detailsTarget = .bot(botID)
-            }
+        Button("群聊详情", systemImage: "info.circle") {
+            detailsTarget = .room(entry.roomID)
         }
         Divider()
         Button("隐藏", systemImage: "eye.slash", role: .destructive) {
@@ -771,22 +751,7 @@ struct ConversationListView: View {
     }
 
     private func openEntry(_ entry: HomeEntry) {
-        switch entry.kind {
-        case .room(let room):
-            openRoom(room.id)
-        case .bot(let bot, let existingRoom):
-            if let existingRoom {
-                openRoom(existingRoom.id)
-                return
-            }
-            guard !openingBot else { return }
-            openingBot = true
-            Task {
-                defer { openingBot = false }
-                do { let room = try await store.openDirectMessage(bot: bot); openRoom(room.id) }
-                catch { store.errorMessage = error.localizedDescription }
-            }
-        }
+        openRoom(entry.room.id)
     }
 
     private var connectionStatus: some View {
@@ -827,8 +792,8 @@ struct ConversationListView: View {
                 profileMenuButton("显示与外观", symbol: "circle.lefthalf.filled", destination: .display)
                 profileMenuButton("设置", symbol: "gearshape", destination: .settings)
                 profileMenuButton("模型与用量", symbol: "cpu", destination: .models)
-                if !org.hiddenKeys.isEmpty {
-                    profileMenuButton("已隐藏对话（\(org.hiddenKeys.count)）", symbol: "eye.slash", destination: .hidden)
+                if !hiddenEntries.isEmpty {
+                    profileMenuButton("已隐藏群聊（\(hiddenEntries.count)）", symbol: "eye.slash", destination: .hidden)
                 }
                 Divider().padding(.vertical, 6)
                 ForEach(ResourceSection.allCases) { section in
@@ -867,10 +832,6 @@ struct ConversationListView: View {
         }
     }
 
-    private func directRoom(_ bot: SummonBot) -> SummonRoom? {
-        store.rooms.first { !$0.isGroup && $0.members.contains(bot.id) }
-    }
-
     private func messageBodySummary(_ message: SummonMessage) -> String {
         let cleaned = message.content
             .replacingOccurrences(of: "\n", with: " ")
@@ -894,7 +855,7 @@ struct ConversationListView: View {
                 try await store.openPushRoom(id)
                 guard SummonPush.shared.destinationRoomID == id else { return }
                 showSettings = false
-                path = [id]
+                path = [.room(id)]
                 SummonPush.shared.destinationRoomID = nil
             } catch {
                 if SummonPush.shared.destinationRoomID == id { SummonPush.shared.destinationRoomID = nil }
@@ -903,7 +864,7 @@ struct ConversationListView: View {
         }
     }
 
-    private func openRoom(_ id: String) { path.append(id) }
+    private func openRoom(_ id: String) { path.append(.room(id)) }
 }
 
 private struct HiddenConversationsSheet: View {
@@ -915,15 +876,12 @@ private struct HiddenConversationsSheet: View {
         NavigationStack {
             List {
                 if entries.isEmpty {
-                    Text("没有已隐藏的对话")
+                    Text("没有已隐藏的群聊")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(entries) { entry in
                     HStack(spacing: 12) {
-                        switch entry.kind {
-                        case .room(let room): RoomAvatar(room: room, size: 38)
-                        case .bot(let bot, _): MemberAvatar(bot: bot, size: 38)
-                        }
+                        RoomAvatar(room: entry.room, size: 38)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(entry.title).summonFont(.body, weight: .medium)
                             Text(entry.preview).summonFont(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -934,7 +892,7 @@ private struct HiddenConversationsSheet: View {
                     }
                 }
             }
-            .navigationTitle("已隐藏对话")
+            .navigationTitle("已隐藏群聊")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }

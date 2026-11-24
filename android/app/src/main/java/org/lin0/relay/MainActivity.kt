@@ -154,7 +154,19 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                                 onOpenUsage = { nav.navigate("usage") },
                                 onOpenModels = { nav.navigate("models") },
                                 onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
+                                onOpenNewGroup = { nav.navigate("new-group") },
                                 onOpenResource = { section -> nav.navigate("resources/${section.name}") },
+                            )
+                        }
+                        composable("new-group") {
+                            NewGroupDraftScreen(
+                                store = store,
+                                onBack = { nav.popBackStack() },
+                                onCreated = { id ->
+                                    nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") {
+                                        popUpTo("new-group") { inclusive = true }
+                                    }
+                                },
                             )
                         }
                         composable("chat/{roomId}", arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
