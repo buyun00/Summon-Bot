@@ -1,0 +1,297 @@
+/* Multi-PC Relay Hub UI: Paper (light) & Midnight (dark) native styling */
+
+.hub-node-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.06));
+}
+.hub-node-strip::-webkit-scrollbar { display: none; }
+
+.hub-connect-strip {
+  justify-content: space-between;
+  font-size: 12px;
+}
+.hub-strip-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted, #6f6a60);
+}
+.hub-strip-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent, #2f6feb);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.hub-strip-link:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
+
+.hub-node-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.09));
+  background: var(--surface-card, rgba(255, 255, 255, 0.65));
+  color: var(--text-primary, #1f1d1a);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.hub-node-pill.active {
+  background: var(--text-primary, #1f1d1a);
+  color: var(--surface-base, #f8f6f1);
+  border-color: transparent;
+}
+.hub-node-pill.is-offline {
+  opacity: 0.52;
+  cursor: default;
+  border-style: dashed;
+}
+.hub-node-pill em {
+  font-style: normal;
+  font-size: 11px;
+  opacity: 0.8;
+}
+.hub-pill-count {
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.hub-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.hub-dot.is-online,
+.hub-dot.is-local { background: #2da44e; }
+.hub-dot.is-offline { background: #9ca3af; }
+
+.contact-node-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 5px;
+  background: var(--surface-muted, rgba(0, 0, 0, 0.06));
+  color: var(--text-muted, #6f6a60);
+  flex: 0 0 auto;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.dark .contact-node-tag {
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.hub-node-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  color: var(--text-muted, #6f6a60);
+  border-bottom: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.06));
+}
+.hub-node-selector-bar select {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.14));
+  background: var(--surface-card, #fff);
+  color: var(--text-primary, #1f1d1a);
+}
+
+.hub-empty-online {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px;
+}
+.hub-empty-card {
+  max-width: 440px;
+  text-align: center;
+  padding: 28px 24px;
+  border-radius: 18px;
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+  background: var(--surface-card, rgba(255, 255, 255, 0.8));
+}
+.hub-empty-card h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+.hub-empty-card p {
+  margin: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-muted, #6f6a60);
+}
+.hub-empty-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.hub-empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Auth Overlay */
+.hub-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(248, 246, 241, 0.92);
+  backdrop-filter: blur(14px);
+}
+html.dark .hub-auth-overlay {
+  background: rgba(11, 12, 16, 0.9);
+}
+.hub-auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 26px 24px 22px;
+  border-radius: 20px;
+  background: var(--surface-card, #fffdf9);
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.09));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.12);
+}
+html.dark .hub-auth-card {
+  background: #16181f;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.hub-auth-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.hub-auth-head h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+.hub-auth-head p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted, #6f6a60);
+}
+.hub-auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface-muted, rgba(0, 0, 0, 0.05));
+  margin-bottom: 16px;
+}
+html.dark .hub-auth-tabs {
+  background: rgba(255, 255, 255, 0.06);
+}
+.hub-auth-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted, #6f6a60);
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.hub-auth-tabs button.active {
+  background: var(--surface-card, #fff);
+  color: var(--text-primary, #1f1d1a);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+html.dark .hub-auth-tabs button.active {
+  background: #232631;
+  color: #f3f4f6;
+}
+.hub-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hub-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-muted, #6f6a60);
+}
+.hub-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.14));
+  background: var(--surface-base, #f8f6f1);
+  color: var(--text-primary, #1f1d1a);
+  font: inherit;
+  font-size: 14px;
+}
+html.dark .hub-field input {
+  background: #0f1117;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f3f4f6;
+}
+.hub-advanced {
+  font-size: 12.5px;
+  color: var(--text-muted, #6f6a60);
+}
+.hub-advanced summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.hub-auth-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+  font-size: 13px;
+}
+.hub-auth-submit {
+  width: 100%;
+  padding: 11px 14px;
+  margin-top: 4px;
+}
+.hub-auth-skip {
+  width: 100%;
+  margin-top: 12px;
+  text-align: center;
+  font-size: 12.5px;
+}
+.danger-text {
+  color: #dc2626 !important;
+}

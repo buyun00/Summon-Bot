@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -235,6 +236,8 @@ private const val BOT_MAINTENANCE_ROOM_ID = "room-default-bot-maintenance"
 
 private data class HomeEntry(
     val key: String,
+    val nodeId: String = "",
+    val nodeName: String = "",
     val room: SummonRoom,
     val title: String,
     val preview: String,
@@ -297,8 +300,9 @@ fun ConversationListScreen(
         null -> Unit
     }
 
-    val allEntries = remember(store.rooms, store.bots, store.isConnected, store.settings.userName) {
+    val allEntries = remember(store.rooms, store.bots, store.hubNodes, store.filterNodeID, store.remoteNodeRooms, store.remoteNodeBots, store.isConnected, store.settings.userName) {
         val groupRooms = store.rooms.filter { it.isGroup }
+        val multiOnline = store.onlineNodes.size > 1
         fun exclusiveWorkingBot(room: SummonRoom): SummonBot? {
             if (!store.isConnected) return null
             val candidates = mutableListOf<SummonBot>()
@@ -312,22 +316,31 @@ fun ConversationListScreen(
             return candidates.firstOrNull { it.resolvedActivity == "working" }
         }
 
-        groupRooms
-            .map { room ->
+        val sourceItems = if (store.hubNodes.isEmpty()) {
+            groupRooms.map { Triple("", "", it) }
+        } else {
+            store.mixedGroupRooms
+        }
+        sourceItems
+            .map { (nodeId, nodeName, room) ->
                 val last = room.lastMessage
-                val activeBot = exclusiveWorkingBot(room)
+                val sameNode = nodeId.isEmpty() || nodeId == store.activeNodeID
+                val activeBot = if (sameNode) exclusiveWorkingBot(room) else null
                 val summary = when {
                     activeBot != null -> "${activeBot.name} · 正在处理…"
-                    last != null -> "${store.name(last.senderId)}：${messageSummary(last)}"
+                    last != null -> "${store.anyBot(last.senderId)?.name ?: store.name(last.senderId)}：${messageSummary(last)}"
                     else -> "开始聊天"
                 }
                 val full = if (last != null) {
                     last.content.trim().ifEmpty { summary }
                 } else "还没有消息，点按开始对话。"
+                val entryKey = if (multiOnline && nodeId.isNotEmpty()) "room:$nodeId:${room.id}" else "room:${room.id}"
                 HomeEntry(
-                    key = "room:${room.id}",
+                    key = entryKey,
+                    nodeId = nodeId,
+                    nodeName = if (multiOnline) nodeName else "",
                     room = room,
-                    title = room.name,
+                    title = if (multiOnline && nodeName.isNotEmpty()) "${room.name} · $nodeName" else room.name,
                     preview = summary,
                     fullPreview = full,
                     timestamp = formatSummonTime(last?.createdAt),
@@ -358,7 +371,14 @@ fun ConversationListScreen(
 
     fun openEntry(entry: HomeEntry) {
         swipedRowKey = null
-        onOpenRoom(entry.room.id)
+        if (entry.nodeId.isNotEmpty() && entry.nodeId != store.activeNodeID) {
+            scope.launch {
+                store.switchNode(entry.nodeId)
+                onOpenRoom(entry.room.id)
+            }
+        } else {
+            onOpenRoom(entry.room.id)
+        }
     }
 
     val model = store.modelSummary["chat"]
@@ -413,6 +433,59 @@ fun ConversationListScreen(
                     },
                 contentPadding = PaddingValues(top = topClearance + 8.dp, bottom = bottomClearance + 14.dp),
             ) {
+                if (store.hubNodes.size > 1 || store.offlineNodes.isNotEmpty()) {
+                    item(key = "hub-nodes") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val allSelected = store.filterNodeID == null
+                            Surface(
+                                shape = CircleShape,
+                                color = if (allSelected) palette.textPrimary else palette.surface,
+                                modifier = Modifier.clickable { store.filterNodeID = null },
+                            ) {
+                                Text(
+                                    "全部 ${store.onlineNodes.size}",
+                                    color = if (allSelected) palette.background else palette.textPrimary,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                )
+                            }
+                            for (node in store.onlineNodes) {
+                                val selected = store.filterNodeID == node.id
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (selected) palette.textPrimary else palette.surface,
+                                    modifier = Modifier.clickable { store.filterNodeID = node.id },
+                                ) {
+                                    Text(
+                                        "● ${node.name}",
+                                        color = if (selected) palette.background else palette.textPrimary,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                            for (node in store.offlineNodes) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = palette.surface.copy(alpha = 0.55f),
+                                ) {
+                                    Text(
+                                        "${node.name} · 离线",
+                                        color = palette.textSecondary,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 item(key = "status") {
                     if (store.isLoading && store.bots.isEmpty()) {
                         Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center) {
@@ -1384,23 +1457,43 @@ private fun SettingsSheet(
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
-            Text("实例连接", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
-            OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的实例地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
-            OutlinedTextField(token, { token = it }, label = { Text("实例访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
-            Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
-            Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
-            Text("Bot  ${store.bots.size} · 会话  ${store.rooms.size}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
-            error?.let { Text(it, color = palette.warn, modifier = Modifier.padding(vertical = 6.dp)) }
-            Button(onClick = {
-                scope.launch {
-                    saving = true; error = null
-                    try { store.saveConnection(baseURL, token); onDismiss() }
-                    catch (exception: Exception) { error = exception.message }
-                    finally { saving = false }
+            Text("账号与已绑定电脑（${store.onlineNodes.size} 台在线）", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+            Spacer(Modifier.height(6.dp))
+            Text("账号：${store.settings.hubUsername ?: store.settings.userName}", style = MaterialTheme.typography.bodyMedium)
+            Text("中枢：${store.settings.baseURL.ifEmpty { SummonApiClient.DEFAULT_HUB_URL }}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+            Text("实时连接：${if (store.isConnected) "已连接" else "重连中"}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+            if (store.hubNodes.isNotEmpty()) {
+                Surface(shape = RoundedCornerShape(14.dp), color = palette.surface, border = BorderStroke(0.6.dp, palette.hairline)) {
+                    Column {
+                        store.hubNodes.forEachIndexed { idx, node ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = node.online && node.id != store.activeNodeID) {
+                                        scope.launch { store.switchNode(node.id) }
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(node.name, color = if (node.online) palette.textPrimary else palette.textSecondary)
+                                    Text(if (node.online) "在线" else "离线", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                                }
+                                if (node.id == store.activeNodeID) {
+                                    Text("当前配置", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                }
+                            }
+                            if (idx < store.hubNodes.lastIndex) HorizontalDivider(color = palette.hairline)
+                        }
+                    }
                 }
-            }, enabled = !saving && baseURL.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = { scope.launch { store.logoutHub(); onDismiss() } },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("退出账号", color = palette.warn) }
             HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
             ClientUpdateSettings(updater)
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }

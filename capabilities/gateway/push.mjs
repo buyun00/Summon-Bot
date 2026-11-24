@@ -14,8 +14,8 @@ const ttl = 24 * 60 * 60 * 1000;
  * Persisted queue + message cursor survives gateway and capability restarts.
  */
 export class PushService {
-  constructor({ openStore, messages, dataRoot, historyEpoch }) {
-    Object.assign(this, { openStore, messages, dataRoot, historyEpoch });
+  constructor({ openStore, messages, dataRoot, historyEpoch, onNotify }) {
+    Object.assign(this, { openStore, messages, dataRoot, historyEpoch, onNotify });
     this.closed = false;
     this.inflight = null;
     this.config = null;
@@ -126,21 +126,27 @@ export class PushService {
   async drain() {
     const cursor = this.store.get('push-state', 'cursor');
     const rows = this.messages.db.prepare("SELECT rowid AS seq,data FROM records WHERE kind='messages' AND rowid>? ORDER BY rowid LIMIT 100").all(cursor.seq);
+    const notified = [];
     this.store.transaction(() => {
       const devices = this.store.list('push-devices');
       for (const row of rows) {
         const message = JSON.parse(row.data), room = this.messages.get('rooms', message.roomId);
         if (message.senderId && !['user', 'system'].includes(message.senderId) && room?.members?.includes('user')
             && Date.now() - Date.parse(message.createdAt) < ttl) {
+          const notificationId = randomUUID();
+          notified.push({ roomId: message.roomId, messageId: message.id, notificationId, createdAt: message.createdAt });
           for (const device of devices) {
             if (Date.parse(device.createdAt) > Date.parse(message.createdAt)) continue;
             this.store.save('push-queue', { id: `${message.id}:${device.id}`, messageId: message.id,
-              roomId: message.roomId, deviceId: device.id, notificationId: randomUUID(), createdAt: message.createdAt, attempts: 0, nextAt: 0 });
+              roomId: message.roomId, deviceId: device.id, notificationId, createdAt: message.createdAt, attempts: 0, nextAt: 0 });
           }
         }
       }
       if (rows.length) this.store.save('push-state', { id: 'cursor', seq: rows.at(-1).seq, historyEpoch: this.historyEpoch });
     });
+    for (const item of notified) {
+      try { this.onNotify?.(item); } catch {}
+    }
     for (const job of this.store.list('push-queue')) {
       if (this.closed) return;
       const device = this.store.get('push-devices', job.deviceId);

@@ -8,12 +8,13 @@ import { createWebAuth } from './auth.mjs';
 import { matchesOrigin, originForHost, instanceOrigin } from './origins.mjs';
 import { instanceProof } from './instance-probe.mjs';
 import { createGameExports, gamePrefix } from './game-exports.mjs';
+import { RelayConnector } from './relay-connector.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],
@@ -36,13 +37,60 @@ const showcaseMime = new Map([
 ]);
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
-export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
+export async function startWeb({ host = '127.0.0.1', port = 8787, dataRoot, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
   gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, gameExports, requestTimeoutMs = 120000 } = {}) {
   const authorize = createWebAuth(accessToken);
   const games = createGameExports(gameExports, accessToken);
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
+  const relay = await new RelayConnector({ dataRoot, gatewayUrl, gatewayToken, version: webRelease?.version || '0.5.5' }).initialize();
+
+  async function readJsonBody(req, limit = 65536) {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of req) {
+      total += chunk.length;
+      if (total > limit) throw Object.assign(new Error('请求体过大'), { status: 413 });
+      chunks.push(chunk);
+    }
+    if (!total) return {};
+    try {
+      const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('object');
+      return parsed;
+    } catch {
+      throw Object.assign(new Error('JSON 格式无效'), { status: 400 });
+    }
+  }
+
+  function proxyToLocalGateway(req, res, apiPathAndSearch) {
+    if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, { error: '不支持此方法' });
+    const writes = !['GET', 'HEAD'].includes(req.method);
+    const target = new URL(apiPathAndSearch, upstream);
+    const headers = { Authorization: `Bearer ${gatewayToken}`, Accept: req.headers.accept || '*/*' };
+    if (typeof req.headers['x-summon-protocol'] === 'string') headers['X-Summon-Protocol'] = req.headers['x-summon-protocol'];
+    if (typeof req.headers['x-summon-client-id'] === 'string') headers['X-Summon-Client-Id'] = req.headers['x-summon-client-id'];
+    if (typeof req.headers['last-event-id'] === 'string') headers['Last-Event-ID'] = req.headers['last-event-id'];
+    if (writes && req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+    if (writes && req.headers['content-length']) headers['Content-Length'] = req.headers['content-length'];
+    const outgoing = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: req.method, headers }, incoming => {
+      const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) => !hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'set-cookie'));
+      responseHeaders['Cache-Control'] = 'private, no-store, no-transform';
+      responseHeaders['X-Content-Type-Options'] = 'nosniff';
+      res.writeHead(incoming.statusCode || 502, responseHeaders);
+      incoming.on('error', () => res.destroy());
+      incoming.pipe(res);
+    });
+    active.add(outgoing);
+    outgoing.once('close', () => active.delete(outgoing));
+    outgoing.once('error', error => { if (!res.headersSent) json(res, 502, { error: '实例暂不可达', code: error?.code || 'upstream_unreachable' }); else res.destroy(); });
+    if (!apiPathAndSearch.startsWith('/api/stream')) outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
+    req.once('error', error => outgoing.destroy(error));
+    res.once('close', () => outgoing.destroy());
+    if (writes) req.pipe(outgoing);
+    else outgoing.end();
+  }
   // Keep symbol definitions in the document so rerendered icons never reload an external SVG.
   let modelIconSprite;
   const loadModelIconSprite = () => modelIconSprite ??= readFile(join(frontendRoot, 'icons/ai-brands.svg'), 'utf8')
@@ -127,34 +175,65 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         });
         res.end(req.method === 'HEAD' ? undefined : content); return;
       }
-      if (url.pathname.startsWith('/api/')) {
-        if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, { error: '不支持此方法' });
-        const writes = !['GET', 'HEAD'].includes(req.method);
-        const target = new URL(`${url.pathname}${url.search}`, upstream);
-        const headers = { Authorization: `Bearer ${gatewayToken}`, Accept: req.headers.accept || '*/*' };
-        if (typeof req.headers['x-summon-protocol'] === 'string') headers['X-Summon-Protocol'] = req.headers['x-summon-protocol'];
-        if (typeof req.headers['x-summon-client-id'] === 'string') headers['X-Summon-Client-Id'] = req.headers['x-summon-client-id'];
-        if (typeof req.headers['last-event-id'] === 'string') headers['Last-Event-ID'] = req.headers['last-event-id'];
-        if (writes && req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
-        if (writes && req.headers['content-length']) headers['Content-Length'] = req.headers['content-length'];
-        const outgoing = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: req.method, headers }, incoming => {
-          const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) => !hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'set-cookie'));
-          // Preserve the upstream JSON/stream bytes through public proxies.
-          // Browser failures must not silently leave an old cached sidebar.
-          responseHeaders['Cache-Control'] = 'private, no-store, no-transform';
-          responseHeaders['X-Content-Type-Options'] = 'nosniff';
-          res.writeHead(incoming.statusCode || 502, responseHeaders);
-          incoming.on('error', () => res.destroy());
-          incoming.pipe(res);
+      if (url.pathname === '/hub/health' && req.method === 'GET') {
+        return json(res, 200, {
+          ok: true,
+          mode: 'local',
+          localNodeId: relay.activeLocalNodeId(),
+          hubUrl: relay.state.hubUrl,
+          hubConnected: relay.hubConnected,
+          version: webRelease?.version || '0.5.5',
+          protocolVersion: 3,
+          maxUploadMb: relay.maxUploadMb,
         });
-        active.add(outgoing);
-        outgoing.once('close', () => active.delete(outgoing));
-        outgoing.once('error', error => { if (!res.headersSent) json(res, 502, { error: '实例暂不可达', code: error?.code || 'upstream_unreachable' }); else res.destroy(); });
-        if (url.pathname !== '/api/stream') outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
-        req.once('error', error => outgoing.destroy(error));
-        res.once('close', () => outgoing.destroy());
-        if (writes) req.pipe(outgoing);
-        else outgoing.end();
+      }
+      if (url.pathname.startsWith('/hub/')) {
+        try {
+          if (url.pathname === '/hub/auth/me' && req.method === 'GET') return json(res, 200, await relay.getAuthMe());
+          if (url.pathname === '/hub/auth/register' && req.method === 'POST') return json(res, 201, await relay.authWithHub('register', await readJsonBody(req)));
+          if (url.pathname === '/hub/auth/login' && req.method === 'POST') return json(res, 200, await relay.authWithHub('login', await readJsonBody(req)));
+          if (url.pathname === '/hub/auth/logout' && req.method === 'POST') return json(res, 200, await relay.logoutHub());
+          if (url.pathname === '/hub/auth/password' && req.method === 'POST') return json(res, 200, await relay.hubFetchJson('POST', '/hub/auth/password', await readJsonBody(req)));
+          if (url.pathname === '/hub/nodes' && req.method === 'GET') return json(res, 200, { nodes: await relay.listNodes() });
+          if (url.pathname === '/hub/events' && req.method === 'GET') { relay.subscribeEvents(res); return; }
+          if (url.pathname === '/hub/devices' && req.method === 'GET') {
+            if (!relay.state.userToken) return json(res, 200, { devices: [], currentSessionId: null });
+            return json(res, 200, await relay.hubFetchJson('GET', '/hub/devices'));
+          }
+          let m;
+          if ((m = url.pathname.match(/^\/hub\/devices\/([^/]+)$/)) && req.method === 'DELETE') {
+            return json(res, 200, await relay.hubFetchJson('DELETE', `/hub/devices/${encodeURIComponent(decodeURIComponent(m[1]))}`));
+          }
+          if ((m = url.pathname.match(/^\/hub\/nodes\/([^/]+)$/)) && req.method === 'PATCH') {
+            return json(res, 200, await relay.renameNode(decodeURIComponent(m[1]), (await readJsonBody(req)).name));
+          }
+          if ((m = url.pathname.match(/^\/hub\/nodes\/([^/]+)$/)) && req.method === 'DELETE') {
+            return json(res, 200, await relay.deleteNode(decodeURIComponent(m[1])));
+          }
+          if (url.pathname.startsWith('/hub/admin/')) {
+            const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readJsonBody(req) : undefined;
+            return json(res, 200, await relay.hubFetchJson(req.method, `${url.pathname}${url.search}`, body));
+          }
+          return json(res, 404, { error: '未知的中枢接口' });
+        } catch (error) {
+          return json(res, error.status || 500, { error: error.message || '中枢操作失败', code: error.code || 'hub_error' });
+        }
+      }
+      {
+        const nodeMatch = url.pathname.match(/^\/nodes\/([^/]+)(\/api\/.*)$/);
+        if (nodeMatch) {
+          const nodeId = decodeURIComponent(nodeMatch[1]);
+          const apiPath = `${nodeMatch[2]}${url.search}`;
+          if (relay.isLocalNode(nodeId)) {
+            proxyToLocalGateway(req, res, apiPath);
+          } else {
+            relay.proxyRemoteNodeHttp(nodeId, req, res, apiPath, requestTimeoutMs);
+          }
+          return;
+        }
+      }
+      if (url.pathname.startsWith('/api/')) {
+        proxyToLocalGateway(req, res, `${url.pathname}${url.search}`);
         return;
       }
       const entry = assets.get(url.pathname);
@@ -177,6 +256,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
   return { url: `http://${host}:${address.port}`, server,
     async close() {
       closing = true;
+      await relay.close();
       for (const request of active) request.destroy();
       await new Promise(accept => { server.close(accept); server.closeIdleConnections?.(); server.closeAllConnections?.(); });
     },

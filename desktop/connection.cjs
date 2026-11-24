@@ -64,6 +64,10 @@ async function checkLogin(session, origin) {
 
 async function prepareConnection(session, selection, token) {
   const local = selection.mode === 'local';
+  if (local) {
+    const { ensureLocalRunning } = await desktopSettings();
+    await ensureLocalRunning({ releaseRoot: runtime });
+  }
   if (!local && token) await login(session, selection.origin, token, false);
   try { return await checkLogin(session, selection.origin); }
   catch (error) {

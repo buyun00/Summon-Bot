@@ -1,0 +1,19 @@
+{
+  "name": "@summon/relay",
+  "version": "0.5.9",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight Summon Bot multi-PC relay hub with invite accounts, multiplexed WSS tunneling, and unified APNs push",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "summon-relay": "./src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs start"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -9,12 +9,14 @@ final class SummonPush {
     static let shared = SummonPush()
     private(set) var status = "尚未启用"
     var destinationRoomID: String?
+    var destinationNodeID: String?
     private var client: SummonAPIClient?
     private var endpoint: String?
     private var revision = 0
     private var syncingRevision: Int?
     private var deviceToken: String?
     private var pendingRoomID: String?
+    private var pendingNodeID: String?
     private var pendingDeviceID: String?
     private let defaults = UserDefaults.standard
     private var deviceID: String {
@@ -39,8 +41,10 @@ final class SummonPush {
             try? await unregister()
         }
         if pendingDeviceID == deviceID, let room = pendingRoomID {
+            destinationNodeID = pendingNodeID
             destinationRoomID = room
             pendingRoomID = nil
+            pendingNodeID = nil
         }
     }
 
@@ -68,7 +72,7 @@ final class SummonPush {
         syncingRevision = generation
         defer { if syncingRevision == generation { syncingRevision = nil } }
         do {
-            let result = try await client.request(SummonJSONValue.self, path: "/api/push/devices", method: "POST", body: .object([
+            let result = try await client.request(SummonJSONValue.self, path: "/hub/push/register", method: "POST", body: .object([
                 "deviceId": .string(registration), "token": .string(deviceToken),
                 "bundleId": .string("org.lin0.summon"), "environment": .string("production")
             ]))
@@ -89,8 +93,7 @@ final class SummonPush {
     }
 
     private func unregister(from client: SummonAPIClient, id: String) async throws {
-        _ = try await client.request(SummonJSONValue.self, path: "/api/push/devices", method: "DELETE",
-            body: .object(["deviceId": .string(id)]))
+        _ = try await client.request(SummonJSONValue.self, path: "/hub/push/register/\(SummonAPIClient.component(id))", method: "DELETE")
     }
 
     func changeServer() {
@@ -98,16 +101,19 @@ final class SummonPush {
         let oldDeviceID = deviceID
         revision += 1
         client = nil; endpoint = nil
-        pendingRoomID = nil; pendingDeviceID = nil; destinationRoomID = nil
+        pendingRoomID = nil; pendingNodeID = nil; pendingDeviceID = nil; destinationRoomID = nil; destinationNodeID = nil
         defaults.set(UUID().uuidString, forKey: "Summon.push.deviceID")
         if let oldClient { Task { try? await unregister(from: oldClient, id: oldDeviceID) } }
     }
 
-    func open(roomID: String?, deviceID: String?) {
+    func open(roomID: String?, nodeID: String?, deviceID: String?) {
         guard let roomID, !roomID.isEmpty, roomID.count <= 200, let deviceID else { return }
-        pendingRoomID = roomID; pendingDeviceID = deviceID
+        pendingRoomID = roomID; pendingNodeID = nodeID; pendingDeviceID = deviceID
         if client != nil, deviceID == self.deviceID {
-            destinationRoomID = roomID; pendingRoomID = nil
+            destinationNodeID = nodeID
+            destinationRoomID = roomID
+            pendingRoomID = nil
+            pendingNodeID = nil
         }
     }
 }
@@ -129,8 +135,10 @@ final class SummonAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         return [.banner, .sound, .list]
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let roomID = response.notification.request.content.userInfo["roomId"] as? String
-        let deviceID = response.notification.request.content.userInfo["deviceId"] as? String
-        await MainActor.run { SummonPush.shared.open(roomID: roomID, deviceID: deviceID) }
+        let info = response.notification.request.content.userInfo
+        let roomID = info["roomId"] as? String
+        let nodeID = info["nodeId"] as? String
+        let deviceID = info["deviceId"] as? String
+        await MainActor.run { SummonPush.shared.open(roomID: roomID, nodeID: nodeID, deviceID: deviceID) }
     }
 }

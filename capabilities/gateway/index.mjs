@@ -116,7 +116,8 @@ export async function startGateway(options = {}) {
     if (type === 'models.changed' && payload?.id) {
       runtime?.resumeRecoveredRuns?.({ kind: 'model', id: payload.id });
     }
-    const line = `data: ${JSON.stringify({ type })}\n\n`;
+    const event = type === 'push.notify' && payload ? { type, ...payload } : { type };
+    const line = `data: ${JSON.stringify(event)}\n\n`;
     for (const client of clients) {
       if (client.writableLength > 65536) client.destroy();
       else client.write(line);
@@ -197,7 +198,8 @@ export async function startGateway(options = {}) {
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();
-    push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch }).initialize();
+    push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch,
+      onNotify: item => emit('push.notify', item) }).initialize();
     const api = createApi({ platform, room, attachments, models, connections, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
         if (!runtime.usage || runtime.usageRecoveryFailed) reject('usage_unavailable', 'The local usage report is unavailable', 503);

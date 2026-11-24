@@ -37,7 +37,7 @@ class SummonApiException(message: String, val status: Int? = null, val code: Str
     }
 }
 
-class SummonApiClient(val baseURL: URI, private val token: String) {
+class SummonApiClient(val baseURL: URI, private val token: String, val nodeID: String? = null) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -46,6 +46,48 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
         .followSslRedirects(false)
         .retryOnConnectionFailure(false)
         .build()
+
+    fun forNode(id: String?): SummonApiClient = SummonApiClient(baseURL, token, id)
+
+    fun hubLogin(username: String, password: String): SummonHubAuthResult {
+        val data = requestJson("/hub/auth/login", "POST", SummonJson.obj(
+            "username" to SummonJson.Str(username),
+            "password" to SummonJson.Str(password),
+            "clientType" to SummonJson.Str("android"),
+            "deviceLabel" to SummonJson.Str("Android"),
+        ))
+        val user = data["user"]
+        val tok = data["token"].string ?: throw SummonApiException.invalidResponse
+        val uname = user["username"].string ?: username
+        val dname = user["displayName"].string?.ifBlank { uname } ?: uname
+        return SummonHubAuthResult(uname, dname, tok)
+    }
+
+    fun hubRegister(inviteCode: String, username: String, password: String, displayName: String?): SummonHubAuthResult {
+        val fields = mutableListOf(
+            "inviteCode" to SummonJson.Str(inviteCode),
+            "username" to SummonJson.Str(username),
+            "password" to SummonJson.Str(password),
+            "clientType" to SummonJson.Str("android"),
+            "deviceLabel" to SummonJson.Str("Android"),
+        )
+        if (!displayName.isNullOrBlank()) fields.add("displayName" to SummonJson.Str(displayName))
+        val data = requestJson("/hub/auth/register", "POST", SummonJson.obj(*fields.toTypedArray()))
+        val user = data["user"]
+        val tok = data["token"].string ?: throw SummonApiException.invalidResponse
+        val uname = user["username"].string ?: username
+        val dname = user["displayName"].string?.ifBlank { uname } ?: uname
+        return SummonHubAuthResult(uname, dname, tok)
+    }
+
+    fun hubNodes(): List<SummonHubNode> {
+        val data = requestJson("/hub/nodes")
+        return data["nodes"].array.orEmpty().map(SummonHubNode::parse).filter { it.id.isNotEmpty() }
+    }
+
+    fun hubLogout() {
+        runCatching { requestJson("/hub/auth/logout", "POST", SummonJson.obj()) }
+    }
 
     fun bootstrap(): SummonBootstrap {
         val probe = http.newBuilder().callTimeout(12, TimeUnit.SECONDS).build()
@@ -110,8 +152,8 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
         }
     }
 
-    fun streamCall(): okhttp3.Call {
-        val request = build("/api/stream?protocol=$PROTOCOL_VERSION", "GET", null, "text/event-stream").newBuilder()
+    fun streamCall(path: String = "/hub/events"): okhttp3.Call {
+        val request = build(path, "GET", null, "text/event-stream").newBuilder()
             .header("Cache-Control", "no-cache")
             .build()
         val client = http.newBuilder()
@@ -129,10 +171,14 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
     }
 
     private fun build(path: String, method: String, body: SummonJson?, accept: String, clientID: String? = null): Request {
-        if (!path.startsWith("/api/") || path.contains("\\")) throw SummonApiException.invalidURL
-        val url = baseURL.toString().trimEnd('/') + path
+        val allowed = path.startsWith("/api/") || path.startsWith("/hub/") || path.startsWith("/nodes/")
+        if (!allowed || path.contains("\\")) throw SummonApiException.invalidURL
+        val resolvedPath = if (path.startsWith("/api/") && !nodeID.isNullOrEmpty()) {
+            "/nodes/${component(nodeID)}$path"
+        } else path
+        val url = baseURL.toString().trimEnd('/') + resolvedPath
         val builder = Request.Builder().url(url).header("Accept", accept)
-        if (path != "/api/bootstrap") builder.header("X-Summon-Protocol", PROTOCOL_VERSION.toString())
+        if (!path.startsWith("/hub/") && path != "/api/bootstrap") builder.header("X-Summon-Protocol", PROTOCOL_VERSION.toString())
         if (clientID != null) builder.header("X-Summon-Client-Id", clientID)
         if (token.isNotEmpty()) builder.header("Authorization", "Bearer $token")
         val payload = body?.encode()?.toString()?.toRequestBody("application/json; charset=utf-8".toMediaType())
@@ -142,6 +188,7 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
 
     companion object {
         const val PROTOCOL_VERSION = 3
+        const val DEFAULT_HUB_URL = "https://bot.lin0.org"
 
         fun normalized(value: String): URI {
             val cleaned = value.trim()

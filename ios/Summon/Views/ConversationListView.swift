@@ -115,6 +115,8 @@ private enum ConversationRoute: Hashable {
 
 private struct HomeEntry: Identifiable {
     let key: String
+    let nodeID: String
+    let nodeName: String
     let room: SummonRoom
     let title: String
     let preview: String
@@ -176,43 +178,50 @@ struct ConversationListView: View {
     }
 
     private var allEntries: [HomeEntry] {
-        store.rooms
-            .filter(\.isGroup)
-            .map { room in
-                let last = room.lastMessage
-                let activeBot = store.isConnected ? exclusiveWorkingBot(in: room) : nil
-                let singleLine: String
-                let fullText: String
-                if let activeBot {
-                    singleLine = "\(activeBot.name) · 正在处理…"
-                    let raw = last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    fullText = raw.isEmpty ? singleLine : raw
-                } else if let last {
-                    let body = messageBodySummary(last)
-                    singleLine = "\(store.name(for: last.senderId))：\(body)"
-                    let raw = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    fullText = raw.isEmpty ? singleLine : raw
-                } else {
-                    singleLine = "开始聊天"
-                    fullText = "还没有消息，点按开始对话。"
-                }
-                let date = last?.createdAt ?? room.updatedAt ?? room.createdAt ?? ""
-                return HomeEntry(
-                    key: "room:\(room.id)",
-                    room: room,
-                    title: room.name,
-                    preview: singleLine,
-                    fullPreview: fullText,
-                    timestamp: SummonFormat.time(last?.createdAt),
-                    sortDate: date,
-                    isSystem: room.id == botMaintenanceRoomID,
-                    isWorking: activeBot != nil
-                )
+        let multiOnline = store.onlineNodes.count > 1
+        let items = store.hubNodes.isEmpty
+            ? store.rooms.filter(\.isGroup).map { ("", "", $0) }
+            : store.mixedGroupRooms
+        return items.map { (nodeID, nodeName, room) in
+            let last = room.lastMessage
+            let sameNode = nodeID.isEmpty || nodeID == store.activeNodeID
+            let activeBot = store.isConnected && sameNode ? exclusiveWorkingBot(in: room) : nil
+            let singleLine: String
+            let fullText: String
+            if let activeBot {
+                singleLine = "\(activeBot.name) · 正在处理…"
+                let raw = last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                fullText = raw.isEmpty ? singleLine : raw
+            } else if let last {
+                let body = messageBodySummary(last)
+                let sender = store.anyBot(id: last.senderId)?.name ?? store.name(for: last.senderId)
+                singleLine = "\(sender)：\(body)"
+                let raw = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                fullText = raw.isEmpty ? singleLine : raw
+            } else {
+                singleLine = "开始聊天"
+                fullText = "还没有消息，点按开始对话。"
             }
-            .sorted {
-                if $0.sortDate != $1.sortDate { return $0.sortDate > $1.sortDate }
-                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-            }
+            let date = last?.createdAt ?? room.updatedAt ?? room.createdAt ?? ""
+            let entryKey = multiOnline && !nodeID.isEmpty ? "room:\(nodeID):\(room.id)" : "room:\(room.id)"
+            return HomeEntry(
+                key: entryKey,
+                nodeID: nodeID,
+                nodeName: multiOnline ? nodeName : "",
+                room: room,
+                title: room.name,
+                preview: singleLine,
+                fullPreview: fullText,
+                timestamp: SummonFormat.time(last?.createdAt),
+                sortDate: date,
+                isSystem: room.id == botMaintenanceRoomID,
+                isWorking: activeBot != nil
+            )
+        }
+        .sorted {
+            if $0.sortDate != $1.sortDate { return $0.sortDate > $1.sortDate }
+            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
     }
 
     private var visibleEntries: [HomeEntry] {
@@ -262,6 +271,52 @@ struct ConversationListView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                if store.hubNodes.count > 1 || !store.offlineNodes.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            Button {
+                                store.filterNodeID = nil
+                            } label: {
+                                Text("全部 \(store.onlineNodes.count)")
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(store.filterNodeID == nil ? Color.primary : SummonTheme.surface, in: Capsule())
+                                    .foregroundStyle(store.filterNodeID == nil ? Color(uiColor: .systemBackground) : .primary)
+                            }
+                            .buttonStyle(.plain)
+                            ForEach(store.onlineNodes) { node in
+                                Button {
+                                    store.filterNodeID = node.id
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Circle().fill(Color.green).frame(width: 6, height: 6)
+                                        Text(node.name)
+                                    }
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(store.filterNodeID == node.id ? Color.primary : SummonTheme.surface, in: Capsule())
+                                    .foregroundStyle(store.filterNodeID == node.id ? Color(uiColor: .systemBackground) : .primary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            ForEach(store.offlineNodes) { node in
+                                HStack(spacing: 5) {
+                                    Circle().fill(Color.secondary.opacity(0.45)).frame(width: 6, height: 6)
+                                    Text("\(node.name) · 离线")
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(SummonTheme.surface.opacity(0.55), in: Capsule())
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+
                 if store.isLoading && store.bots.isEmpty || store.protocolNotice != nil || store.errorMessage != nil || (!store.isConnected && !store.bots.isEmpty) {
                     connectionStatus
                         .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 8, trailing: 20))
@@ -677,6 +732,14 @@ struct ConversationListView: View {
                             .summonFont(.body, weight: .semibold)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
+                        if !entry.nodeName.isEmpty {
+                            Text(entry.nodeName)
+                                .font(.caption2.weight(.medium))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(SummonTheme.surface, in: Capsule())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         Spacer(minLength: 8)
                         if !entry.timestamp.isEmpty {
                             Text(entry.timestamp)
@@ -813,7 +876,14 @@ struct ConversationListView: View {
     }
 
     private func openEntry(_ entry: HomeEntry) {
-        openRoom(entry.room.id)
+        if !entry.nodeID.isEmpty && entry.nodeID != store.activeNodeID {
+            Task {
+                await store.switchNode(entry.nodeID)
+                openRoom(entry.room.id)
+            }
+        } else {
+            openRoom(entry.room.id)
+        }
     }
 
     private var connectionStatus: some View {
@@ -904,13 +974,18 @@ struct ConversationListView: View {
                 if SummonPush.shared.destinationRoomID != id { openNotification() }
             }
             do {
-                try await store.openPushRoom(id)
+                let targetNode = SummonPush.shared.destinationNodeID
+                try await store.openPushRoom(id, nodeID: targetNode)
                 guard SummonPush.shared.destinationRoomID == id else { return }
                 showSettings = false
                 path = [.room(id)]
                 SummonPush.shared.destinationRoomID = nil
+                SummonPush.shared.destinationNodeID = nil
             } catch {
-                if SummonPush.shared.destinationRoomID == id { SummonPush.shared.destinationRoomID = nil }
+                if SummonPush.shared.destinationRoomID == id {
+                    SummonPush.shared.destinationRoomID = nil
+                    SummonPush.shared.destinationNodeID = nil
+                }
                 store.errorMessage = error.localizedDescription
             }
         }

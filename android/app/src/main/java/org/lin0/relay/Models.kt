@@ -403,19 +403,49 @@ data class SummonPendingMessage(
     }
 }
 
+data class SummonHubNode(
+    val id: String,
+    val name: String,
+    val platform: String? = null,
+    val hostname: String? = null,
+    val online: Boolean = false,
+) {
+    companion object {
+        fun parse(json: SummonJson): SummonHubNode = SummonHubNode(
+            id = json["id"].string.orEmpty(),
+            name = json["name"].string?.ifBlank { "PC" } ?: "PC",
+            platform = json["platform"].string,
+            hostname = json["hostname"].string,
+            online = json["online"].bool == true,
+        )
+    }
+}
+
+data class SummonHubAuthResult(
+    val username: String,
+    val displayName: String,
+    val token: String,
+)
+
 data class SummonConnectionSettings(
     val baseURL: String = "",
     val userName: String = "Lin",
+    val hubUsername: String? = null,
+    val activeNodeID: String? = null,
 ) {
     fun toJson(): SummonJson = SummonJson.obj(
         "baseURL" to SummonJson.Str(baseURL),
         "userName" to SummonJson.Str(userName),
+        "hubUsername" to (hubUsername?.let { SummonJson.Str(it) } ?: SummonJson.Null),
+        "activeNodeID" to (activeNodeID?.let { SummonJson.Str(it) } ?: SummonJson.Null),
     )
 
     companion object {
         fun parse(json: SummonJson): SummonConnectionSettings = SummonConnectionSettings(
             baseURL = json["baseURL"].string ?: "",
             userName = json["userName"].string?.ifBlank { "Lin" } ?: "Lin",
+            hubUsername = json["hubUsername"].string,
+            activeNodeID = json["activeNodeID"].string,
         )
     }
 }

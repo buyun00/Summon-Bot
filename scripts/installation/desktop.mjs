@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
-import { readFile, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,8 @@ import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { instanceProof } from '../../web/backend/instance-probe.mjs';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { protocolVersion } from '../../capabilities/platform/contract.mjs';
+import { dataFormat } from './installation-state.mjs';
+import { startSystem } from './system.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const connectionPath = root => join(root, 'desktop-connection.json');
@@ -17,13 +20,55 @@ export const formalOrigin = 'http://127.0.0.1:8787';
 const defaultProfile = () => join(process.platform === 'win32' ? process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
   : join(homedir(), 'Library', 'Application Support'), 'Relay');
 
+export function resolveLocalDataRoot(requested, profileRoot = defaultProfile()) {
+  if (requested) return resolve(requested);
+  if (process.platform === 'win32' && existsSync(join(formalDataRoot, 'config', 'deployment.json'))) {
+    return formalDataRoot;
+  }
+  return join(resolve(profileRoot), 'data');
+}
+
+export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
+  const file = join(dataRoot, 'config', 'deployment.json');
+  if (existsSync(file)) return readJson(file);
+  await mkdir(join(dataRoot, 'config'), { recursive: true });
+  const token = () => randomBytes(32).toString('base64url');
+  const config = {
+    schemaVersion: 4,
+    dataFormat,
+    dataRoot,
+    releaseRoot,
+    defaultCwd: homedir(),
+    runIntent: 'running',
+    gatewayToken: token(),
+    controlToken: token(),
+    gateway: { host: '127.0.0.1', port: 0 },
+    web: { host: '127.0.0.1', port: 8787, autoPort: false, accessToken: token() },
+    logs: { maxBytes: 5 * 1024 * 1024, maxFiles: 3 },
+  };
+  await writeJson(file, config);
+  return config;
+}
+
+export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
+  const config = await ensureLocalDeployment({ dataRoot, releaseRoot });
+  try {
+    const challenge = randomBytes(32).toString('base64url');
+    const res = await fetch(`${formalOrigin}/auth/instance?challenge=${challenge}`, { signal: AbortSignal.timeout(1500) });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.proof === instanceProof(config.web.accessToken, challenge)) return config;
+  } catch {}
+  await startSystem({ ...config, releaseRoot: existsSync(config.releaseRoot) ? config.releaseRoot : releaseRoot });
+  return config;
+}
+
 export function remoteInstanceOrigin(address) {
   try { return instanceOrigin(address, { httpsOnly: true }); }
   catch { throw new Error('请填写已有实例的 HTTPS 地址。'); }
 }
 
 function savedOrigin(mode, origin) {
-  if (mode === 'local') return process.platform === 'win32' && origin === formalOrigin ? origin : null;
+  if (mode === 'local') return origin === formalOrigin ? origin : null;
   if (mode !== 'remote') return null;
   try { return remoteInstanceOrigin(origin); } catch { return null; }
 }
@@ -60,24 +105,24 @@ export async function saveDesktopConnection(root, connection) {
   catch { throw new Error('无法保存本机实例设置。请检查应用配置目录是否可写。'); }
 }
 
-export async function formalDeployment(requested) {
-  if (process.platform !== 'win32') throw new Error('请通过 HTTPS 连接已有实例。');
-  if (requested && (typeof requested !== 'string' || relative(formalDataRoot, requested))) throw new Error('请使用本机正式实例的数据目录。');
+export async function formalDeployment(requested, profileRoot = defaultProfile()) {
+  const dataRoot = resolveLocalDataRoot(requested, profileRoot);
   let config;
-  try { config = await readJson(join(formalDataRoot, 'config', 'deployment.json')); }
+  try { config = await readJson(join(dataRoot, 'config', 'deployment.json')); }
   catch (error) {
-    if (error.code === 'ENOENT') throw new Error('这台电脑没有正式实例的部署配置。请通过 HTTPS 连接已有实例。');
-    throw new Error('无法读取本机正式实例的部署配置。');
+    if (error.code === 'ENOENT') return ensureLocalDeployment({ dataRoot });
+    throw new Error('无法读取本机实例的部署配置。');
   }
-  if (typeof config?.dataRoot !== 'string' || !isAbsolute(config.dataRoot) || relative(formalDataRoot, config.dataRoot)
+  if (typeof config?.dataRoot !== 'string' || !isAbsolute(config.dataRoot)
     || config.web?.host !== '127.0.0.1' || Number(config.web.port) !== 8787 || typeof config.web.accessToken !== 'string') {
-    throw new Error('本机正式实例的部署配置与回环入口不一致。');
+    throw new Error('本机实例的部署配置与回环入口不一致。');
   }
   return config;
 }
 
-export async function formalInstanceToken(requested) {
-  const { web: { accessToken } } = await formalDeployment(requested);
+export async function formalInstanceToken(requested, profileRoot = defaultProfile()) {
+  const config = await ensureLocalRunning({ dataRoot: resolveLocalDataRoot(requested, profileRoot) });
+  const { web: { accessToken } } = config;
   const challenge = randomBytes(32).toString('base64url');
   const response = await instanceRequest(formalOrigin, '/auth/instance?challenge=' + challenge);
   const result = await response.json().catch(() => null);

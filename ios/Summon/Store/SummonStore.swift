@@ -6,6 +6,11 @@ import UniformTypeIdentifiers
 @Observable
 final class SummonStore {
     private(set) var settings = SummonConnectionSettings()
+    private(set) var hubNodes: [SummonHubNode] = []
+    private(set) var activeNodeID: String?
+    var filterNodeID: String?
+    private(set) var remoteNodeRooms: [String: [SummonRoom]] = [:]
+    private(set) var remoteNodeBots: [String: [SummonBot]] = [:]
     private(set) var bots: [SummonBot] = []
     private(set) var rooms: [SummonRoom] = []
     private(set) var archivedRooms: [SummonRoom] = []
@@ -55,6 +60,31 @@ final class SummonStore {
 
     var isConfigured: Bool { client != nil }
     var savedToken: String { SummonKeychain.token(for: settings.baseURL) }
+    var onlineNodes: [SummonHubNode] { hubNodes.filter(\.online) }
+    var offlineNodes: [SummonHubNode] { hubNodes.filter { !$0.online } }
+    var activeNode: SummonHubNode? { hubNodes.first { $0.id == activeNodeID } }
+    var mixedGroupRooms: [(nodeID: String, nodeName: String, room: SummonRoom)] {
+        var result: [(String, String, SummonRoom)] = []
+        for node in onlineNodes {
+            if let filter = filterNodeID, filter != node.id { continue }
+            let list = node.id == activeNodeID ? rooms : (remoteNodeRooms[node.id] ?? [])
+            for room in list where room.isGroup {
+                result.append((node.id, node.name, room))
+            }
+        }
+        return result
+    }
+    func nodeName(for id: String?) -> String? {
+        guard let id else { return nil }
+        return hubNodes.first { $0.id == id }?.name
+    }
+    func anyBot(id: String) -> SummonBot? {
+        if let local = bots.first(where: { $0.id == id }) { return local }
+        for list in remoteNodeBots.values {
+            if let found = list.first(where: { $0.id == id }) { return found }
+        }
+        return nil
+    }
 
     init() {
         do { try SummonBrandingMigration.run() }
@@ -68,7 +98,8 @@ final class SummonStore {
             }
         }
         if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
-            client = SummonAPIClient(baseURL: url, token: savedToken)
+            activeNodeID = settings.activeNodeID
+            client = SummonAPIClient(baseURL: url, token: savedToken, nodeID: activeNodeID)
         }
         if let root = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true) {
@@ -115,6 +146,92 @@ final class SummonStore {
         persistNow()
     }
 
+    func loginHub(baseURL: String, username: String, password: String) async throws {
+        let url = try SummonAPIClient.normalizedURL(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? SummonAPIClient.defaultHubURL : baseURL)
+        let authClient = SummonAPIClient(baseURL: url, token: "")
+        let result = try await authClient.hubLogin(username: username.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+        try await finishHubAuth(url: url, result: result)
+    }
+
+    func registerHub(baseURL: String, inviteCode: String, username: String, password: String, displayName: String?) async throws {
+        let url = try SummonAPIClient.normalizedURL(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? SummonAPIClient.defaultHubURL : baseURL)
+        let authClient = SummonAPIClient(baseURL: url, token: "")
+        let result = try await authClient.hubRegister(
+            inviteCode: inviteCode.trimmingCharacters(in: .whitespacesAndNewlines),
+            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: password,
+            displayName: displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        try await finishHubAuth(url: url, result: result)
+    }
+
+    private func finishHubAuth(url: URL, result: SummonHubAuthResponse) async throws {
+        let endpoint = url.absoluteString
+        try SummonKeychain.save(token: result.token, for: endpoint)
+        SummonPush.shared.changeServer()
+        disconnect()
+        clearServerState()
+        hubNodes = []
+        remoteNodeRooms = [:]
+        remoteNodeBots = [:]
+        activeNodeID = nil
+        filterNodeID = nil
+        settings = SummonConnectionSettings(
+            baseURL: endpoint,
+            userName: result.user.displayName?.nilIfEmpty ?? result.user.username,
+            hubUsername: result.user.username,
+            activeNodeID: nil
+        )
+        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        client = SummonAPIClient(baseURL: url, token: result.token, nodeID: nil)
+        errorMessage = nil
+        protocolNotice = nil
+        persistNow()
+        await start()
+    }
+
+    func logoutHub() async {
+        if let current = client {
+            await current.hubLogout()
+        }
+        SummonPush.shared.changeServer()
+        disconnect()
+        clearServerState()
+        hubNodes = []
+        remoteNodeRooms = [:]
+        remoteNodeBots = [:]
+        activeNodeID = nil
+        filterNodeID = nil
+        if !settings.baseURL.isEmpty {
+            try? SummonKeychain.save(token: "", for: settings.baseURL)
+        }
+        settings = SummonConnectionSettings(baseURL: "", userName: settings.userName, hubUsername: nil, activeNodeID: nil)
+        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        client = nil
+    }
+
+    func switchNode(_ nodeID: String) async {
+        guard nodeID != activeNodeID, let baseClient = client else { return }
+        guard hubNodes.contains(where: { $0.id == nodeID && $0.online }) else { return }
+        activeNodeID = nodeID
+        settings.activeNodeID = nodeID
+        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        client = baseClient.forNode(nodeID)
+        historyEpoch = nil
+        messageHistory = [:]
+        deliveries = [:]
+        messageSummaries = [:]
+        roomActivities = [:]
+        cursors = [:]
+        roomSuspendedRuns = [:]
+        roomMessageStates = [:]
+        if let cachedRooms = remoteNodeRooms[nodeID] { rooms = cachedRooms }
+        if let cachedBots = remoteNodeBots[nodeID] { bots = cachedBots }
+        protocolReady = false
+        protocolNotice = nil
+        await refresh()
+    }
+
     func saveConnection(baseURL: String, token: String) async throws {
         let url = try SummonAPIClient.normalizedURL(baseURL)
         let endpoint = url.absoluteString
@@ -145,7 +262,10 @@ final class SummonStore {
         else { Task { await start() } }
     }
 
-    func openPushRoom(_ id: String) async throws {
+    func openPushRoom(_ id: String, nodeID: String? = nil) async throws {
+        if let nodeID, !nodeID.isEmpty, nodeID != activeNodeID {
+            await switchNode(nodeID)
+        }
         if room(id: id) != nil { return }
         guard protocolReady, let client else {
             throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接实例。")
@@ -175,13 +295,40 @@ final class SummonStore {
             }
         }
         do {
+            let nodes = try await client.hubNodes()
+            guard connection == connectionGeneration, !Task.isCancelled else { return }
+            hubNodes = nodes
+            let online = nodes.filter(\.online)
+            if pushGeneration != connection {
+                pushGeneration = connection
+                await SummonPush.shared.connect(client)
+            }
+            guard !online.isEmpty else {
+                activeNodeID = nil
+                rooms = []
+                archivedRooms = []
+                bots = []
+                remoteNodeRooms = [:]
+                remoteNodeBots = [:]
+                protocolReady = false
+                protocolNotice = "当前没有在线电脑。请在任意电脑启动 Summon Bot 并登录同一账号。"
+                errorMessage = nil
+                return
+            }
+            if activeNodeID == nil || !online.contains(where: { $0.id == activeNodeID }) {
+                activeNodeID = online.first?.id
+                settings.activeNodeID = activeNodeID
+                if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+            }
+            let activeClient = client.forNode(activeNodeID)
+            self.client = activeClient
             if !protocolReady || protocolNotice != nil {
-                let startup = try await client.bootstrap(probe: true)
+                let startup = try await activeClient.bootstrap(probe: true)
                 guard connection == connectionGeneration, !Task.isCancelled else { return }
                 acceptStartup(startup)
                 guard startup.ready else { return }
             }
-            let state = try await client.request(SummonState.self, path: "/api/state")
+            let state = try await activeClient.request(SummonState.self, path: "/api/state")
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             if historyEpoch != state.historyEpoch {
                 messageHistory = [:]
@@ -197,17 +344,30 @@ final class SummonStore {
             rooms = state.rooms
             archivedRooms = state.archivedRooms ?? []
             if let model = state.modelSettings { modelSummary = model }
+            if let aid = activeNodeID {
+                remoteNodeRooms[aid] = state.rooms
+                remoteNodeBots[aid] = state.bots
+            }
+            // Fetch lightweight room summaries for all other online PCs so the home list mixes them flat
+            for other in online where other.id != activeNodeID {
+                let otherClient = activeClient.forNode(other.id)
+                if let otherState = try? await otherClient.request(SummonState.self, path: "/api/state") {
+                    remoteNodeRooms[other.id] = otherState.rooms
+                    remoteNodeBots[other.id] = otherState.bots
+                }
+            }
             errorMessage = nil
             lastSyncAt = Date()
             if let id = activeRoomID, room(id: id) != nil { await loadRoom(id) }
             guard connection == connectionGeneration else { return }
             schedulePersistence()
-            if protocolReady && pushGeneration != connection {
-                pushGeneration = connection
-                await SummonPush.shared.connect(client)
-            }
         } catch {
             guard connection == connectionGeneration, !Task.isCancelled else { return }
+            if case SummonAPIError.http(401, _, _) = error {
+                await logoutHub()
+                errorMessage = "请使用 Summon Bot 账号登录。"
+                return
+            }
             if !protocolReady { protocolNotice = startupError(error).localizedDescription }
             else { handle(error) }
         }
@@ -795,19 +955,20 @@ final class SummonStore {
         streamTask = Task { [weak self] in
             var delay: UInt64 = 1
             while !Task.isCancelled, let self, self.foreground, connection == self.connectionGeneration {
-                if !self.protocolReady || self.protocolNotice != nil { await self.refresh() }
-                if self.protocolReady {
-                    let started = ContinuousClock.now
-                    do {
-                        try await SummonEventStream(client: client).consume { [weak self] event in
-                            await self?.receiveStream(event, connection: connection)
-                        }
-                    } catch {
-                        guard !Task.isCancelled, connection == self.connectionGeneration else { return }
-                        self.isConnected = false
-                        if (error as? SummonAPIError)?.interruptsProtocol == true { self.handle(error) }
-                        if started.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
+                let started = ContinuousClock.now
+                do {
+                    try await SummonEventStream(client: client, path: "/hub/events").consume { [weak self] event in
+                        await self?.receiveStream(event, connection: connection)
                     }
+                } catch {
+                    guard !Task.isCancelled, connection == self.connectionGeneration else { return }
+                    self.isConnected = false
+                    if case SummonAPIError.http(401, _, _) = error {
+                        self.protocolNotice = "账号会话已失效，请在设置中重新登录。"
+                        return
+                    }
+                    if (error as? SummonAPIError)?.interruptsProtocol == true { self.handle(error) }
+                    if started.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
                 }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 delay = min(delay * 2, 30)

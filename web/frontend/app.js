@@ -136,6 +136,12 @@ const SETTINGS_TABS = [
   { id: 'connection', title: '连接', icon: 'link' },
   { id: 'updates', title: '更新', icon: 'install' },
 ];
+function renderSettingsNodeSelector() {
+  const hub = window.SummonHub;
+  const online = hub?.onlineNodes?.() || [];
+  if (online.length <= 1) return '';
+  return `<div class="hub-node-selector-bar"><span>当前配置的电脑：</span><select data-hub-select="active-node" aria-label="切换配置的电脑">${online.map(n => `<option value="${esc(n.id)}" ${n.id === hub.state.activeNodeId ? 'selected' : ''}>${esc(n.name)}${n.isLocal ? '（本机）' : ''}</option>`).join('')}</select></div>`;
+}
 function renderSettingsPanelBody(tab) {
   const connected = ui.streamConnected && ui.protocolReady;
   if (tab === 'general') {
@@ -210,11 +216,11 @@ function renderSettingsPanelBody(tab) {
     </div>`;
   }
   if (tab === 'models') {
-    return globalThis.SummonModels.render({ esc, icon, embedded: true });
+    return renderSettingsNodeSelector() + globalThis.SummonModels.render({ esc, icon, embedded: true });
   }
   if (tab === 'wakeups') {
     const custom = (state.wakeups || []).filter(item => item.rule.kind !== 'room_base');
-    return `<div class="settings-section">
+    return renderSettingsNodeSelector() + `<div class="settings-section">
       <div class="settings-group-head">
         <h3 class="settings-group-label">定时提醒与自定义订阅</h3>
         <button type="button" class="primary-button small-button" data-action="add-wakeup">${icon('plus', 14)}新增订阅</button>
@@ -228,12 +234,16 @@ function renderSettingsPanelBody(tab) {
     </div>`;
   }
   if (tab === 'connection') {
+    if (window.SummonHub?.state?.user?.role === 'admin' && !window.SummonHub.state.invitesLoaded) {
+      void window.SummonHub.loadInvites();
+    }
     const isDesktop = Boolean(window.SummonDesktop?.openConnectionSettings);
     const localInstance = document.documentElement.dataset.localInstance === 'true' || location.hostname === '127.0.0.1' || location.hostname === 'localhost';
     const usage = state.resourceUsage;
     const connections = state.connections || [];
     const workspaces = state.workspaces || [];
-    return `<div class="settings-section">
+    const hubSection = window.SummonHub?.renderHubSettingsSection?.() || '';
+    return `${renderSettingsNodeSelector()}${hubSection}<div class="settings-section">
       <h3 class="settings-group-label">实例</h3>
       <div class="settings-card">
         <div class="settings-row">
@@ -333,9 +343,10 @@ function renderSettingsModalShell(tab = ui.settingsTab || 'general') {
 function refreshOpenSettingsBody() {
   const modal = $('#modal');
   if (!modal?.open || !modal.classList.contains('settings-modal')) return;
-  if (ui.settingsTab === 'updates') return;
+  if (ui.settingsTab === 'updates') return; // SummonClients manages #client-release-content itself
   const body = $('.settings-main-body', modal);
   if (!body) return;
+  // Avoid clobbering active text input inside model/settings forms
   const active = document.activeElement;
   if (active && body.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && active.type !== 'range') return;
   const oldTop = body.scrollTop;
@@ -486,7 +497,9 @@ const sendBusy = (roomId = ui.roomId) => !ui.protocolReady || ui.sendingRooms.ha
 function attachmentSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.ceil(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function attachmentUrl(item, preview = false) {
   const path = preview ? item?.previewUrl : item?.url;
-  if (typeof path === 'string' && /^\/api\/(?:attachments\/[a-z0-9-]+(?:\/preview)?|files\/[^/?#]+\/download(?:\?revision=\d+)?)$/i.test(path)) return path;
+  if (typeof path === 'string' && /^\/api\/(?:attachments\/[a-z0-9-]+(?:\/preview)?|files\/[^/?#]+\/download(?:\?revision=\d+)?)$/i.test(path)) {
+    return window.SummonHub?.apiPath?.(path) || path;
+  }
   return '';
 }
 function renderMessageAttachments(items = []) {
@@ -496,7 +509,8 @@ function renderMessageAttachments(items = []) {
     const title = '<span><strong>' + esc(name) + '</strong><small>' + (item.size == null ? '' : attachmentSize(item.size)) + '</small></span>';
     if (item.unavailable) return '<span class="message-attachment">' + icon('file', 24) + '<span>' + esc(name) + ' · 文件不可用</span></span>';
     if (!url) return '<button type="button" class="message-attachment" data-action="open-file" data-id="' + esc(item.id) + '">' + icon('file', 24) + title + '</button>';
-    const view = typeof item.openUrl === 'string' && /^\/api\/attachments\/[a-z0-9-]+\/view$/i.test(item.openUrl) ? item.openUrl : '';
+    const rawView = typeof item.openUrl === 'string' && /^\/api\/attachments\/[a-z0-9-]+\/view$/i.test(item.openUrl) ? item.openUrl : '';
+    const view = rawView ? (window.SummonHub?.apiPath?.(rawView) || rawView) : '';
     if (thumbnail) {
       return '<div><button type="button" class="message-attachment has-image" data-action="preview-image" data-src="' + esc(thumbnail) + '" data-download="' + esc(url) + '" data-name="' + esc(name) + '">' +
         '<img src="' + esc(thumbnail) + '" alt="' + esc(name) + '" loading="lazy">' + title + '</button></div>';
@@ -692,7 +706,15 @@ function contactTime(value) {
   return elapsed === 0 ? formatTime(value) : elapsed === 1 ? '昨天' : elapsed > 1 && elapsed < 7 ? new Intl.DateTimeFormat('zh-CN', { weekday: 'short' }).format(time) : new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(time);
 }
 function formatDay(value) { const time = new Date(value); return Number.isNaN(time.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(time); }
-function botById(id) { return state.bots.find(bot => bot.id === id); }
+function botById(id) {
+  const local = state.bots.find(bot => bot.id === id);
+  if (local || !window.SummonHub?.state?.nodeSnapshots) return local;
+  for (const snap of window.SummonHub.state.nodeSnapshots.values()) {
+    const found = (snap.bots || []).find(bot => bot.id === id);
+    if (found) return found;
+  }
+  return undefined;
+}
 function isArchivedRoom(room) { return Boolean(room?.archived_at); }
 function roomById(id) { return state.rooms.find(room => room.id === id) || (state.archivedRooms || []).find(room => room.id === id); }
 function nameOf(id) { return id === 'user' ? ownerName() : botById(id)?.name || (['system', 'platform'].includes(id) ? 'Summon 平台' : id || 'Summon 平台'); }
@@ -765,8 +787,16 @@ async function api(path, method = 'GET', body, { sync = false, clientId } = {}) 
       const headers = bootstrap ? {} : { 'X-Summon-Protocol': String(protocolVersion) };
       if (clientId) headers['X-Summon-Client-Id'] = clientId;
       if (body !== undefined) headers['Content-Type'] = 'application/json';
-      response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
-      if (response.status === 401) { location.reload(); throw new Error('请重新输入访问 Token'); }
+      const targetUrl = window.SummonHub?.apiPath?.(path) || path;
+      response = await fetch(targetUrl, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
+      if (response.status === 401) {
+        if (window.SummonHub?.state?.mode === 'hub') {
+          window.SummonHub.openAuthOverlay({ mode: 'login', dismissible: false });
+          throw new Error('请重新登录 Summon Bot 账号');
+        }
+        location.reload();
+        throw new Error('请重新输入访问 Token');
+      }
       if (sync) { deadline(90000); data = await readSyncBody(response, () => deadline(90000)); }
       else data = await response.json();
     } catch (error) {
@@ -1019,6 +1049,16 @@ function setProtocol(ready, notice = '') {
 }
 
 async function handshake() {
+  const hub = window.SummonHub;
+  if (hub?.state?.initialized) {
+    if (hub.state.mode === 'hub' && !hub.state.authenticated) return false;
+    if (!hub.onlineNodes().length || !hub.state.activeNodeId) {
+      ui.protocolReady = false;
+      ui.protocolNotice = '';
+      ui.streamConnected = hub.state.sseConnected;
+      return false;
+    }
+  }
   let startup;
   try { startup = await api('/api/bootstrap'); }
   catch (error) {
@@ -1033,7 +1073,9 @@ async function handshake() {
   }
   ui.protocolReady = true;
   ui.protocolNotice = startup.updating ? protocolMessage('updating', startup) : '';
-  if (!stream) {
+  if (hub?.state?.initialized && hub.state.activeNodeId) {
+    ui.streamConnected = hub.state.sseConnected;
+  } else if (!stream) {
     stream = new EventSource('/api/stream?protocol=' + protocolVersion);
     stream.onopen = () => { ui.streamConnected = true; scheduleRefresh(); };
     stream.onmessage = scheduleRefresh;
@@ -1063,6 +1105,7 @@ async function refresh(force = false) {
     if (!synced) return;
     ui.stateSnapshot = synced.snapshot; ui.stateCursor = synced.cursor;
     Object.assign(state, synced.snapshot);
+    window.SummonHub?.syncActiveSnapshot?.(state);
     if (!Array.isArray(state.workspaces) || !state.workspaces.length) {
       void readList('/api/workspaces').then(list => { if (Array.isArray(list)) state.workspaces = list; }).catch(() => {});
     }
@@ -1466,8 +1509,33 @@ async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
   }
 }
 
-async function selectRoom(id) {
+async function selectRoom(id, nodeId = null) {
   if (!id) return;
+  const hub = window.SummonHub;
+  if (nodeId && hub && nodeId !== hub.state.activeNodeId) {
+    const switched = await hub.switchNode(nodeId, { refresh: false });
+    if (switched) {
+      ui.stateSnapshot = null;
+      ui.stateCursor = null;
+      ui.messagesRoomId = null;
+      ui.messages = [];
+      ui.historyCursor = null;
+      ui.draftWorkspaceId = '';
+      const snap = hub.state.nodeSnapshots.get(nodeId);
+      if (snap) {
+        state.rooms = snap.rooms || [];
+        state.archivedRooms = snap.archivedRooms || [];
+        state.bots = snap.bots || [];
+      }
+      ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
+      ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
+      ui.roomSuspendedRuns = []; ui.roomActivities = []; ui.openRoomExecution = null; ui.activityTickerIndex = 0;
+      location.hash = 'chat';
+      render();
+      await refresh(true);
+      return;
+    }
+  }
   ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
   ui.roomSuspendedRuns = []; ui.roomActivities = [];
@@ -2043,7 +2111,8 @@ function addDraftReference(roomId, ref) {
 
 async function openReference(ref) {
   if (ref.kind === 'workspace_file') {
-    const downloadUrl = `/api/workspaces/${encodeURIComponent(ref.workspace_id)}/file?path=${encodeURIComponent(ref.path)}`;
+    const rawDownloadUrl = `/api/workspaces/${encodeURIComponent(ref.workspace_id)}/file?path=${encodeURIComponent(ref.path)}`;
+    const downloadUrl = window.SummonHub?.apiPath?.(rawDownloadUrl) || rawDownloadUrl;
     const previewUrl = `${downloadUrl}&preview=1`;
     const ws = (state.workspaces || []).find(item => item.id === ref.workspace_id);
     const fileName = ref.path.split('/').pop() || ref.path;
@@ -2254,7 +2323,7 @@ async function act(action, element) {
     const menu = action === 'toggle-mention-menu' ? 'mentions' : action === 'toggle-draft-workspace' ? 'draft-workspace' : action.slice(7);
     ui.menu = ui.menu === menu ? null : menu; return render();
   }
-  if (action === 'select-room') return selectRoom(id);
+  if (action === 'select-room') return selectRoom(id, element.dataset.nodeId || null);
   if (action === 'room-back') { ui.mobileRoom = false; ui.detailOpen = false; return render(); }
   if (action === 'new-room') return openNewGroupDraft();
   if (action === 'draft-suggestion') {
@@ -2943,22 +3012,29 @@ function roomExclusiveLiveBot(room) {
 }
 
 function buildHomeEntries(sourceRooms = state.rooms) {
+  const hub = window.SummonHub;
+  const activeNodeId = hub?.state?.activeNodeId || '';
   const live = ui.streamConnected && !ui.connectionNotice;
   const entries = [];
   for (const room of sourceRooms || []) {
     if (directRoom(room)) continue;
+    const nodeId = room._nodeId || activeNodeId;
+    const nodeName = room._nodeName || (nodeId ? hub?.nodeLabel?.(nodeId) : '');
+    const sameNode = !nodeId || nodeId === activeNodeId;
     const archived = isArchivedRoom(room);
     const last = room.lastMessage;
-    const active = !archived && live ? roomExclusiveLiveBot(room) : null;
+    const active = !archived && live && sameNode ? roomExclusiveLiveBot(room) : null;
     const running = Boolean(active);
     const preview = active
       ? `${active.bot.name} · ${active.activity.text}`
       : last ? roomPreview(room) : (archived ? '已归档' : '开始聊天');
     const fullPreview = last?.content?.trim() || preview;
     entries.push({
-      key: `room:${room.id}`,
+      key: nodeId && hub?.onlineNodes?.().length > 1 ? `room:${nodeId}:${room.id}` : `room:${room.id}`,
       kind: 'room',
       id: room.id,
+      nodeId,
+      nodeName,
       room,
       roomId: room.id,
       botId: null,
@@ -2971,31 +3047,36 @@ function buildHomeEntries(sourceRooms = state.rooms) {
       running,
       paused: false,
       live,
-      selected: room.id === ui.roomId && ui.view === 'chat' && !ui.creatingRoom,
+      selected: sameNode && room.id === ui.roomId && ui.view === 'chat' && !ui.creatingRoom,
     });
   }
   return entries.sort((a, b) => String(b.sortDate).localeCompare(String(a.sortDate)) || a.title.localeCompare(b.title, 'zh-Hans-CN'));
 }
 function renderHomePinnedTile(entry) {
-  const avatarHtml = groupAvatar(entry.room, 60, `pinned:group:${entry.id}`);
+  const avatarHtml = groupAvatar(entry.room, 60, `pinned:group:${entry.nodeId || ''}:${entry.id}`);
   const badge = entry.room ? unreadRoomBadge(entry.room) : '';
-  return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}">
+  return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-node-id="${esc(entry.nodeId || '')}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}${entry.nodeName ? ' · ' + esc(entry.nodeName) : ''}">
     <span class="pinned-tile-avatar">${avatarHtml}${badge}</span>
     <span class="pinned-tile-title">${esc(entry.title)}</span>
   </button>`;
 }
 function renderHomeEntryRow(entry, { showArchivedBadge = false } = {}) {
-  return `<button class="contact-row ${entry.selected ? 'selected' : ''} ${entry.archived ? 'is-archived' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
-    <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.id}`)}${entry.running ? '<i class="presence-dot running" aria-hidden="true"></i>' : ''}</span>
-    <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${showArchivedBadge ? '<span class="contact-archive-tag">已归档</span>' : renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
+  const showNodeTag = Boolean(entry.nodeName && window.SummonHub?.onlineNodes?.().length > 1);
+  return `<button class="contact-row ${entry.selected ? 'selected' : ''} ${entry.archived ? 'is-archived' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-node-id="${esc(entry.nodeId || '')}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}${entry.nodeName ? ' · ' + esc(entry.nodeName) : ''}">
+    <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.nodeId || ''}:${entry.id}`)}${entry.running ? '<i class="presence-dot running" aria-hidden="true"></i>' : ''}</span>
+    <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${showNodeTag ? `<span class="contact-node-tag">${esc(entry.nodeName)}</span>` : ''}${showArchivedBadge ? '<span class="contact-archive-tag">已归档</span>' : renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
     ${entry.archived ? '' : unreadRoomBadge(entry.room)}
   </button>`;
 }
 function renderTopbar() {
   const sidebar = $('#contact-sidebar'), oldTop = $('.contacts-scroll')?.scrollTop || 0;
   const query = ui.roomQuery.trim().toLowerCase();
-  const visibleEntries = buildHomeEntries(state.rooms);
-  const archivedEntries = buildHomeEntries(state.archivedRooms || []);
+  const hub = window.SummonHub;
+  const useMixed = Boolean(hub?.state?.initialized && hub.onlineNodes().length);
+  const sourceVisible = useMixed ? hub.mixedRooms(state.rooms) : state.rooms;
+  const sourceArchived = useMixed ? hub.mixedRooms(state.archivedRooms || [], { includeArchived: true, activeArchived: state.archivedRooms || [] }) : (state.archivedRooms || []);
+  const visibleEntries = buildHomeEntries(sourceVisible);
+  const archivedEntries = buildHomeEntries(sourceArchived);
   const allSearchEntries = [...visibleEntries, ...archivedEntries];
   const filteredEntries = query
     ? allSearchEntries.filter(entry => entry.title.toLowerCase().includes(query) || entry.preview.toLowerCase().includes(query))
@@ -3057,10 +3138,12 @@ function renderTopbar() {
     <button data-action="open-settings">${icon('settings', 18)}<span>设置</span></button></div>` : '';
   const connected = ui.streamConnected && ui.protocolReady;
   const creatingActive = ui.view === 'chat' && ui.creatingRoom;
+  const nodeStrip = hub?.renderNodeFilterBar?.() || '';
   const html = `<div class="sidebar-toolbar"><summon-wordmark></summon-wordmark>
       <div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索群聊" aria-label="搜索群聊">` : ''}
         <button class="round-button" data-action="toggle-search" title="搜索群聊" aria-label="搜索群聊">${icon('search', 20)}</button></div>
       <button class="round-button create-button ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 23)}</button></div>
+    ${nodeStrip}
     <div class="contacts-scroll">${contactsHtml}</div>
     <div class="sidebar-controls">
       <div class="rail-quick-actions">
@@ -3555,12 +3638,16 @@ function renderNewGroupDraft() {
         ${selectedWs ? `<button type="button" class="draft-ws-option clear" data-action="select-draft-workspace" data-id="">${icon('close', 14)}<span>暂不绑定目录</span></button>` : ''}
       </div>`
     : '';
-  const wsPicker = writableWorkspaces.length
-    ? `<div class="draft-composer-bar"><div class="menu-anchor">
+  const hubOnlineNodes = window.SummonHub?.onlineNodes?.() || [];
+  const draftNodePicker = hubOnlineNodes.length > 1
+    ? `<label class="draft-ws-pill has-value" style="gap:6px"><span>电脑：</span><select data-hub-select="active-node" aria-label="选择建群电脑" style="border:0;background:transparent;color:inherit;font:inherit;outline:none">${hubOnlineNodes.map(n => `<option value="${esc(n.id)}" ${n.id === window.SummonHub.state.activeNodeId ? 'selected' : ''}>${esc(n.name)}${n.isLocal ? '（本机）' : ''}</option>`).join('')}</select></label>`
+    : '';
+  const wsPicker = (writableWorkspaces.length || draftNodePicker)
+    ? `<div class="draft-composer-bar">${draftNodePicker}${writableWorkspaces.length ? `<div class="menu-anchor">
         <button type="button" class="draft-ws-pill ${selectedWs ? 'has-value' : ''}" data-action="toggle-draft-workspace" aria-expanded="${ui.menu === 'draft-workspace'}" ${ui.creatingRoomBusy ? 'disabled' : ''}>
           ${icon('folder', 15)}<span>${selectedWs ? `目录：${esc(selectedWs.name)}` : '绑定项目目录（可选）'}</span>
         </button>${wsMenu}</div>
-        ${selectedWs ? `<button type="button" class="draft-ws-clear" data-action="clear-draft-workspace" aria-label="取消绑定目录" title="取消绑定目录">${icon('close', 14)}</button>` : ''}
+        ${selectedWs ? `<button type="button" class="draft-ws-clear" data-action="clear-draft-workspace" aria-label="取消绑定目录" title="取消绑定目录">${icon('close', 14)}</button>` : ''}` : ''}
       </div>`
     : '';
   const draftText = ui.drafts[DRAFT_ROOM_ID] || '';
@@ -3603,6 +3690,9 @@ function renderNewGroupDraft() {
 }
 
 function renderChat() {
+  if (window.SummonHub?.state?.initialized && !window.SummonHub.onlineNodes().length) {
+    return window.SummonHub.renderNoOnlineNodesEmpty();
+  }
   if (ui.creatingRoom) return renderNewGroupDraft();
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = !directRoom(room);
   if (!room) return renderNewGroupDraft();
@@ -4264,6 +4354,11 @@ function updateAvatarPicker(mode) {
   else return persistAvatar();
 }
 document.addEventListener('change', async event => {
+  if (event.target.dataset.hubSelect === 'active-node') {
+    const nextId = event.target.value;
+    if (nextId && window.SummonHub) await window.SummonHub.switchNode(nextId);
+    return;
+  }
   if (event.target.dataset.avatarCustom) { const key = event.target.dataset.avatarCustom; if (!['color','secondary','ink','paper'].includes(key)) return; ui.avatarSelectionRevision++; ui.avatarDraft = { ...ui.avatarDraft, [key]: event.target.value, image: null }; if(event.target.dataset.mode === 'create') { const root = $('#create-avatar-preview'); root.innerHTML = face(ui.avatarDraft,144,{key:'slot:create-preview',preview:true}); hydrateMotion(root); } else await persistAvatar(); return; }
   if (event.target.id !== 'avatar-upload') return;
   const file = event.target.files?.[0], botId = profileBot()?.id;
@@ -4354,7 +4449,55 @@ const initialView = location.hash.slice(1);
 if (tabs.some(tab => tab.id === initialView)) ui.view = initialView;
 applyDisplayPreferences();
 renderTopbar();
-void restoreCachedState().then(() => refresh());
+(async () => {
+  if (window.SummonHub) {
+    const initResult = await window.SummonHub.init({
+      toast,
+      onNodesUpdated: () => {
+        renderTopbar();
+        refreshOpenSettingsBody();
+        if (!window.SummonHub.onlineNodes().length) render();
+      },
+      onActiveNodeChanged: nextNodeId => {
+        ui.stateSnapshot = null;
+        ui.stateCursor = null;
+        ui.messagesRoomId = null;
+        ui.messages = [];
+        ui.historyCursor = null;
+        ui.draftWorkspaceId = '';
+        if (nextNodeId) {
+          const snap = window.SummonHub.state.nodeSnapshots.get(nextNodeId);
+          if (snap) {
+            state.rooms = snap.rooms || [];
+            state.archivedRooms = snap.archivedRooms || [];
+            state.bots = snap.bots || [];
+          }
+          void refresh(true);
+        } else {
+          render();
+        }
+      },
+      onActiveNodeEvent: () => scheduleRefresh(),
+      onStreamState: connected => {
+        ui.streamConnected = connected;
+        renderTopbar();
+        if (connected) scheduleRefresh();
+      },
+      onAuthSuccess: () => {
+        ui.stateSnapshot = null;
+        ui.stateCursor = null;
+        void refresh(true);
+      },
+    });
+    if (initResult?.requiresAuth) {
+      ui.loading = false;
+      render();
+      return;
+    }
+  }
+  await restoreCachedState();
+  await refresh();
+})();
 setInterval(() => { if (!ui.streamConnected && navigator.onLine && !document.hidden) scheduleRefresh(); }, 3000);
 window.addEventListener('offline', () => { setProtocol(false, '当前离线。草稿和待确认的发送已保留。'); persistClientSession(); });
 window.addEventListener('online', scheduleRefresh);

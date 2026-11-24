@@ -1,0 +1,20 @@
+services:
+  summon-relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    container_name: summon-relay
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      SUMMON_RELAY_HOST: "0.0.0.0"
+      SUMMON_RELAY_PORT: "8790"
+      SUMMON_RELAY_DATA_DIR: "/data"
+      SUMMON_RELAY_MAX_UPLOAD_MB: "${SUMMON_RELAY_MAX_UPLOAD_MB:-20}"
+      SUMMON_RELAY_MAX_CONCURRENT_LARGE: "${SUMMON_RELAY_MAX_CONCURRENT_LARGE:-2}"
+      SUMMON_RELAY_TRUST_PROXY: "true"
+      SUMMON_RELAY_BOOTSTRAP_INVITE: "${SUMMON_RELAY_BOOTSTRAP_INVITE:-}"
+    volumes:
+      - ./data:/data
+    mem_limit: 256m

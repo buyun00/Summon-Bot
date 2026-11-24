@@ -46,18 +46,54 @@ final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
 
 struct SummonAPIClient: Sendable {
     static let protocolVersion = 3
+    static let defaultHubURL = "https://bot.lin0.org"
     let baseURL: URL
+    let nodeID: String?
     private let token: String
     private let session: URLSession
 
-    init(baseURL: URL, token: String) {
+    init(baseURL: URL, token: String, nodeID: String? = nil) {
         self.baseURL = baseURL
         self.token = token
+        self.nodeID = nodeID
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 180
         configuration.waitsForConnectivity = true
         self.session = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
+    }
+
+    func forNode(_ id: String?) -> SummonAPIClient {
+        SummonAPIClient(baseURL: baseURL, token: token, nodeID: id)
+    }
+
+    func hubLogin(username: String, password: String) async throws -> SummonHubAuthResponse {
+        try await request(SummonHubAuthResponse.self, path: "/hub/auth/login", method: "POST", body: .object([
+            "username": .string(username),
+            "password": .string(password),
+            "clientType": .string("ios"),
+            "deviceLabel": .string("iPhone"),
+        ]))
+    }
+
+    func hubRegister(inviteCode: String, username: String, password: String, displayName: String?) async throws -> SummonHubAuthResponse {
+        var obj: [String: SummonJSONValue] = [
+            "inviteCode": .string(inviteCode),
+            "username": .string(username),
+            "password": .string(password),
+            "clientType": .string("ios"),
+            "deviceLabel": .string("iPhone"),
+        ]
+        if let displayName, !displayName.isEmpty { obj["displayName"] = .string(displayName) }
+        return try await request(SummonHubAuthResponse.self, path: "/hub/auth/register", method: "POST", body: .object(obj))
+    }
+
+    func hubNodes() async throws -> [SummonHubNode] {
+        try await request(SummonHubNodesResponse.self, path: "/hub/nodes").nodes
+    }
+
+    func hubLogout() async {
+        _ = try? await request(SummonJSONValue.self, path: "/hub/auth/logout", method: "POST", body: .object([:]))
     }
 
     static func normalizedURL(_ value: String) throws -> URL {
@@ -96,13 +132,23 @@ struct SummonAPIClient: Sendable {
     }
 
     func makeRequest(path: String, method: String = "GET", body: SummonJSONValue? = nil, clientID: String? = nil) throws -> URLRequest {
-        guard path.hasPrefix("/api/"), !path.contains("\\"),
-              let components = URLComponents(string: baseURL.absoluteString + path) else { throw SummonAPIError.invalidURL }
-        guard let url = components.url else { throw SummonAPIError.invalidURL }
+        guard (path.hasPrefix("/api/") || path.hasPrefix("/hub/") || path.hasPrefix("/nodes/")), !path.contains("\\") else {
+            throw SummonAPIError.invalidURL
+        }
+        let resolvedPath: String
+        if path.hasPrefix("/api/"), let nodeID, !nodeID.isEmpty {
+            resolvedPath = "/nodes/\(Self.component(nodeID))\(path)"
+        } else {
+            resolvedPath = path
+        }
+        guard let components = URLComponents(string: baseURL.absoluteString + resolvedPath),
+              let url = components.url else { throw SummonAPIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if path != "/api/bootstrap" { request.setValue(String(Self.protocolVersion), forHTTPHeaderField: "X-Summon-Protocol") }
+        if !path.hasPrefix("/hub/") && path != "/api/bootstrap" {
+            request.setValue(String(Self.protocolVersion), forHTTPHeaderField: "X-Summon-Protocol")
+        }
         if let clientID { request.setValue(clientID, forHTTPHeaderField: "X-Summon-Client-Id") }
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {

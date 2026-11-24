@@ -9,9 +9,15 @@ enum SummonStreamEvent: Sendable {
 /// SSE is a change notification. The server remains authoritative for the next full snapshot.
 struct SummonEventStream: Sendable {
     let client: SummonAPIClient
+    let path: String
+
+    init(client: SummonAPIClient, path: String = "/hub/events") {
+        self.client = client
+        self.path = path
+    }
 
     func consume(_ receive: @escaping @Sendable (SummonStreamEvent) async -> Void) async throws {
-        var request = try client.makeRequest(path: "/api/stream?protocol=\(SummonAPIClient.protocolVersion)")
+        var request = try client.makeRequest(path: path)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.cachePolicy = .reloadIgnoringLocalCacheData

@@ -341,9 +341,36 @@ struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
     var attachments: [SummonAttachment] { message.attachments }
 }
 
+struct SummonHubNode: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var platform: String?
+    var hostname: String?
+    var online: Bool
+    var lastSeenAt: String?
+}
+
+struct SummonHubUser: Codable, Equatable, Sendable {
+    var id: String
+    var username: String
+    var displayName: String?
+    var role: String?
+}
+
+struct SummonHubAuthResponse: Codable, Sendable {
+    var user: SummonHubUser
+    var token: String
+}
+
+struct SummonHubNodesResponse: Codable, Sendable {
+    var nodes: [SummonHubNode]
+}
+
 struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
     var userName: String = "Lin"
+    var hubUsername: String? = nil
+    var activeNodeID: String? = nil
 }
 
 enum SummonJSONValue: Codable, Equatable, Sendable {

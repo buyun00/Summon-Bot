@@ -23,6 +23,15 @@ import java.util.UUID
 class SummonStore(private val app: Context) {
     var settings by mutableStateOf(SummonConnectionSettings(baseURL = ""))
         private set
+    var hubNodes by mutableStateOf<List<SummonHubNode>>(emptyList())
+        private set
+    var activeNodeID by mutableStateOf<String?>(null)
+        private set
+    var filterNodeID by mutableStateOf<String?>(null)
+    var remoteNodeRooms by mutableStateOf<Map<String, List<SummonRoom>>>(emptyMap())
+        private set
+    var remoteNodeBots by mutableStateOf<Map<String, List<SummonBot>>>(emptyMap())
+        private set
     var bots by mutableStateOf<List<SummonBot>>(emptyList())
         private set
     var rooms by mutableStateOf<List<SummonRoom>>(emptyList())
@@ -90,6 +99,19 @@ class SummonStore(private val app: Context) {
 
     val isConfigured: Boolean get() = client != null
     val savedToken: String get() = SummonKeystore.token(app, settings.baseURL)
+    val onlineNodes: List<SummonHubNode> get() = hubNodes.filter { it.online }
+    val offlineNodes: List<SummonHubNode> get() = hubNodes.filterNot { it.online }
+    val mixedGroupRooms: List<Triple<String, String, SummonRoom>>
+        get() = buildList {
+            for (node in onlineNodes) {
+                val filter = filterNodeID
+                if (filter != null && filter != node.id) continue
+                val list = if (node.id == activeNodeID) rooms else remoteNodeRooms[node.id].orEmpty()
+                for (room in list) if (room.isGroup) add(Triple(node.id, node.name, room))
+            }
+        }
+    fun anyBot(id: String): SummonBot? =
+        bots.firstOrNull { it.id == id } ?: remoteNodeBots.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.id == id } }
 
     init {
         val saved = prefs.getString(SETTINGS_KEY, null)
@@ -99,7 +121,8 @@ class SummonStore(private val app: Context) {
             if (previous.obj?.containsKey("workspaceID") == true)
                 prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
         }
-        client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken) }.getOrNull()
+        activeNodeID = settings.activeNodeID
+        client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, activeNodeID) }.getOrNull()
         restoreSnapshot()
     }
 
@@ -132,6 +155,80 @@ class SummonStore(private val app: Context) {
         pendingMessages = pendingMessages.map { if (it.status == "sending") it.copy(status = "failed", error = "保存状态待确认。") else it }
         sendingRoomIDs = emptySet()
         persistNow()
+    }
+
+    suspend fun loginHub(baseURL: String, username: String, password: String) {
+        val url = SummonApiClient.normalized(baseURL.trim().ifEmpty { SummonApiClient.DEFAULT_HUB_URL })
+        val authClient = SummonApiClient(url, "")
+        val result = withContext(Dispatchers.IO) { authClient.hubLogin(username.trim(), password) }
+        finishHubAuth(url, result)
+    }
+
+    suspend fun registerHub(baseURL: String, inviteCode: String, username: String, password: String, displayName: String?) {
+        val url = SummonApiClient.normalized(baseURL.trim().ifEmpty { SummonApiClient.DEFAULT_HUB_URL })
+        val authClient = SummonApiClient(url, "")
+        val result = withContext(Dispatchers.IO) {
+            authClient.hubRegister(inviteCode.trim(), username.trim(), password, displayName?.trim())
+        }
+        finishHubAuth(url, result)
+    }
+
+    private suspend fun finishHubAuth(url: java.net.URI, result: SummonHubAuthResult) {
+        val endpoint = url.toString()
+        SummonKeystore.save(app, result.token, endpoint)
+        disconnect()
+        clearServerState()
+        hubNodes = emptyList()
+        remoteNodeRooms = emptyMap()
+        remoteNodeBots = emptyMap()
+        activeNodeID = null
+        filterNodeID = null
+        settings = SummonConnectionSettings(
+            baseURL = endpoint,
+            userName = result.displayName.ifBlank { result.username },
+            hubUsername = result.username,
+            activeNodeID = null,
+        )
+        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        client = SummonApiClient(url, result.token, null)
+        errorMessage = null
+        protocolNotice = null
+        persistNow()
+        start()
+    }
+
+    suspend fun logoutHub() {
+        val api = client
+        if (api != null) withContext(Dispatchers.IO) { api.hubLogout() }
+        disconnect()
+        clearServerState()
+        hubNodes = emptyList()
+        remoteNodeRooms = emptyMap()
+        remoteNodeBots = emptyMap()
+        activeNodeID = null
+        filterNodeID = null
+        if (settings.baseURL.isNotEmpty()) SummonKeystore.save(app, "", settings.baseURL)
+        settings = SummonConnectionSettings("", settings.userName, null, null)
+        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        client = null
+    }
+
+    suspend fun switchNode(nodeID: String) {
+        val api = client ?: return
+        if (nodeID == activeNodeID) return
+        if (hubNodes.none { it.id == nodeID && it.online }) return
+        activeNodeID = nodeID
+        settings = settings.copy(activeNodeID = nodeID)
+        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        client = api.forNode(nodeID)
+        historyEpoch = null
+        messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap()
+        roomActivities = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
+        remoteNodeRooms[nodeID]?.let { rooms = it }
+        remoteNodeBots[nodeID]?.let { bots = it }
+        protocolReady = false
+        protocolNotice = null
+        refresh()
     }
 
     suspend fun saveConnection(baseURL: String, token: String) {
@@ -172,13 +269,33 @@ class SummonStore(private val app: Context) {
         isRefreshing = true
         isLoading = bots.isEmpty() && rooms.isEmpty()
         try {
+            val nodes = withContext(Dispatchers.IO) { api.hubNodes() }
+            if (connection != connectionGeneration) return
+            hubNodes = nodes
+            val online = nodes.filter { it.online }
+            if (online.isEmpty()) {
+                activeNodeID = null
+                rooms = emptyList(); archivedRooms = emptyList(); bots = emptyList()
+                remoteNodeRooms = emptyMap(); remoteNodeBots = emptyMap()
+                protocolReady = false
+                protocolNotice = "当前没有在线电脑。请在任意电脑启动 Summon Bot 并登录同一账号。"
+                errorMessage = null
+                return
+            }
+            if (activeNodeID == null || online.none { it.id == activeNodeID }) {
+                activeNodeID = online.first().id
+                settings = settings.copy(activeNodeID = activeNodeID)
+                prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+            }
+            val activeApi = api.forNode(activeNodeID)
+            client = activeApi
             if (!protocolReady || protocolNotice != null) {
-                val startup = withContext(Dispatchers.IO) { api.bootstrap() }
+                val startup = withContext(Dispatchers.IO) { activeApi.bootstrap() }
                 if (connection != connectionGeneration) return
                 acceptStartup(startup)
                 if (!startup.ready) return
             }
-            val state = withContext(Dispatchers.IO) { api.requestJson("/api/state") }
+            val state = withContext(Dispatchers.IO) { activeApi.requestJson("/api/state") }
             if (connection != connectionGeneration) return
             val epoch = state["historyEpoch"].string
             if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); roomActivities = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap() }
@@ -187,6 +304,19 @@ class SummonStore(private val app: Context) {
             rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
             archivedRooms = state["archivedRooms"].array.orEmpty().map { SummonRoom.parse(it) }
             if (state["modelSettings"].obj != null) modelSummary = state["modelSettings"]
+            val nextRemoteRooms = remoteNodeRooms.toMutableMap()
+            val nextRemoteBots = remoteNodeBots.toMutableMap()
+            activeNodeID?.let { aid -> nextRemoteRooms[aid] = rooms; nextRemoteBots[aid] = bots }
+            for (other in online) {
+                if (other.id == activeNodeID) continue
+                runCatching {
+                    val otherState = withContext(Dispatchers.IO) { activeApi.forNode(other.id).requestJson("/api/state") }
+                    nextRemoteRooms[other.id] = otherState["rooms"].array.orEmpty().map { SummonRoom.parse(it) }
+                    nextRemoteBots[other.id] = otherState["bots"].array.orEmpty().map(SummonBot::parse)
+                }
+            }
+            remoteNodeRooms = nextRemoteRooms
+            remoteNodeBots = nextRemoteBots
             errorMessage = null
             lastSyncAt = System.currentTimeMillis()
             activeRoomID?.takeIf { room(it) != null }?.let { loadRoom(it) }
@@ -194,6 +324,11 @@ class SummonStore(private val app: Context) {
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) {
             if (connection != connectionGeneration) return
+            if ((error as? SummonApiException)?.status == 401) {
+                logoutHub()
+                errorMessage = "请使用 Summon Bot 账号登录。"
+                return
+            }
             if (!protocolReady) protocolNotice = startupError(error) else handle(error)
         } finally {
             if (connection == connectionGeneration) {
@@ -729,28 +864,29 @@ class SummonStore(private val app: Context) {
         streamJob = scope.launch {
             var seconds = 1L
             while (isActive && foreground && connection == connectionGeneration) {
-                if (!protocolReady || protocolNotice != null) refresh()
-                if (protocolReady) {
-                    val started = android.os.SystemClock.elapsedRealtime()
-                    try {
-                        val current = SummonEventStream(api)
-                        withContext(Dispatchers.IO) {
-                            current.consume { event ->
-                                withContext(Dispatchers.Main.immediate) {
-                                    if (connection == connectionGeneration && foreground) {
-                                        isConnected = true
-                                        if (event !is SummonStreamEvent.KeepAlive) scheduleRefresh()
-                                    }
+                val started = android.os.SystemClock.elapsedRealtime()
+                try {
+                    val current = SummonEventStream(api)
+                    withContext(Dispatchers.IO) {
+                        current.consume { event ->
+                            withContext(Dispatchers.Main.immediate) {
+                                if (connection == connectionGeneration && foreground) {
+                                    isConnected = true
+                                    if (event !is SummonStreamEvent.KeepAlive) scheduleRefresh()
                                 }
                             }
                         }
-                    } catch (error: CancellationException) { throw error }
-                    catch (error: Exception) {
-                        if (connection != connectionGeneration) return@launch
-                        isConnected = false
-                        if ((error as? SummonApiException)?.interruptsProtocol == true) handle(error)
-                        if (android.os.SystemClock.elapsedRealtime() - started >= 30_000) seconds = 1
                     }
+                } catch (error: CancellationException) { throw error }
+                catch (error: Exception) {
+                    if (connection != connectionGeneration) return@launch
+                    isConnected = false
+                    if ((error as? SummonApiException)?.status == 401) {
+                        protocolNotice = "账号会话已失效，请在设置中重新登录。"
+                        return@launch
+                    }
+                    if ((error as? SummonApiException)?.interruptsProtocol == true) handle(error)
+                    if (android.os.SystemClock.elapsedRealtime() - started >= 30_000) seconds = 1
                 }
                 delay(seconds * 1000)
                 seconds = (seconds * 2).coerceAtMost(30)

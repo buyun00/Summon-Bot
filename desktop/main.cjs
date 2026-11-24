@@ -65,12 +65,16 @@ function connectionError(error, selection) {
 async function restoreConnection(target) {
   const previousSetup = setup;
   try {
-    const { readDesktopConnection } = await desktopSettings();
-    const selection = await readDesktopConnection(profile);
+    const { readDesktopConnection, formalOrigin, saveDesktopConnection } = await desktopSettings();
+    let selection = await readDesktopConnection(profile);
     if (target !== window || setup !== previousSetup) return;
+    // All-in-one desktop always boots with its local backend directly (no cloud roundtrip for self).
+    if (!selection || selection.mode !== 'local') {
+      selection = { mode: 'local', origin: formalOrigin };
+      await saveDesktopConnection(profile, selection).catch(() => {});
+    }
     connection = selection;
-    if (!selection) return;
-    showSetup('retry', '正在连接上次使用的实例…');
+    showSetup('retry', '正在启动本机 Summon Bot 服务…');
     const connecting = setup;
     try { await continueConnection(target); }
     catch (error) { if (target === window && setup === connecting) connectionError(error, selection); }
@@ -244,7 +248,7 @@ ipcMain.handle('summon:open-connection-setup', (event, section) => {
 });
 ipcMain.handle('summon:connection-info', event => {
   trusted(event, true);
-  return { ...setup, connection, update, selectionWarning, localAvailable: process.platform === 'win32' };
+  return { ...setup, connection, update, selectionWarning, localAvailable: true };
 });
 ipcMain.handle('summon:connection-action', async (event, command, input = {}) => {
   trusted(event, true);
@@ -264,7 +268,6 @@ ipcMain.handle('summon:connection-action', async (event, command, input = {}) =>
       const { formalOrigin, remoteInstanceOrigin } = await desktopSettings();
       let selection = connection;
       if (command === 'connect-local') {
-        if (process.platform !== 'win32') throw new Error('请通过 HTTPS 连接已有实例。');
         selection = { mode: 'local', origin: formalOrigin };
       } else if (command === 'connect-remote') {
         selection = { mode: 'remote', origin: remoteInstanceOrigin(input.address) };
