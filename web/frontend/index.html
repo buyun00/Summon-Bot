@@ -11,6 +11,9 @@
       const m = localStorage.getItem('summon:theme:v1') || 'system';
       const dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
       if (dark) { document.documentElement.classList.add('dark'); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#0b0c10'); }
+      if (new URLSearchParams(location.search).has('desktop_intro')) {
+        document.documentElement.classList.add('desktop-intro-window');
+      }
     } catch {}
   </script>
   <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="/icons/apple-touch-icon.png?v=summon-paper-20261103">
@@ -25,7 +28,9 @@
   <link rel="stylesheet" href="/typography.css">
   <link rel="stylesheet" href="/cybercab.css">
   <link rel="stylesheet" href="/hub.css">
+  <link rel="stylesheet" href="/onboarding.css">
   <script defer src="/hub.js"></script>
+  <script defer src="/onboarding.js"></script>
   <script defer src="/avatars.js"></script>
   <script defer src="/summon-brand.js"></script>
   <script defer src="/motion.js"></script>

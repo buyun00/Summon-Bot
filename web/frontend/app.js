@@ -213,6 +213,18 @@ function renderSettingsPanelBody(tab) {
           <button type="button" class="secondary-button small-button" data-action="display-reset">恢复默认</button>
         </div>
       </div>
+    </div>
+    <div class="settings-section">
+      <h3 class="settings-group-label">初始化与新手引导</h3>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>首启开场动效与 AI 接入引导</strong>
+            <small>随时预览首次安装后的全屏开场动效、模型连通性检测与 Summon 群专注初始化流程</small>
+          </div>
+          <button type="button" class="secondary-button small-button" data-action="preview-onboarding">预览引导</button>
+        </div>
+      </div>
     </div>`;
   }
   if (tab === 'models') {
@@ -253,7 +265,6 @@ function renderSettingsPanelBody(tab) {
           </div>
           <div class="settings-row-actions">
             <button type="button" class="secondary-button small-button" data-action="refresh">重新连接</button>
-            ${isDesktop ? '<button type="button" class="primary-button small-button" data-action="desktop-connection">切换实例</button>' : ''}
           </div>
         </div>
       </div>
@@ -1133,7 +1144,7 @@ async function handshake() {
     stream = new EventSource('/api/stream?protocol=' + protocolVersion);
     stream.onopen = () => { ui.streamConnected = true; scheduleRefresh(); };
     stream.onmessage = scheduleRefresh;
-    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution']) stream.addEventListener(type, scheduleRefresh);
+    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace']) stream.addEventListener(type, scheduleRefresh);
     stream.onerror = () => { ui.streamConnected = false; scheduleRefresh(); };
   }
   return true;
@@ -1165,6 +1176,17 @@ async function refresh(force = false) {
     }
     globalThis.SummonModels.sync(state.modelSettings);
     globalThis.SummonModels.start({ api,render,toast,refresh });
+    window.SummonOnboarding?.syncState?.(state.onboarding);
+    if (window.SummonOnboarding?.isFocusLocked?.()) {
+      const targetRoomId = state.onboarding?.roomId || window.SummonOnboarding.SUMMON_ROOM_ID;
+      ui.view = 'chat';
+      ui.detailOpen = false;
+      ui.creatingRoom = false;
+      if (targetRoomId && roomById(targetRoomId) && ui.roomId !== targetRoomId) {
+        ui.roomId = targetRoomId;
+        await restoreRoomMessages(ui.roomId);
+      }
+    }
     void globalThis.SummonCache?.writeState(synced);
     if (!ui.creatingRoom && (!roomById(ui.roomId) || directRoom(roomById(ui.roomId)))) {
       const nextGroup = defaultGroupRoom();
@@ -1841,8 +1863,10 @@ async function editBotAccess(bot) {
 }
 
 function editWorkspace(item) {
+  const canPick = Boolean(window.SummonDesktop?.pickDirectory);
   const body = field('目录名称','name',item?.name || '',{ required:true }) + field('绝对路径','path',item?.path || '',{ required:true,placeholder:'D:/projects/example' }) +
-    `<label class="checkbox-line"><input type="checkbox" name="write" ${item?.write === true ? 'checked' : ''}>允许执行器写入</label>`;
+    (canPick ? '<div style="margin:-4px 0 8px"><button type="button" class="secondary-button small-button" data-action="pick-workspace-dir">选择本地文件夹…</button></div>' : '') +
+    `<label class="checkbox-line"><input type="checkbox" name="write" ${item ? (item.write === true ? 'checked' : '') : 'checked'}>允许执行器写入</label>`;
   openModal(item ? '编辑执行目录' : '登记执行目录','',body,async data => {
     await api('/api/workspaces' + (item ? '/' + encodeURIComponent(item.id) : ''),item ? 'PATCH' : 'POST',{
       name:data.get('name').trim(),path:data.get('path').trim(),write:data.has('write'),...(item ? { revision:item.revision } : {}),
@@ -2354,6 +2378,30 @@ async function act(action, element) {
     lb.hidden = false; return;
   }
   if (action === 'close-lightbox') { const lb = $('#lightbox'); if (lb) { lb.hidden = true; lb.innerHTML = ''; } return; }
+  if (action === 'preview-onboarding') {
+    await closeModal($('#modal'), { suppressReturn: true });
+    if (window.SummonDesktop?.previewDesktopIntro) {
+      await window.SummonDesktop.previewDesktopIntro();
+    } else {
+      window.SummonOnboarding?.startPreview();
+    }
+    return;
+  }
+  if (action === 'pick-workspace-dir') {
+    const picked = await window.SummonDesktop?.pickDirectory?.();
+    if (picked) {
+      const form = $('#modal-content form');
+      if (form?.elements?.path) form.elements.path.value = picked;
+      if (form?.elements?.name && !form.elements.name.value.trim()) {
+        const base = picked.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || picked;
+        form.elements.name.value = base;
+      }
+    }
+    return;
+  }
+  if (window.SummonOnboarding?.isFocusLocked?.() && ['navigate', 'open-settings', 'open-panel', 'open-panel-room', 'select-room', 'new-group', 'toggle-details', 'client-downloads', 'display-settings'].includes(action)) {
+    return;
+  }
   if (action === 'navigate') return navigate(element.dataset.view);
   if (action === 'refresh') return refresh(true);
   if (action === 'close-modal') return closeModal();
@@ -3778,9 +3826,11 @@ function renderChat() {
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
     ${room ? `<button type="button" class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
-    <div class="chat-header-actions">${room && archived
-      ? `<button type="button" class="secondary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button>`
-      : ''}</div></div>`;
+    <div class="chat-header-actions">${window.SummonOnboarding?.isFocusLocked?.()
+      ? window.SummonOnboarding.renderFocusHeaderActions()
+      : room && archived
+        ? `<button type="button" class="secondary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button>`
+        : ''}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
@@ -4565,8 +4615,39 @@ renderTopbar();
       return;
     }
   }
+  window.SummonOnboarding?.bind?.({
+    api,
+    toast,
+    refresh,
+    onRender: render,
+    onEnterOnboardingChat: async roomId => {
+      ui.view = 'chat';
+      ui.creatingRoom = false;
+      ui.detailOpen = false;
+      ui.mobileRoom = true;
+      await refresh(true);
+      const target = roomById(roomId) ? roomId : defaultGroupRoom()?.id;
+      if (target) {
+        ui.roomId = target;
+        await restoreRoomMessages(target);
+        render();
+        await loadCurrent();
+      }
+    },
+  });
+  if (window.SummonDesktop?.isIntroWindow) {
+    ui.loading = false;
+    window.SummonOnboarding?.startDesktopIntro?.({ preview: window.SummonDesktop.introMode === 'preview' });
+    return;
+  }
+  window.SummonDesktop?.onStartOnboardingFocus?.(detail => {
+    window.SummonOnboarding?.enterFocusFromDesktop?.({ preview: Boolean(detail?.preview) });
+  });
   await restoreCachedState();
   await refresh();
+  if (new URLSearchParams(location.search).get('onboarding') === 'preview') {
+    window.SummonOnboarding?.startPreview?.();
+  }
 })();
 setInterval(() => { if (!ui.streamConnected && navigator.onLine && !document.hidden) scheduleRefresh(); }, 3000);
 window.addEventListener('offline', () => { setProtocol(false, '当前离线。草稿和待确认的发送已保留。'); persistClientSession(); });

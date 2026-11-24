@@ -1,5 +1,6 @@
-import { realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
@@ -87,15 +88,148 @@ export class SummonPlatform {
       assertShareable: (ref, options) => this.assertShareable(ref, options), notify: event => this.deliveries.queueEvent(event) });
   }
 
+  ensureDefaultWorkspace() {
+    const dir = join(this.dataRoot, 'workspace');
+    try {
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+    } catch {}
+    const existing = this.store.get('platform-workspaces', 'ws-summon-home') ||
+      this.workspaceRecords().find(item => {
+        try { return relative(this.authorizedDirectory(item.path), realpathSync(dir)) === ''; } catch { return false; }
+      });
+    if (existing) return existing;
+    try {
+      return this.configureWorkspace({ id: 'ws-summon-home', name: 'Summon 工作区', path: dir, write: true });
+    } catch {
+      return null;
+    }
+  }
+
   initializeDefaults() {
+    const defaultWs = this.ensureDefaultWorkspace();
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
     const onboarding = this.manager.onboardingBot();
-    this.room.ensureMaintenanceRoom(onboarding);
+    this.room.ensureMaintenanceRoom(onboarding, { defaultWorkspaceId: defaultWs?.id || null });
     this.store.transaction(() => {
       this.deliveries.syncObserverMemberships();
       if (onboarding) this.deliveries.ensureMaintenanceWakeup(onboarding.id);
     });
     if (changed) this.emit('bot');
+  }
+
+  onboardingState() {
+    const saved = this.store.get('platform-settings', 'onboarding');
+    const catalog = this.models.catalog();
+    const hasActiveModel = Boolean(catalog.activeId && this.models.isConfigured(
+      catalog.connections.find(item => item.id === catalog.activeId),
+    ));
+    if (saved) {
+      if (saved.status === 'awaiting_model' && hasActiveModel) {
+        return { ...saved, roomId: saved.roomId || botMaintenanceRoomId, hasActiveModel };
+      }
+      return { ...saved, roomId: saved.roomId || botMaintenanceRoomId, hasActiveModel };
+    }
+    const rooms = this.store.list('rooms');
+    const hasUserActivity = rooms.some(item => item.id !== botMaintenanceRoomId) ||
+      this.store.list('messages').some(msg => msg.senderId === 'user');
+    if (hasActiveModel && hasUserActivity) {
+      const completed = {
+        id: 'onboarding',
+        status: 'completed',
+        roomId: botMaintenanceRoomId,
+        completedAt: new Date().toISOString(),
+      };
+      this.store.save('platform-settings', completed);
+      return { ...completed, hasActiveModel };
+    }
+    return {
+      id: 'onboarding',
+      status: hasActiveModel ? 'completed' : 'awaiting_model',
+      roomId: botMaintenanceRoomId,
+      hasActiveModel,
+    };
+  }
+
+  startOnboarding({ force = false } = {}) {
+    const defaultWs = this.ensureDefaultWorkspace();
+    this.initializeDefaults();
+    const current = this.onboardingState();
+    if (!force && current.status === 'configuring_chat') return current;
+    const roomRecord = this.store.get('rooms', botMaintenanceRoomId);
+    const leadBotId = roomRecord?.lead_bot_id ||
+      roomRecord?.members?.find(member => member !== 'user' && this.store.get(botRecords, member)?.built_in_role?.id === groupLeadRole);
+    const nowIso = new Date().toISOString();
+    const next = {
+      id: 'onboarding',
+      status: 'configuring_chat',
+      roomId: botMaintenanceRoomId,
+      startedAt: nowIso,
+      completedAt: null,
+    };
+    this.store.save('platform-settings', next);
+    if (roomRecord && leadBotId) {
+      const leadRecord = this.store.get(botRecords, leadBotId);
+      const wsPath = defaultWs?.path || join(this.dataRoot, 'workspace');
+      const welcomeId = randomUUID();
+      this.store.save('messages', {
+        id: welcomeId,
+        kind: 'message',
+        roomId: botMaintenanceRoomId,
+        senderId: leadBotId,
+        ...(leadRecord?.name ? { senderName: leadRecord.name } : {}),
+        author: identity(leadBotId),
+        content: '你好，欢迎来到 Summon Bot！大脑已经接通，我这就开始帮你扫描本机环境、检查默认工作区、可用工具和云端中枢状态，稍候把结果和下一步配置建议发给你。',
+        attachments: [],
+        references: [],
+        mentions: [],
+        replyTo: null,
+      });
+      const projected = this.room.projectMessage(this.room.messageRow.get(welcomeId));
+      this.emit('message', projected);
+
+      const eventId = `onboarding-${randomUUID()}`;
+      const kickoffEvent = {
+        id: eventId,
+        kind: 'event',
+        type: 'onboarding.started',
+        bot_id: leadBotId,
+        roomId: botMaintenanceRoomId,
+        space: { kind: 'room', id: botMaintenanceRoomId },
+        author: { kind: 'platform', id: 'platform' },
+        time: nowIso,
+        text: [
+          '宿主刚刚接通了第一个可用 AI 模型并进入默认的「Summon」群，现在由你主持首启初始化对话。你已经发过一句开场欢迎语，无需重复打招呼。',
+          `1. 立即体检当前本机环境：用 find({kind:"workspace"}) 确认默认「Summon 工作区」（${wsPath}）和其他目录，用 find({kind:"connection"}) 查看现有执行连接，用 manage_hub({action:"status"}) 查看云端中枢连接状态；同时可以 @ 接口 Bot 帮忙扫描本机已安装的 CLI/工具（如 codex、claude、git 等）。`,
+          '2. 体检完成后，在群里用简洁、友好的语言向用户汇报现状（不要发长篇大论）：',
+          '   - 告诉用户默认的「Summon 工作区」已经就绪，平时可以自己写脚本和存资料；',
+          '   - 汇报检测到的本机工具与云端中枢状态；',
+          '   - 附带一个结构化的 send.prompt 选择卡片，引导用户选择接下来想让 AI 顺手代办的事情（例如：「把常用项目目录也登记进来」「接入扫描到的本机工具」「连接云端中枢以开启手机远程控制」「现在就挺好，完成初始化进入完整工作台」）。',
+          '3. 根据用户的选择，直接调用 configure_workspace、manage_hub 或协作 接口 Bot 完成配置，并持续引导直到用户满意。',
+          '4. 当用户表示配置完成、想直接开始使用，或选了进入完整工作台时，调用 complete_onboarding 工具解锁侧边栏和完整界面，并简短告知用户随时可以新建项目群或回到「Summon」群找你。',
+        ].join('\n'),
+      };
+      this.store.save('platform-events', kickoffEvent);
+      this.deliveries.enqueue(leadBotId, kickoffEvent, [{ id: 'onboarding', revision: 1, kind: 'onboarding' }], []);
+      this.runtime?.wake?.();
+    }
+    this.emit('onboarding', next);
+    return { ...next, hasActiveModel: true };
+  }
+
+  completeOnboarding({ summary } = {}) {
+    const nowIso = new Date().toISOString();
+    const prev = this.store.get('platform-settings', 'onboarding');
+    const next = {
+      id: 'onboarding',
+      status: 'completed',
+      roomId: prev?.roomId || botMaintenanceRoomId,
+      startedAt: prev?.startedAt || nowIso,
+      completedAt: nowIso,
+      ...(summary ? { summary: String(summary).slice(0, 500) } : {}),
+    };
+    this.store.save('platform-settings', next);
+    this.emit('onboarding', next);
+    return { ...next, hasActiveModel: Boolean(this.models.catalog().activeId) };
   }
 
   currentRoomActivitySeq(roomId) {
@@ -633,13 +767,21 @@ export class SummonPlatform {
     return { kind: 'workspace', id: saved.id };
   }
 
+  protectedRuntimeDirectories() {
+    const installRoot = basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot;
+    const dataProtected = ['config', 'capabilities', 'web', 'bot', 'connectors', 'client-releases', 'history.json', 'installation.json']
+      .map(name => join(this.dataRoot, name));
+    return [...dataProtected, installRoot];
+  }
+
   authorizedDirectory(path) {
     if (typeof path !== 'string' || !isAbsolute(path)) reject('workspace_forbidden', 'Select an absolute host directory path', 403);
     let actual;
     try { actual = realpathSync(path); } catch { reject('workspace_not_found', 'The execution directory is unavailable', 404); }
-    const installRoot = basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot;
-    const protectedDirectories = [this.dataRoot, installRoot];
-    if (!statSync(actual).isDirectory() || protectedDirectories.some(dir => {
+    const dataRootReal = (() => { try { return realpathSync(this.dataRoot); } catch { return resolve(this.dataRoot); } })();
+    const protectedDirectories = this.protectedRuntimeDirectories();
+    const isDataRootItself = relative(dataRootReal, actual) === '';
+    if (!statSync(actual).isDirectory() || isDataRootItself || protectedDirectories.some(dir => {
       let root;
       try { root = realpathSync(dir); } catch { root = resolve(dir); }
       return inside(root, actual);
@@ -688,25 +830,140 @@ export class SummonPlatform {
   }
 
   projectFileDirectories() {
-    return [this.dataRoot, basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot];
+    return this.protectedRuntimeDirectories();
   }
 
   configureWorkspace(input) {
-    if (Object.keys(input).some(key => !['id', 'revision', 'name', 'path', 'write'].includes(key))) reject('invalid_workspace', 'Unsupported execution directory setting');
+    if (Object.keys(input).some(key => !['id', 'revision', 'name', 'path', 'write', 'remove'].includes(key))) reject('invalid_workspace', 'Unsupported execution directory setting');
+    if (input.remove === true) {
+      if (!input.id) reject('invalid_workspace', 'Provide workspace id to remove');
+      if (input.id === 'ws-summon-home') reject('workspace_forbidden', 'Summon’s default workspace cannot be removed', 403);
+      return this.store.transaction(() => {
+        const previous = this.store.get('platform-workspaces', input.id);
+        if (!previous) reject('workspace_not_found', 'Workspace not found', 404);
+        if (input.revision !== undefined) assertRevision(previous.revision, input.revision);
+        this.store.delete('platform-workspaces', input.id);
+        this.emit('workspace', { id: input.id, removed: true });
+        return { id: input.id, kind: 'workspace', removed: true };
+      });
+    }
     return this.store.transaction(() => {
       const id = input.id || randomUUID();
       if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id)) reject('invalid_workspace', 'Invalid execution directory ID');
       const previous = this.store.get('platform-workspaces', id);
-      if (previous) assertRevision(previous.revision, input.revision);
-      else if (input.revision !== undefined) assertRevision(null, input.revision);
-      const name = input.name ?? previous?.name;
+      if (previous) {
+        if (input.revision !== undefined) assertRevision(previous.revision, input.revision);
+      } else if (input.revision !== undefined) assertRevision(null, input.revision);
+      const rawPath = input.path ?? previous?.path;
+      const path = this.authorizedDirectory(rawPath);
+      const name = input.name ?? previous?.name ?? (basename(path) || path);
       if (typeof name !== 'string' || !name.trim() || name.length > 120) reject('invalid_workspace', 'An execution directory name is required');
       if (input.write !== undefined && typeof input.write !== 'boolean') reject('invalid_workspace', 'Invalid write authorization');
-      const path = this.authorizedDirectory(input.path ?? previous?.path);
-      const write = input.write ?? previous?.write ?? false;
-      return this.store.save('platform-workspaces', { id, kind: 'workspace', name: name.trim(), path, write,
+      const write = input.write ?? previous?.write ?? true;
+      const saved = this.store.save('platform-workspaces', { id, kind: 'workspace', name: name.trim(), path, write,
         revision: (previous?.revision ?? 0) + 1 });
+      this.emit('workspace', saved);
+      return saved;
     });
+  }
+
+  async localWebBridge() {
+    let deployment;
+    try { deployment = JSON.parse(await readFile(join(this.dataRoot, 'config', 'deployment.json'), 'utf8')); }
+    catch { reject('hub_unavailable', 'Local deployment configuration is unavailable', 503); }
+    const accessToken = deployment?.web?.accessToken;
+    if (!accessToken) reject('hub_unavailable', 'Local web access token is unavailable', 503);
+    let baseUrl = `http://${deployment?.web?.host || '127.0.0.1'}:${deployment?.web?.port || 8787}`;
+    try {
+      const run = JSON.parse(await readFile(join(this.dataRoot, 'web', 'run', 'current.json'), 'utf8'));
+      if (run?.url) baseUrl = run.url;
+    } catch {}
+    return { baseUrl, accessToken };
+  }
+
+  async manageHub(args) {
+    const { baseUrl, accessToken } = await this.localWebBridge();
+    const request = async (method, path, body) => {
+      const res = await fetch(new URL(path, baseUrl), {
+        method,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(15000),
+      }).catch(error => {
+        reject('hub_unreachable', `无法连接本机 Web 中枢服务：${error.message}`, 502);
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) reject(data.code || 'hub_error', data.error || `中枢操作失败（HTTP ${res.status}）`, res.status);
+      return data;
+    };
+    const action = args.action;
+    if (action === 'status') {
+      const [me, nodesResp] = await Promise.all([
+        request('GET', '/hub/auth/me'),
+        request('GET', '/hub/nodes').catch(() => ({ nodes: [] })),
+      ]);
+      return {
+        action: 'status',
+        mode: me.mode || 'local',
+        hubUrl: me.hubUrl || null,
+        authenticated: Boolean(me.authenticated ?? me.user),
+        hubConnected: Boolean(me.hubConnected),
+        hubError: me.hubError || '',
+        localNodeId: me.localNodeId || null,
+        localNodeName: me.localNodeName || '',
+        user: me.user ? { username: me.user.username, displayName: me.user.displayName, role: me.user.role } : null,
+        nodes: (nodesResp.nodes || []).map(n => ({
+          id: n.id, name: n.name, hostname: n.hostname, platform: n.platform, online: Boolean(n.online), isLocal: Boolean(n.isLocal),
+        })),
+      };
+    }
+    if (action === 'login' || action === 'register') {
+      if (!args.username || !args.password) reject('invalid_hub_credentials', '请提供用户名和密码');
+      if (action === 'register' && !args.invite_code) reject('invalid_hub_credentials', '邀请码注册需要提供 invite_code');
+      const payload = {
+        username: args.username,
+        password: args.password,
+        ...(args.invite_code ? { inviteCode: args.invite_code } : {}),
+        ...(args.display_name ? { displayName: args.display_name } : {}),
+        ...(args.node_name ? { nodeName: args.node_name } : {}),
+        ...(args.hub_url ? { hubUrl: args.hub_url } : {}),
+      };
+      const res = await request('POST', action === 'register' ? '/hub/auth/register' : '/hub/auth/login', payload);
+      return {
+        action,
+        authenticated: Boolean(res.authenticated ?? res.user),
+        hubUrl: res.hubUrl || args.hub_url || null,
+        hubConnected: Boolean(res.hubConnected),
+        localNodeId: res.localNodeId || null,
+        localNodeName: res.localNodeName || args.node_name || '',
+        user: res.user ? { username: res.user.username, displayName: res.user.displayName, role: res.user.role } : null,
+      };
+    }
+    if (action === 'disconnect') {
+      await request('POST', '/hub/auth/logout', {});
+      return { action: 'disconnect', authenticated: false, hubConnected: false };
+    }
+    if (action === 'rename_node') {
+      if (!args.node_name?.trim()) reject('invalid_node_name', '请提供新的电脑名称 node_name');
+      let targetId = args.node_id;
+      if (!targetId) {
+        const me = await request('GET', '/hub/auth/me');
+        targetId = me.localNodeId;
+      }
+      if (!targetId) reject('node_not_found', '找不到目标节点 ID', 404);
+      const res = await request('PATCH', `/hub/nodes/${encodeURIComponent(targetId)}`, { name: args.node_name.trim() });
+      return { action: 'rename_node', nodeId: targetId, name: args.node_name.trim(), ok: Boolean(res.ok ?? true) };
+    }
+    if (action === 'delete_node') {
+      if (!args.node_id) reject('node_not_found', '请提供要解绑的 node_id');
+      await request('DELETE', `/hub/nodes/${encodeURIComponent(args.node_id)}`);
+      return { action: 'delete_node', nodeId: args.node_id, removed: true };
+    }
+    reject('invalid_hub_action', '不支持的中枢操作');
   }
 
   configureAccess(id, input, context) {
@@ -1106,6 +1363,12 @@ export class SummonPlatform {
         }
         return { result: finalResult, call_id: record.id };
       }
+      if (name === 'manage_hub') {
+        const result = await this.manageHub(args);
+        this.calls.finish(record.id, 'completed', result);
+        if (trackedActivity) trackedActivity.status = 'completed';
+        return { result, call_id: record.id };
+      }
       if (name === 'open_session' || name === 'send_input' || name === 'stop_session') {
         const result = name === 'open_session' ? await this.executions.open(args, context, record)
           : name === 'send_input' ? await this.executions.submit(args, context, record) : await this.executions.stop(args, context, record);
@@ -1309,6 +1572,14 @@ export class SummonPlatform {
     }
     if (name === 'configure_session') {
       return this.executions.configure(args, context, call);
+    }
+    if (name === 'configure_workspace') {
+      const value = this.configureWorkspace(args);
+      if (value?.id) this.calls.bind(call.id, { target: { kind: 'workspace', id: value.id } });
+      return value;
+    }
+    if (name === 'complete_onboarding') {
+      return this.completeOnboarding(args);
     }
     reject('tool_not_found', 'Unknown writable tool', 404);
   }

@@ -159,6 +159,17 @@ function describeToolActivity(name, args = {}, platform = null) {
       return '正在创建会话';
     case 'set_wakeup':
       return '正在设置提醒与订阅';
+    case 'configure_workspace':
+      return args.remove ? '正在移除工作目录' : args.name ? `正在登记工作目录 ${compactActivityText(args.name, 16)}` : '正在登记工作目录';
+    case 'manage_hub': {
+      if (args.action === 'status') return '正在检查云端中枢状态';
+      if (args.action === 'login' || args.action === 'register') return '正在连接云端中枢';
+      if (args.action === 'disconnect') return '正在断开云端中枢';
+      if (args.action === 'rename_node') return '正在修改本机名称';
+      return '正在管理云端中枢';
+    }
+    case 'complete_onboarding':
+      return '正在完成初始化并解锁工作台';
     case 'initialize_execution': {
       if (args.action === 'inspect') return '正在探测工具环境';
       if (args.action === 'discover') return '正在查找本地工具';

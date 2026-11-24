@@ -10,7 +10,7 @@ import { instanceProof } from '../../web/backend/instance-probe.mjs';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { protocolVersion } from '../../capabilities/platform/contract.mjs';
 import { dataFormat } from './installation-state.mjs';
-import { startSystem } from './system.mjs';
+import { inspectService, serviceRunPath, startSystem, stopSystem } from './system.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const connectionPath = root => join(root, 'desktop-connection.json');
@@ -28,38 +28,87 @@ export function resolveLocalDataRoot(requested, profileRoot = defaultProfile()) 
   return join(resolve(profileRoot), 'data');
 }
 
+function isExternalFormalRoot(dataRoot) {
+  return process.platform === 'win32' && resolve(dataRoot).toLowerCase() === resolve(formalDataRoot).toLowerCase();
+}
+
 export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
   const file = join(dataRoot, 'config', 'deployment.json');
   if (existsSync(file)) return readJson(file);
   await mkdir(join(dataRoot, 'config'), { recursive: true });
+  await mkdir(join(dataRoot, 'workspace', 'scripts'), { recursive: true });
   const token = () => randomBytes(32).toString('base64url');
+  const selfManaged = !isExternalFormalRoot(dataRoot);
   const config = {
     schemaVersion: 4,
     dataFormat,
     dataRoot,
     releaseRoot,
-    defaultCwd: homedir(),
+    defaultCwd: join(dataRoot, 'workspace'),
     runIntent: 'running',
+    environmentFile: join(dataRoot, 'config', 'runtime.env'),
     gatewayToken: token(),
     controlToken: token(),
     gateway: { host: '127.0.0.1', port: 0 },
-    web: { host: '127.0.0.1', port: 8787, autoPort: false, accessToken: token() },
+    web: { host: '127.0.0.1', port: 8787, autoPort: selfManaged, accessToken: token() },
     logs: { maxBytes: 5 * 1024 * 1024, maxFiles: 3 },
   };
   await writeJson(file, config);
   return config;
 }
 
-export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
-  const config = await ensureLocalDeployment({ dataRoot, releaseRoot });
+async function currentWebOrigin(config) {
+  try {
+    const run = await readJson(serviceRunPath(config.dataRoot, 'web'));
+    if (run?.url) return new URL(run.url).origin;
+  } catch {}
+  return `http://${config.web?.host || '127.0.0.1'}:${config.web?.port || 8787}`;
+}
+
+async function probeLocalInstance(origin, accessToken) {
   try {
     const challenge = randomBytes(32).toString('base64url');
-    const res = await fetch(`${formalOrigin}/auth/instance?challenge=${challenge}`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(`${origin}/auth/instance?challenge=${challenge}`, { signal: AbortSignal.timeout(1500) });
     const data = await res.json().catch(() => null);
-    if (res.ok && data?.proof === instanceProof(config.web.accessToken, challenge)) return config;
-  } catch {}
-  await startSystem({ ...config, releaseRoot: existsSync(config.releaseRoot) ? config.releaseRoot : releaseRoot });
-  return config;
+    return Boolean(res.ok && data?.proof === instanceProof(accessToken, challenge));
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot, onProgress } = {}) {
+  onProgress?.({ stage: 'prepare' });
+  let config = await ensureLocalDeployment({ dataRoot, releaseRoot });
+  const selfManaged = !isExternalFormalRoot(config.dataRoot);
+  const file = join(config.dataRoot, 'config', 'deployment.json');
+  const desiredRelease = selfManaged && existsSync(releaseRoot)
+    ? resolve(releaseRoot)
+    : (existsSync(config.releaseRoot) ? resolve(config.releaseRoot) : resolve(releaseRoot));
+
+  if (selfManaged && (resolve(config.releaseRoot) !== desiredRelease || config.web?.autoPort !== true)) {
+    const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
+    const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
+    if (webState.state !== 'stopped' || gwState.state !== 'stopped') {
+      onProgress?.({ stage: 'upgrade' });
+      await stopSystem(config).catch(() => {});
+    }
+    config = {
+      ...config,
+      releaseRoot: desiredRelease,
+      runIntent: 'running',
+      web: { ...config.web, autoPort: true },
+    };
+    await writeJson(file, config);
+  }
+
+  let origin = await currentWebOrigin(config);
+  if (await probeLocalInstance(origin, config.web.accessToken)) {
+    return { config, origin };
+  }
+  await startSystem(config, { onProgress });
+  config = await readJson(file);
+  origin = await currentWebOrigin(config);
+  return { config, origin };
 }
 
 export function remoteInstanceOrigin(address) {
@@ -121,10 +170,10 @@ export async function formalDeployment(requested, profileRoot = defaultProfile()
 }
 
 export async function formalInstanceToken(requested, profileRoot = defaultProfile()) {
-  const config = await ensureLocalRunning({ dataRoot: resolveLocalDataRoot(requested, profileRoot) });
+  const { config, origin } = await ensureLocalRunning({ dataRoot: resolveLocalDataRoot(requested, profileRoot) });
   const { web: { accessToken } } = config;
   const challenge = randomBytes(32).toString('base64url');
-  const response = await instanceRequest(formalOrigin, '/auth/instance?challenge=' + challenge);
+  const response = await instanceRequest(origin, '/auth/instance?challenge=' + challenge);
   const result = await response.json().catch(() => null);
   if (!response.ok || result?.proof !== instanceProof(accessToken, challenge)) {
     throw new Error('本机入口未连接到部署配置对应的正式实例。请确认正式服务状态后重试。');

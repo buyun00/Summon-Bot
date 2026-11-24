@@ -181,6 +181,13 @@ const definitions = [
     'To follow one published job, use kind:"event", type:"work.tool", its Room, and ref:{kind:"event",id} from a visible work.tool observation. Read the status and output on delivery.',
     object({ bot: { anyOf: [typedRef('bot'), text] }, subscription: wakeupSelection, event_or_time: wakeupRule, enabled: flag },
       ['bot', 'subscription']), wakeupPlatformArgs],
+  ['configure_workspace', 'Register, update, or delete a local host workspace directory (including Summon’s default workspace or any user project directory). Omit id to register a new workspace; pass id and current revision to update or delete it. New workspaces default to write:true.',
+    object({ id: text, revision: integer, name: text, path: text, write: flag, remove: flag })],
+  ['manage_hub', 'Inspect or manage this computer’s connection to the Summon Cloud Relay Hub (for mobile and multi-PC remote access). Use action:"status" to inspect hubUrl, login state, node name, tunnel status, and bound nodes; action:"login" or action:"register" (with invite_code) to connect; action:"disconnect" to log out to local-only mode; action:"rename_node" or action:"delete_node" to manage nodes.',
+    object({ action: oneOf('status', 'login', 'register', 'disconnect', 'rename_node', 'delete_node'),
+      username: text, password: text, invite_code: text, display_name: text, node_name: text, hub_url: text, node_id: text }, ['action'])],
+  ['complete_onboarding', 'Mark initial desktop/workspace onboarding as completed once the user finishes initial setup or chooses to proceed to the full workspace, unlocking the full sidebar and navigation.',
+    object({ summary: text })],
 ];
 
 export const tools = Object.freeze(definitions.map(([name, description, inputSchema, toPlatformArgs]) =>

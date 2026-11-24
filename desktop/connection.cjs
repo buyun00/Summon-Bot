@@ -1,55 +1,47 @@
-const { spawn } = require('node:child_process');
-const { readFile } = require('node:fs/promises');
-const { join } = require('node:path');
+const { existsSync } = require('node:fs');
+const { join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const runtime = join(process.resourcesPath, 'summon-runtime');
-const node = join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+const packagedRuntime = join(process.resourcesPath || '', 'summon-runtime');
+const runtime = existsSync(join(packagedRuntime, 'scripts/installation/desktop.mjs'))
+  ? packagedRuntime
+  : resolve(__dirname, '..');
 const desktopScript = join(runtime, 'scripts/installation/desktop.mjs');
 const desktopSettings = () => import(pathToFileURL(desktopScript).href);
-const setupUrl = 'summon-setup://connection/index.html';
-
-function localAccess(profile, input) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(node, [desktopScript, 'access', '--profile-root', profile, '--stdin'], {
-      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    });
-    let output = '', error = '';
-    child.stdout.setEncoding('utf8'); child.stdout.on('data', chunk => { output += chunk; });
-    child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { error += chunk; });
-    child.stdin.on('error', () => {});
-    child.once('error', () => reject(new Error('本机远程访问配置无法启动。')));
-    child.once('close', code => {
-      try {
-        const result = JSON.parse(code === 0 || code === 2 ? output : error);
-        if (result.error) reject(new Error(result.error));
-        else resolve(result);
-      } catch { reject(new Error('本机远程访问配置未完成。')); }
-    });
-    child.stdin.end(JSON.stringify(input));
-  });
-}
+const setupUrl = 'summon-setup://boot/index.html';
 
 function sessionCookie(origin) {
-  const secure = new URL(origin).protocol === 'https:';
-  return { secure, name: secure ? '__Host-summon_session' : 'summon_local_session' };
+  const url = new URL(origin);
+  const secure = url.protocol === 'https:';
+  const port = url.port || (secure ? '443' : '80');
+  const localName = port === '8787' ? 'summon_local_session' : `summon_local_session_${port}`;
+  return { secure, name: secure ? '__Host-summon_session' : localName };
 }
 
-async function login(session, origin, token, local) {
+async function login(session, origin, token) {
   const { bearerHeader, instanceRequest } = await desktopSettings();
   const response = await instanceRequest(origin, '/auth/session', { method: 'POST', headers: bearerHeader(token) });
   if (response.status === 429) throw new Error('认证尝试过于频繁，请稍后重试。');
-  if (response.status === 401) throw new Error(local
-    ? '本机正式实例拒绝了部署配置中的访问令牌。' : '实例访问令牌无效。');
+  if (response.status === 401) throw new Error('本机服务拒绝了部署配置中的访问令牌。');
   const { name, secure } = sessionCookie(origin);
   const cookie = response.headers.getSetCookie().map(value => value.split(';', 1)[0])
     .find(value => value.startsWith(name + '='));
   const value = cookie?.slice(name.length + 1) || '';
-  if (!response.ok || !/^[A-Za-z0-9._-]{1,160}$/.test(value)) throw new Error('该地址没有返回有效的 Summon Bot 登录会话。');
+  if (!response.ok || !/^[A-Za-z0-9._-]{1,160}$/.test(value)) throw new Error('本机服务未返回有效的登录会话。');
   try {
-    await session.cookies.set({ url: origin + '/', name, value, path: '/', secure, httpOnly: true,
-      sameSite: 'strict', expirationDate: Date.now() / 1000 + 30 * 86400 });
-  } catch { throw new Error('无法保存实例登录会话。'); }
+    await session.cookies.set({
+      url: origin + '/',
+      name,
+      value,
+      path: '/',
+      secure,
+      httpOnly: true,
+      sameSite: 'strict',
+      expirationDate: Date.now() / 1000 + 30 * 86400,
+    });
+  } catch {
+    throw new Error('无法保存本机登录会话。');
+  }
 }
 
 async function checkLogin(session, origin) {
@@ -62,34 +54,40 @@ async function checkLogin(session, origin) {
   return instanceBootstrap(origin, { Cookie: name + '=' + cookie.value });
 }
 
-async function prepareConnection(session, selection, token) {
-  const local = selection.mode === 'local';
-  if (local) {
-    const { ensureLocalRunning } = await desktopSettings();
-    await ensureLocalRunning({ releaseRoot: runtime });
-  }
-  if (!local && token) await login(session, selection.origin, token, false);
-  try { return await checkLogin(session, selection.origin); }
-  catch (error) {
-    if (!local || error.code !== 'INSTANCE_LOGIN_REQUIRED') throw error;
-    const { formalInstanceToken } = await desktopSettings();
-    await login(session, selection.origin, await formalInstanceToken(), true);
-    return checkLogin(session, selection.origin);
-  }
-}
-
-async function authorizationUrl(provider) {
-  if (provider !== 'tailscale') return null;
-  const { formalDeployment } = await desktopSettings();
-  const config = await formalDeployment();
-  const file = join(config.dataRoot, 'config', 'remote-tailscale-plan.json');
+async function fetchOnboardingState(origin, token, protocolVersion) {
   try {
-    const plan = JSON.parse(await readFile(file, 'utf8'));
-    const url = new URL(plan.authorization);
-    if (plan.expires > Date.now() && url.protocol === 'https:' && !url.username && !url.password
-      && ['login.tailscale.com', 'controlplane.tailscale.com'].includes(url.hostname)) return url.href;
-  } catch {}
-  return null;
+    const { bearerHeader, instanceRequest } = await desktopSettings();
+    const res = await instanceRequest(origin, '/api/onboarding', {
+      headers: { ...bearerHeader(token), 'X-Summon-Protocol': String(protocolVersion), Accept: 'application/json' },
+    }, 4000);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
-module.exports = { runtime, setupUrl, desktopSettings, localAccess, prepareConnection, authorizationUrl };
+async function prepareLocalConnection(session, profileRoot, onProgress) {
+  const { ensureLocalRunning, resolveLocalDataRoot } = await desktopSettings();
+  const dataRoot = resolveLocalDataRoot(undefined, profileRoot);
+  const { config, origin } = await ensureLocalRunning({ dataRoot, releaseRoot: runtime, onProgress });
+  onProgress?.({ stage: 'connect' });
+  let bootstrap;
+  try {
+    bootstrap = await checkLogin(session, origin);
+  } catch (error) {
+    if (error.code !== 'INSTANCE_LOGIN_REQUIRED') throw error;
+    await login(session, origin, config.web.accessToken);
+    bootstrap = await checkLogin(session, origin);
+  }
+  const onboarding = await fetchOnboardingState(origin, config.web.accessToken, bootstrap?.protocolVersion || 3);
+  const needsIntro = Boolean(onboarding && onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel);
+  return { mode: 'local', origin, dataRoot: config.dataRoot, onboarding, needsIntro };
+}
+
+async function resolveLogsRoot(profileRoot) {
+  const { resolveLocalDataRoot } = await desktopSettings();
+  return join(resolveLocalDataRoot(undefined, profileRoot), 'web', 'logs');
+}
+
+module.exports = { runtime, setupUrl, desktopSettings, prepareLocalConnection, resolveLogsRoot };

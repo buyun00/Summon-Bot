@@ -13,8 +13,8 @@ import { RelayConnector } from './relay-connector.mjs';
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'hub', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['app', 'hub', 'onboarding', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'canvas-overview'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'cybercab', 'hub', 'onboarding'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],

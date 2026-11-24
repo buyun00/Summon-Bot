@@ -431,9 +431,60 @@ export class ChatroomService {
     }
   }
 
-  ensureMaintenanceRoom(bot) {
-    if (!bot || bot.archivedAt || this.store.get('rooms', botMaintenanceRoomId)) return;
-    this.createRoom({ title: 'Bot 维护群', members: [bot.id], mode: 'group' }, 'user', { id: botMaintenanceRoomId });
+  ensureMaintenanceRoom(bot, { defaultWorkspaceId = null } = {}) {
+    if (!bot || bot.archivedAt) return null;
+    const existing = this.store.get('rooms', botMaintenanceRoomId);
+    const egg = this.manager.eggBot();
+    if (!existing) {
+      const members = [bot.id, ...(egg?.enabled ? [egg.id] : [])];
+      return this.createRoom({
+        title: 'Summon',
+        members,
+        mode: 'group',
+        workspace: defaultWorkspaceId || undefined,
+        lead_name: 'Summon',
+        skip_welcome: true,
+      }, 'user', { id: botMaintenanceRoomId });
+    }
+    let changed = false;
+    const next = { ...existing };
+    if (next.name === 'Bot 维护群') {
+      next.name = 'Summon';
+      changed = true;
+    }
+    const members = [...(next.members || [])];
+    if (!members.includes('user')) { members.unshift('user'); changed = true; }
+    let leadBotId = next.lead_bot_id || members.find(member =>
+      member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
+    let createdLead = null;
+    if (!leadBotId) {
+      createdLead = this.manager.createGroupLead({ roomId: botMaintenanceRoomId, roomName: 'Summon', leadName: 'Summon' });
+      leadBotId = createdLead.id;
+      const insertAt = members.includes('user') ? members.indexOf('user') + 1 : 0;
+      if (!members.includes(leadBotId)) members.splice(insertAt, 0, leadBotId);
+      next.lead_bot_id = leadBotId;
+      changed = true;
+    } else if (!next.lead_bot_id) {
+      next.lead_bot_id = leadBotId;
+      changed = true;
+    }
+    if (egg?.enabled && !members.includes(egg.id)) { members.push(egg.id); changed = true; }
+    if (!members.includes(bot.id)) { members.push(bot.id); changed = true; }
+    if (!next.workspace && defaultWorkspaceId) {
+      try {
+        next.workspace = this.platform.bindRoomWorkspace(defaultWorkspaceId, 'user', 'group');
+        changed = true;
+      } catch {}
+    }
+    if (changed) {
+      next.members = members;
+      next.revision = (next.revision ?? 0) + 1;
+      this.store.save('rooms', next);
+      for (const member of members) if (member !== 'user') this.platform.ensureRoomBase(member, botMaintenanceRoomId);
+      if (createdLead) this.platform.emit('bot', this.manager.view(createdLead, { kind: 'user', id: 'user' }));
+      this.emit('room', this.projectRoom(next));
+    }
+    return this.projectRoom(next);
   }
 
   findDuplicateGroup(name, excludeId = null) {
@@ -494,7 +545,7 @@ export class ChatroomService {
       }
       const included = [...requested];
       let leadBotId = null;
-      if (isStandardGroup) {
+      if (isStandardGroup || (mode === 'group' && id === botMaintenanceRoomId)) {
         const existingLead = included.find(member =>
           member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
         if (existingLead) {

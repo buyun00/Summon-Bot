@@ -430,9 +430,12 @@ export class ModelConnections {
       }
       validateModelPurpose(entry, entry.model, entry.thinkingLevel);
       if (previous) catalog.connections[catalog.connections.indexOf(previous)] = entry; else catalog.connections.push(entry);
+      if (input.activate === true || (!catalog.activeId && entry.kind === 'api' && (input.apiKey || entry.allowNoKey))) {
+        catalog.activeId = id;
+      }
     }, input.apiKey ? { id, key: input.apiKey.trim() } : null, () => this.clearUsage(id));
     if (!this.closing) void this.refreshUsage(false).catch(() => {});
-    return this.snapshot();
+    return { ...await this.snapshot(), savedId: id };
   }
   async select(id) {
     await this.mutate(catalog => {
@@ -475,7 +478,7 @@ export class ModelConnections {
     }));
     return { scope: 'host', sources };
   }
-  async importLocal(kind) {
+  async importLocal(kind, { activate = false } = {}) {
     if (!['codex', 'grok'].includes(kind)) throw new Error('请选择 Codex 或 Grok');
     const name = kind === 'codex' ? 'Codex' : 'Grok', authMode = `${kind}-local`;
     const authFile = kind === 'codex' ? localCodexAuthPath() : localGrokAuthPath();
@@ -489,9 +492,56 @@ export class ModelConnections {
     await this.mutate(catalog => { const entry = requireEntry(catalog, id);
       entry.authMode = authMode; entry.authFile = authFile; entry.identity = identity;
       if (kind === 'grok') { entry.authScope = authScope; entry.baseUrl = 'https://cli-chat-proxy.grok.com/v1'; }
+      if (activate || !catalog.activeId) catalog.activeId = id;
       this.clearUsage(id); });
     if (!this.closing) void this.refreshUsage(false).catch(() => {});
     return { ...await this.snapshot(), importedId: id };
+  }
+  async testConnection(id) {
+    const connection = modelConnection({ connectionStore: this.path }, id);
+    const model = connectionModel(connection);
+    const runtime = connectionRuntime(connection, this.credentials);
+    const started = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('连接检测超时，请检查网络或代理设置')), 20000);
+    try {
+      const resolved = await runtime.models.getAuth(id, { signal: controller.signal });
+      if (!resolved && !connection.allowNoKey) throw new Error('尚未完成授权或未填写 API Key');
+      const apiKey = resolved?.auth?.apiKey ?? (connection.allowNoKey ? 'no-key' : '');
+      const wireModel = { ...model, headers: { ...model.headers, ...grokProxyHeaders(connection) } };
+      const context = {
+        systemPrompt: 'Reply briefly with OK.',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply with OK.' }], timestamp: Date.now() }],
+      };
+      const stream = runtime.models.streamSimple(wireModel, context, {
+        apiKey,
+        maxTokens: 16,
+        signal: controller.signal,
+        timeoutMs: 18000,
+        maxRetries: 0,
+        ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
+      });
+      let text = '';
+      for await (const event of stream) {
+        if (event?.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
+        if (event?.type === 'error') {
+          const msg = event.error?.errorMessage || event.error?.message || event.reason || '模型返回错误';
+          throw new Error(msg);
+        }
+        if (event?.type === 'done') {
+          if (event.message?.stopReason === 'error' || event.message?.errorMessage) {
+            throw new Error(event.message.errorMessage || '模型调用失败');
+          }
+          break;
+        }
+      }
+      return { ok: true, id, name: connection.name, model: model.id, latencyMs: Date.now() - started, preview: text.trim().slice(0, 40) || 'OK' };
+    } catch (error) {
+      const message = modelError(error) || error?.message || '模型连接检测失败';
+      throw Object.assign(new Error(message), { status: 400, code: 'model_test_failed' });
+    } finally {
+      clearTimeout(timer);
+    }
   }
   loginStatus(id) {
     const login = this.logins.get(id);

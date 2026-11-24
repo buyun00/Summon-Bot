@@ -86,7 +86,9 @@ export function createApi({ platform, room, attachments, models, connections, pu
         roles: roleCatalog,
         rooms: allRooms.filter(item => !item.archived_at),
         archivedRooms: allRooms.filter(item => Boolean(item.archived_at)),
-        modelSettings: models.summary(), historyEpoch, protocolVersion,
+        modelSettings: models.summary(),
+        onboarding: platform.onboardingState(),
+        historyEpoch, protocolVersion,
       };
       return snapshot('state', state, params);
     }
@@ -296,16 +298,21 @@ export function createApi({ platform, room, attachments, models, connections, pu
         return result;
       }
     }
+    if (path === '/api/onboarding' && method === 'GET') return platform.onboardingState();
+    if (path === '/api/onboarding/start' && method === 'POST') return platform.startOnboarding({ force: args.force === true });
+    if (path === '/api/onboarding/complete' && method === 'POST') return platform.completeOnboarding(args);
     if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
     if (path === preservedModelSettings + '/local/import' && method === 'POST') {
-      const result = await models.importLocal(args.kind);
+      const result = await models.importLocal(args.kind, { activate: args.activate === true });
+      platform.initializeDefaults();
       platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.importedId || null });
       return result;
     }
     if (path === preservedModelSettings + '/connections' && method === 'POST') {
       const result = await models.save(args);
-      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.connection?.id || args?.id || null });
+      if (args.activate === true) platform.initializeDefaults();
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.savedId || args?.id || null });
       return result;
     }
     if (path === preservedModelSettings + '/purposes' && method === 'POST') {
@@ -321,7 +328,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
     }
     if (path === preservedModelSettings + '/usage' && method === 'POST') return models.refreshUsage(args.force === true);
     if (path === preservedModelSettings + '/usage' && method === 'GET') return models.summary();
-    if ((match = path.match(/^\/api\/model-settings\/connections\/([^/]+)(?:\/(login|models))?$/))) {
+    if ((match = path.match(/^\/api\/model-settings\/connections\/([^/]+)(?:\/(login|models|test))?$/))) {
       const [, encoded, action] = match;
       const id = decodeURIComponent(encoded);
       models.requireConnection(models.catalog(), id);
@@ -334,6 +341,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (action === 'login' && method === 'GET') return models.loginStatus(id);
       if (action === 'login' && method === 'POST') return models.startLogin(id);
       if (action === 'login' && method === 'DELETE') { models.cancelLogin(id); return models.loginStatus(id); }
+      if (action === 'test' && method === 'POST') return models.testConnection(id);
     }
     if (method === 'GET' && (match = path.match(/^\/api\/calls\/([^/]+)$/))) return read(routeRef('call', match[1]), params);
     return undefined;

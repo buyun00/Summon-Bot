@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { delimiter, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson, within } from '../build/files.mjs';
@@ -38,7 +39,18 @@ export async function deploymentEnvironment(config) {
       values[match[1]] = value;
     }
   }
-  return { ...values, ...process.env };
+  const merged = { ...values, ...process.env };
+  if (process.platform === 'darwin') {
+    const home = homedir();
+    const extraPaths = [
+      '/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin',
+      join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.volta', 'bin'), join(home, '.bun', 'bin'),
+    ];
+    const current = String(merged.PATH || '').split(delimiter).filter(Boolean);
+    const augmented = [...new Set([...current, ...extraPaths.filter(dir => existsSync(dir))])];
+    merged.PATH = augmented.join(delimiter);
+  }
+  return merged;
 }
 
 export async function inspectService(config, type) {

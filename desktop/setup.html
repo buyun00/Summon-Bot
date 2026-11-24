@@ -2,19 +2,26 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Summon Bot · 欢迎</title>
+<title>Summon Bot</title>
 <link rel="stylesheet" href="setup.css">
 <script defer src="setup.js"></script>
 <body>
-  <header class="titlebar"><img src="icon.png" alt=""><span>Summon Bot</span></header>
-  <section id="release-controls" aria-label="客户端更新"></section>
-  <main id="welcome">
-    <div class="welcome-heading">
-      <h1 id="title" tabindex="-1">选择实例</h1>
+  <main class="boot-stage" id="boot-stage">
+    <div class="boot-orb-wrap" id="boot-orb-wrap">
+      <div class="boot-orb-glow" aria-hidden="true"></div>
+      <div class="boot-orb" id="boot-orb">
+        <img src="icon.png" alt="Summon Bot">
+      </div>
     </div>
-    <div id="conversation" role="log" aria-label="设置说明"></div>
-    <div id="controls"></div>
-    <p id="status" role="status"></p>
+    <div class="boot-pill" id="boot-stage-text" role="status">正在准备本机环境…</div>
+    <div class="boot-error-box" id="boot-error-box" hidden>
+      <p class="boot-error-detail" id="boot-error-detail"></p>
+      <div class="boot-actions">
+        <button type="button" class="primary" id="btn-retry">重试启动</button>
+        <button type="button" id="btn-logs">打开日志目录</button>
+        <button type="button" id="btn-close">退出</button>
+      </div>
+    </div>
   </main>
 </body>
 </html>
