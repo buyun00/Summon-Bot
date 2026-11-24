@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 158" width="100%" height="100%" style="display:block">
+  <defs>
+    <style>
+      .font { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif; }
+    </style>
+    <linearGradient id="cliDark-zh" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#171B24"/>
+      <stop offset="100%" stop-color="#1F2636"/>
+    </linearGradient>
+    <filter id="cliShadow-zh" x="-2%" y="-6%" width="104%" height="118%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#121620" flood-opacity="0.14"/>
+    </filter>
+  </defs>
+
+  <rect x="8" y="8" width="1024" height="142" rx="20" fill="url(#cliDark-zh)" filter="url(#cliShadow-zh)"/>
+  <text x="38" y="46" class="font" font-size="16.5" font-weight="800" fill="#F3F4F8">📱 全自研原生四端实时同步（Protocol 3） · 纸片几何头像（Bloub） · 按用途精细记账</text>
+  <text x="38" y="73" class="font" font-size="13" fill="#A4ADBC">所有对话、SQLite 状态库、工具回执与凭据均保存在你自己的电脑上，出门拿手机随时查看进度、拍板或改行程：</text>
+  
+      <rect x="38" y="96" width="232" height="34" rx="10" fill="#252C3D" stroke="#343E54"/>
+      <text x="154" y="118" text-anchor="middle" class="font" font-size="12.2" font-weight="700" fill="#E8EEF5">🌐 普通网页 (Paper / Midnight)</text>
+    
+      <rect x="282" y="96" width="232" height="34" rx="10" fill="#252C3D" stroke="#343E54"/>
+      <text x="398" y="118" text-anchor="middle" class="font" font-size="12.2" font-weight="700" fill="#E8EEF5">💻 桌面端 (Win x64 / Mac arm64)</text>
+    
+      <rect x="526" y="96" width="232" height="34" rx="10" fill="#252C3D" stroke="#343E54"/>
+      <text x="642" y="118" text-anchor="middle" class="font" font-size="12.2" font-weight="700" fill="#5CD49B">🍎 iOS 26 (SwiftUI Liquid Glass)</text>
+    
+      <rect x="770" y="96" width="232" height="34" rx="10" fill="#252C3D" stroke="#343E54"/>
+      <text x="886" y="118" text-anchor="middle" class="font" font-size="12.2" font-weight="700" fill="#5CD49B">🤖 Android (Jetpack Compose)</text>
+    
+</svg>

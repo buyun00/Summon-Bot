@@ -85,15 +85,57 @@
 
 ## 和平时用的 AI 工具相比，体验有什么不同？
 
+### 1. 对比 Codex / Claude Code 等传统 Session 式工具
+
 <p align="center">
-  <img src="docs/assets/readme-compare-zh.svg" alt="Summon Bot 竞品对比与全原生四端总览图：1. 对比直接用 Codex / Claude Code：告别单线程终端干等，把 Codex 作为后台 ③ 执行引擎并发调度，前台群聊秒回且支持随口补件直转；2. 对比 Grokbot (xAI)：100% 本地自托管主权，自有数据根直接操作本地工作区，自由混搭 Codex/Grok/Claude/DeepSeek；3. 对比 OpenBot / Hermes：内核级 ① 快读静默分流、EggBot 自动招人建制、CLI 升级群外自修与全原生四端；4. 对比 DSH SuperAgent：去中心化同伴协作、前台零 bash 裸奔与代码级权限硬门禁；底部展示全原生四端（Web Paper/Midnight、Electron Win x64/Mac arm64、iOS 26 SwiftUI Liquid Glass、Android Jetpack Compose）、Protocol 3 同步、Bloub 纸片头像与按用途精细记账。" width="100%" />
+  <img src="docs/assets/readme-cmp-codex-zh.svg" alt="对比 01（Summon Bot vs 传统 Session 式工具如 Codex / Claude Code）：传统 Session 工具虽可插话，但极度消耗人的多对话管理与编排精力——同时开 4 个会话极易陷入手动复制上下文的交接漩涡，且单个长目标常因权限弹窗或环境小 Bug 半路停摆；Summon Bot 由主控和专员在统一群聊里自动拆解并并行调度多路 Codex/Pi 后台稳跑、遇到工具小报错群外自动修复，最终复测合并一次交付，让长目标完整无误、高效不中断地跑完。" width="100%" />
 </p>
 
-- **相比直接用 Codex / Claude Code（单窗口编程助手）**：不是取代 Codex，而是把 Codex / Claude 作为后台 ③ 执行引擎交给群主控统一调度。告别单线程终端一跑代码就卡住的干等——后台多路并行跑重活，前台照常秒回聊下一模块、随时插话直转补件。
-- **相比 Grokbot (xAI)（云端单厂商 Agent）**：100% 本地自托管主权，不绑死单一厂商的高价云电脑。所有对话、SQLite 状态库、工具回执与凭据均保存在你自己的正式数据根，直接读写本地工作区，自由混搭本机已有的 Codex、Grok、Claude 登录订阅与 DeepSeek 等多模型 API。
-- **相比 OpenBot / Hermes（常见多 Agent 群聊框架）**：不止于提示词交接或借壳 Telegram / IM 机器人。从运行时内核实现 ① 快读静默分流（既不抢话刷屏又省下陪聊 Token）、EggBot 自动招人建制，以及 CLI 工具升级报错时由专责维护 Bot 在群外静默修好适配脚本，绝不在业务群刷满报错堆栈。
-- **相比 DSH SuperAgent（中心路由式 Agent）**：去中心化同伴协作，无单一中心主 Session 路由瓶颈，前台聊天层也不带 bash 裸奔。每位 Bot 拥有独立的跨群人格与长期记忆，后台执行器与群发言彻底隔离，由平台代码硬门禁强制校验目录授权与并发乐观锁。
-- **全自研原生四端随时接力**：提供 **普通网页（Paper / Midnight 双主题）**、**Windows / macOS (arm64) Electron 桌面端**、**iOS 26 原生客户端（SwiftUI Liquid Glass）** 与 **Android 原生客户端（Jetpack Compose）**，统一支持 Protocol 3 实时同步、Bloub 纸片几何动画头像与按用途精细记账。在电脑上开好工，出门拿手机就能随时看群里交上来的成品、审批运维操作或顺手改行程。
+- **解决的不是“能不能插话”，而是“谁来编排与兜底”**：传统 Session 式工具本身也能插话，但一旦任务变复杂，就需要人自己充当多会话编排器——同时盯几个窗口、手动来回贴上下文，极易陷入**多对话交接漩涡**，且一个长目标动辄因为权限卡顿或奇奇怪怪的环境小 Bug 半路中断。
+- **群聊统一编排，长目标高效跑完**：Summon Bot 不是取代 Codex，而是把多路 Codex / Pi 作为后台执行引擎交给群主控与专员统一编排。你只管在群里定目标与验收，多路重活自动并行推进、依赖在群内自动对齐、小故障由维护机制后台兜底，不用耗费人的管理精力就能让复杂长任务完整跑通。
+
+---
+
+### 2. 对比 Hermes 等“龙虾类”单对话本地助手
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-hermes-zh.svg" alt="对比 02（Summon Bot vs Hermes 等龙虾类单对话本地助手）：单对话助手把聊天、命令执行、报错堆栈、日程和代码全挤在一个窗口里，导致意图混杂、执行混乱且长聊压缩后习惯经常遗忘；Summon Bot 作为部署在你电脑上的新一代个人助理 Agent，通过分群协作与专职 Bot 分工（研发主控、日程事务助理、运维与维护 Bot），并由专职机制自动化沉淀个人习惯、群长期约定与资料经验库，执行更清爽、记忆更顺畅永不遗忘。" width="100%" />
+</p>
+
+- **新一代本地个人助理架构**：同样部署在你自己的电脑上，Summon Bot 不再把所有事情塞进唯一一个对话窗口里。按项目和事务分群、由不同专职 Bot 各司其职，彻底告别单对话一锅烩带来的一级混乱与执行串台。
+- **专职自动化记忆沉淀，不会忘记**：个人偏好、群长期约定与资料方法索引都由专门的记忆与资料机制自动结构化落盘，跨会话和历史压缩后依然稳定生效，越用越顺手。
+
+---
+
+### 3. 对比 Grokbot / OpenBot 等云端个人助手
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-grokbot-zh.svg" alt="对比 03（Summon Bot vs Grokbot / OpenBot 等云端个人助手）：大厂个人 Agent 往往专注在云端虚拟机里尝试对接外卖点咖啡、购物社交等消费级应用，结果变成 AI 帮你点咖啡、真正的代码和重活还得你自己干；Summon Bot 100% 跑在你自己的电脑上，直接读写本地仓库、调用本机工具并混搭已有模型订阅，把真正的活交给 Summon 完成——过上自己慢慢冲咖啡、让 AI 干活的生活。" width="100%" />
+</p>
+
+- **专注把真正的活干完，而非云端炫技**：大厂云端个人 Agent 擅长在云端虚拟机里对接消费级应用生态，但很难深度接管你电脑上的真实项目、代码仓库与本地工具链。
+- **自己冲咖啡，让 AI 干活**：Summon Bot 100% 本地自托管，直接操作你的本地工作区并自由混搭本机已有的 Codex、Grok、Claude 登录订阅与 DeepSeek 等模型。我们不需要“AI 帮点咖啡、自己苦干重活”，而是把能交给 AI 的活和事务尽量交给 Summon 完成，把生活留给自己慢慢冲咖啡。
+
+---
+
+### 4. 对比 DSH SuperAgent（中心路由式 Agent）
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-superagent-zh.svg" alt="对比 04（Summon Bot vs DSH SuperAgent 中心路由式 Agent）：中心路由式架构把需求、代码日志与工具回执全塞进单一中心主 Session 做唯一判断大脑，上下文混杂膨胀、一次误判全盘跑偏，且子 Agent 被动听令无法相互纠错；Summon Bot 采用扁平化同伴协作网络，主控 Bot、领域专员、总接口 Bot 与 EggBot 各自保持干净隔离的上下文，实时旁听并相互纠错，一群臭皮匠稳赢单个诸葛亮。" width="100%" />
+</p>
+
+- **扁平化同伴管理，不赌单一对话的判断**：中心路由式 Agent 把所有信息和决策压在一个中心主 Session 上，上下文越积越杂、单点误判就会牵连全局，子 Agent 也只能被动听派单。
+- **上下文隔离 + 相互纠错（一群臭皮匠顶几个诸葛亮）**：在 Summon 群里，每位 Bot 都拥有干净隔离的职责上下文与独立记忆，通过快读实时旁听群内动态、发现队友走弯路或有风险时主动开口纠错，让判断更准确、协作流程更顺畅。
+
+---
+
+### 5. 全自研原生四端随时接力
+
+<p align="center">
+  <img src="docs/assets/readme-clients-zh.svg" alt="全自研原生四端实时同步（Protocol 3）与 Bloub 纸片几何头像、按用途精细记账：涵盖普通网页（Paper / Midnight）、Electron 桌面端（Win x64 / Mac arm64）、iOS 26 原生客户端（SwiftUI Liquid Glass）与 Android 原生客户端（Jetpack Compose），所有对话与凭据保存在本地电脑，出门拿手机随时查看进度或改行程。" width="100%" />
+</p>
+
+- 提供 **普通网页（Paper / Midnight 双主题）**、**Windows / macOS (arm64) Electron 桌面端**、**iOS 26 原生客户端（SwiftUI Liquid Glass）** 与 **Android 原生客户端（Jetpack Compose）**，统一支持 Protocol 3 实时同步、Bloub 纸片几何动画头像与按用途精细记账。电脑上开好工，出门冲杯咖啡、拿手机随时看成品或拍板下一步。
 
 ---
 
@@ -172,15 +214,57 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ## How Does This Feel Different from Other AI Tools?
 
+### 1. Compared to Raw Codex / Claude Code (Traditional Session-Based Tools)
+
 <p align="center">
-  <img src="docs/assets/readme-compare-en.svg" alt="Summon Bot Comparison & 4 First-Party Clients Overview Graphic: 1. vs Raw Codex / Claude Code: No single-thread terminal freeze—orchestrates Codex as background ③ engines with instant foreground chat, parallel jobs, and live mid-run steer; 2. vs Grokbot (xAI): 100% local self-hosted ownership on your own machine with direct local workspace access and free mixing of Codex, Grok, Claude, and DeepSeek; 3. vs OpenBot / Hermes: Kernel-level ① Fast-Read silence triage, EggBot auto-spawning, silent out-of-band CLI repair, and 4 native clients; 4. vs DSH SuperAgent: Decentralized peer collaboration, isolated execution with no bash on the chat router, and strict code hard gates; Bottom banner highlights 4 first-party clients (Web Paper/Midnight, Electron Desktop Win/Mac arm64, Native iOS 26 Liquid Glass, Native Android Jetpack Compose), Protocol 3 sync, Bloub vector paper avatars, and purpose-based token ledger." width="100%" />
+  <img src="docs/assets/readme-cmp-codex-en.svg" alt="Compare 01 (Summon Bot vs Raw Codex / Claude Code Session CLIs): Even though session CLIs accept mid-turn messages, managing multiple sessions drains human focus—forcing you to manually orchestrate 4 windows, copy-paste context in a handoff spiral, and rescue long goals stalled by permission prompts or minor environment bugs. Summon Bot puts you in one unified group chat where Lead Bot and specialists split work into parallel background Codex lanes, self-heal minor CLI bumps out-of-band, and verify & merge deliverables back in chat so long goals finish smoothly end-to-end." width="100%" />
 </p>
 
-- **Compared to Raw Codex / Claude Code (Single-Window Coding CLIs)**: Summon Bot doesn't replace Codex—it orchestrates Codex / Claude as background ③ execution engines. No more staring at a frozen terminal while a build runs: execute multiple coding jobs in parallel while brainstorming the next module and steering live jobs right from chat.
-- **Compared to Grokbot (xAI) (Single-Vendor Cloud Agent)**: 100% local self-hosted ownership with zero cloud VM lock-in. All chats, SQLite state ledgers, tool receipts, and credentials stay in your own data root on your machine, operating directly on local workspaces while freely mixing your existing Codex, Grok, Claude, and DeepSeek accounts.
-- **Compared to OpenBot / Hermes (Typical Multi-Agent Frameworks)**: Goes beyond prompt-level handoffs or borrowed Telegram UIs. Runtime-level ① Fast-Read silence triage eliminates spam and wasted tokens, EggBot recruits specialists automatically, and if a local CLI tool breaks after an upgrade, a dedicated maintainer bot silently repairs its adapter outside the room instead of dumping stack traces into your chat.
-- **Compared to DSH SuperAgent (Central-Router Agents)**: Decentralized peer collaboration with no single central-session routing bottleneck and no raw bash on the chat layer. Every Bot maintains cross-room persona and memory under strict platform-enforced directory grants and optimistic revision locks.
-- **4 First-Party Native Clients in Sync**: Built across **Web (Paper & Midnight themes)**, **Windows / macOS (arm64) Electron Desktop**, **Native iOS 26 (SwiftUI Liquid Glass)**, and **Native Android (Jetpack Compose)**—complete with Protocol 3 real-time sync, Bloub vector paper avatars, and purpose-based token accounting. Kick off a build at your desk and review delivered files, approve server ops, or tweak your travel itinerary from your phone.
+- **It isn't about whether you can interject—it's about eliminating human orchestration fatigue**: Traditional session CLIs do let you send follow-up messages, yet real projects quickly force *you* to act as a multi-session manager—babysitting 4 terminals, manually copy-pasting specs in a **handoff loop**, and constantly rescuing long runs halted by permission stalls or minor environment glitches.
+- **Uninterrupted parallel execution from one room**: Summon Bot doesn't replace Codex; it orchestrates multiple Codex / Pi sessions under a unified group chat. You stay focused on goals while Bots split parallel work, keep specs aligned, absorb minor tool bumps automatically, and deliver verified results end-to-end.
+
+---
+
+### 2. Compared to Hermes & Single-Thread Local Assistants
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-hermes-en.svg" alt="Compare 02 (Summon Bot vs Hermes and single-thread local assistants): Jamming chat, shell errors, calendar reminders, and coding into one single thread causes execution cross-bleed and forgotten habits after context compaction. Summon Bot is a next-gen personal assistant deployed on your own computer with clean rooms, specialist Bots (Dev Lead, Schedule Bot, Ops & Maintainer), and dedicated automated memory persistence so rules and habits stay intact." width="100%" />
+</p>
+
+- **Next-generation local personal assistant**: Deployed right on your own computer, Summon Bot never crams every task into one messy single chat thread. Separate rooms and specialist Bots keep coding, server ops, and daily scheduling cleanly isolated so execution stays calm and predictable.
+- **Dedicated automated memory that never forgets**: Personal habits, room conventions, and indexed methods are managed and persisted automatically by specialized memory workflows—surviving long threads and compaction smoothly.
+
+---
+
+### 3. Compared to Grokbot / OpenBot (Cloud Lifestyle Personal Agents)
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-grokbot-en.svg" alt="Compare 03 (Summon Bot vs Grokbot / OpenBot cloud lifestyle agents): Big-tech cloud agents focus on remote cloud VMs trying to wire up consumer apps like ordering coffee or shopping—leaving you doing the actual heavy coding and project work yourself. Summon Bot runs 100% locally on your own machine with direct workspace access and your own model accounts, handing real work to Summon so you can brew your own coffee while AI does the work." width="100%" />
+</p>
+
+- **Built for real work, not cloud consumer demos**: Big-tech cloud personal agents chase remote cloud VMs wired into consumer apps—great for demos, yet detached from your real repositories, servers, and local toolchains.
+- **Brew your own coffee while AI does the work**: Summon Bot runs 100% on your own machine, directly reading your local workspaces and freely mixing your existing Codex, Grok, Claude, and DeepSeek subscriptions. We don't want AI ordering coffee while we grind through work—we want to brew our own coffee while Summon gets the real work done.
+
+---
+
+### 4. Compared to DSH SuperAgent (Central-Router Agents)
+
+<p align="center">
+  <img src="docs/assets/readme-cmp-superagent-en.svg" alt="Compare 04 (Summon Bot vs DSH SuperAgent central-router hierarchy): Central-router agents funnel every chat, code log, and tool output into one overloaded central session—bloating context so a single misjudgment derails everything while passive sub-agents cannot challenge or cross-check it. Summon Bot uses a flat peer collaboration mesh where Lead Bot, Specialists, Tool Bot, and EggBot each keep clean isolated context and proactively cross-check and rescue each other—sharper decisions and smoother workflows." width="100%" />
+</p>
+
+- **Flat peer management instead of one fragile central brain**: Central-router architectures funnel all context and decisions through a single master session—causing context bloat and single-point misjudgments that passive sub-agents can't challenge.
+- **Isolated context + mutual peer cross-checking**: Every Bot in a Summon room maintains a clean, role-isolated context and actively listens for mistakes or risks from teammates. Independent peers catching each other's blind spots consistently beat one overloaded central router.
+
+---
+
+### 5. Four First-Party Native Clients in Sync
+
+<p align="center">
+  <img src="docs/assets/readme-clients-en.svg" alt="4 First-Party Clients (Protocol 3), Bloub Vector Paper Avatars, and Purpose-Based Token Ledger: Web App (Paper / Midnight), Electron Desktop (Win / Mac arm64), Native iOS 26 (SwiftUI Liquid Glass), and Native Android (Jetpack Compose). All data stays on your own machine while your phone stays live in sync." width="100%" />
+</p>
+
+- Built across **Web (Paper & Midnight themes)**, **Windows / macOS (arm64) Electron Desktop**, **Native iOS 26 (SwiftUI Liquid Glass)**, and **Native Android (Jetpack Compose)**—complete with Protocol 3 real-time sync, Bloub vector paper avatars, and purpose-based token accounting. Kick off a project at your desk, step away to make coffee, and review deliverables or tweak plans right from your phone.
 
 ---
 
