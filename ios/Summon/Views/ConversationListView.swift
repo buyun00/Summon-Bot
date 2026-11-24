@@ -145,21 +145,18 @@ struct ConversationListView: View {
     @State private var query = ""
     @State private var org = HomeOrganization()
     @State private var showSettings = false
-    @State private var showDisplay = false
-    @State private var showUsage = false
+    @State private var showPanel = false
     @State private var showHidden = false
     @State private var showArchived = false
     @State private var showProfileMenu = false
     @State private var profileDestination: ProfileDestination?
     @State private var quotaItem: SummonJSONValue?
-    @State private var showModels = false
     @State private var detailsTarget: DetailsSheetTarget?
     @State private var newFolderAlert = false
     @State private var newFolderName = ""
     @State private var pendingMoveKey: String?
     @State private var renamingFolder: HomeFolder?
     @State private var renameFolderText = ""
-    @State private var resourceSection: ResourceSection?
     @State private var openingPush = false
     @FocusState private var searchFocused: Bool
 
@@ -427,13 +424,7 @@ struct ConversationListView: View {
                             .onDisappear { presentProfileDestination() }
                     }
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { resourceSection = .bots } label: {
-                        Image(systemName: "person.2").summonFont(.body)
-                    }
-                    .accessibilityLabel("团队成员")
-                    .disabled(!store.protocolReady)
-
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { path.append(.newGroup) } label: {
                         Image(systemName: "plus").summonFont(.title2)
                     }
@@ -483,8 +474,11 @@ struct ConversationListView: View {
                 }
             }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
-            .summonSheet(isPresented: $showDisplay) { SummonDisplaySettingsView() }
-            .summonSheet(isPresented: $showUsage) { TokenUsageView() }
+            .summonSheet(isPresented: $showPanel) {
+                WorkspacePanelView { roomID in
+                    openRoom(roomID)
+                }
+            }
             .summonSheet(isPresented: $showHidden) {
                 HiddenConversationsSheet(entries: hiddenEntries) { key in
                     org.setHidden(key, hidden: false)
@@ -537,8 +531,6 @@ struct ConversationListView: View {
             .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) {
                 if let quotaItem { ModelQuotaDetailsView(item: quotaItem) }
             }
-            .summonSheet(isPresented: $showModels) { ModelSettingsView() }
-            .summonSheet(item: $resourceSection) { section in ResourcesView(section: section) }
         }
     }
 
@@ -845,34 +837,27 @@ struct ConversationListView: View {
     }
 
     private enum ProfileDestination {
-        case usage, display, settings, models, hidden
+        case panel, settings, hidden
         case quota(SummonJSONValue)
-        case resource(ResourceSection)
     }
 
     private var profileMenu: some View {
-        ScrollView {
-            VStack(spacing: 2) {
-                HStack(spacing: 12) {
-                    ModelQuotaSignal(item: store.modelSummary["chat"], label: "默认模型") {
-                        selectProfileDestination(.quota(store.modelSummary["chat"]))
-                    }
-                }.padding(.vertical, 8)
-                profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)
-                profileMenuButton("显示与外观", symbol: "circle.lefthalf.filled", destination: .display)
-                profileMenuButton("设置", symbol: "gearshape", destination: .settings)
-                profileMenuButton("模型与用量", symbol: "cpu", destination: .models)
-                if !hiddenEntries.isEmpty {
-                    profileMenuButton("已隐藏群聊（\(hiddenEntries.count)）", symbol: "eye.slash", destination: .hidden)
+        VStack(spacing: 4) {
+            HStack(spacing: 12) {
+                ModelQuotaSignal(item: store.modelSummary["chat"], label: "默认模型") {
+                    selectProfileDestination(.quota(store.modelSummary["chat"]))
                 }
-                Divider().padding(.vertical, 6)
-                ForEach(ResourceSection.allCases) { section in
-                    profileMenuButton(section.title, symbol: section.symbol, destination: .resource(section))
-                }
-            }.padding(12)
+            }.padding(.vertical, 6)
+            Divider().padding(.vertical, 4)
+            profileMenuButton("面板", symbol: "square.stack.3d.up", destination: .panel)
+            profileMenuButton("设置", symbol: "gearshape", destination: .settings)
+            if !hiddenEntries.isEmpty {
+                Divider().padding(.vertical, 4)
+                profileMenuButton("已隐藏群聊（\(hiddenEntries.count)）", symbol: "eye.slash", destination: .hidden)
+            }
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 268, height: 492)
+        .padding(12)
+        .frame(width: 212)
     }
 
     private func profileMenuButton(_ title: String, symbol: String, destination: ProfileDestination) -> some View {
@@ -892,13 +877,10 @@ struct ConversationListView: View {
         guard let destination = profileDestination else { return }
         profileDestination = nil
         switch destination {
-        case .usage: showUsage = true
-        case .display: showDisplay = true
+        case .panel: showPanel = true
         case .settings: showSettings = true
-        case .models: showModels = true
         case .hidden: showHidden = true
         case .quota(let item): quotaItem = item
-        case .resource(let section): resourceSection = section
         }
     }
 

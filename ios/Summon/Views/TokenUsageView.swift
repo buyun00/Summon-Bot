@@ -21,6 +21,7 @@ private func usageDate(_ value: SummonJSONValue) -> String {
 
 @MainActor
 struct TokenUsageView: View {
+    var embedded = false
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var period = "today"
@@ -45,40 +46,48 @@ struct TokenUsageView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                controls
-                if loading { ProgressView("正在读取统计…") }
-                if let errorMessage { Section { InlineError(message: errorMessage) } }
-                billingSections
-                if overview["coverage"]["includesUntrackedHistory"].bool == true {
-                    Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。")
-                        .summonFont(.footnote).foregroundStyle(.secondary)
-                }
-                Section("本机已记录用量") { totalsRows(overview["totals"]) }
-                rankingSection
-                detailSection
-                breakdown("消耗来源", key: "purposes")
-                breakdown("模型", key: "models")
-                breakdown("每日用量", key: "days")
-                requestSection
-                Section {
-                    Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。")
-                        .summonFont(.footnote).foregroundStyle(.secondary)
-                }
+        if embedded {
+            usageList
+        } else {
+            NavigationStack {
+                usageList
+                    .navigationTitle("Token 用量")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                        ToolbarItem(placement: .primaryAction) { Button("刷新", systemImage: "arrow.clockwise") { revision += 1 }.disabled(loading) }
+                    }
             }
-            .navigationTitle("Token 统计")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) { Button("刷新", systemImage: "arrow.clockwise") { revision += 1 }.disabled(loading) }
-            }
-            .task(id: requestKey) { await load() }
-            .refreshable { await load() }
-            .onChange(of: endpoint) { _, _ in selectedKind = nil; selectedID = ""; selectedName = ""; offset = 0; overview = .null; detail = .null }
-            .onChange(of: period) { _, _ in selectedKind = nil; selectedID = ""; offset = 0; overview = .null; detail = .null }
-            .onChange(of: dimension) { _, _ in selectedKind = nil; selectedID = ""; offset = 0 }
         }
+    }
+
+    private var usageList: some View {
+        List {
+            controls
+            if loading { ProgressView("正在读取统计…") }
+            if let errorMessage { Section { InlineError(message: errorMessage) } }
+            billingSections
+            if overview["coverage"]["includesUntrackedHistory"].bool == true {
+                Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。")
+                    .summonFont(.footnote).foregroundStyle(.secondary)
+            }
+            Section("本机已记录用量") { totalsRows(overview["totals"]) }
+            rankingSection
+            detailSection
+            breakdown("消耗来源", key: "purposes")
+            breakdown("模型", key: "models")
+            breakdown("每日用量", key: "days")
+            requestSection
+            Section {
+                Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。")
+                    .summonFont(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: requestKey) { await load() }
+        .refreshable { await load() }
+        .onChange(of: endpoint) { _, _ in selectedKind = nil; selectedID = ""; selectedName = ""; offset = 0; overview = .null; detail = .null }
+        .onChange(of: period) { _, _ in selectedKind = nil; selectedID = ""; offset = 0; overview = .null; detail = .null }
+        .onChange(of: dimension) { _, _ in selectedKind = nil; selectedID = ""; offset = 0 }
     }
 
     private var controls: some View {

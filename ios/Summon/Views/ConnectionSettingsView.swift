@@ -24,21 +24,39 @@ struct ConnectionSettingsView: View {
                         }
                     }.padding(.vertical, 8)
                 }
-                Section("个人信息") {
+                Section("通用") {
                     TextField("显示名称", text: $userName)
                     Button("保存显示名称") { store.setUserName(userName); userName = store.settings.userName }
                         .disabled(userName == store.settings.userName)
-                }
-                Section {
                     Button("显示与外观", systemImage: "circle.lefthalf.filled") { showDisplay = true }
                 }
+                Section("模型与订阅") {
+                    NavigationLink {
+                        ModelSettingsView(embedded: true)
+                    } label: {
+                        Label("模型连接", systemImage: "cpu")
+                    }
+                    .disabled(!store.protocolReady)
+                    NavigationLink {
+                        SummonObjectList(section: .wakeups)
+                    } label: {
+                        Label("订阅与提醒", systemImage: "clock")
+                    }
+                    .disabled(!store.protocolReady)
+                }
                 Section {
+                    NavigationLink {
+                        SummonObjectList(section: .connections)
+                    } label: {
+                        Label("执行连接与目录", systemImage: "link")
+                    }
+                    .disabled(!store.protocolReady)
                     TextField("https://你的实例地址", text: $baseURL)
                         .keyboardType(.URL).textContentType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("实例访问令牌", text: $token)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                } header: { Text("服务连接") } footer: {
+                } header: { Text("连接与实例") } footer: {
                     Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在 iOS 钥匙串中。")
                 }
                 Section("消息通知") {

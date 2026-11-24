@@ -110,8 +110,11 @@ struct SummonObjectList: View {
                     }
                 }
             case .wakeups:
-                wakeupSection("默认接收", items: items.filter { $0["rule"]["kind"].string == "room_base" })
-                wakeupSection("定时与提醒", items: items.filter { $0["rule"]["kind"].string != "room_base" })
+                wakeupSection("定时提醒与自定义订阅", items: items.filter { $0["rule"]["kind"].string != "room_base" })
+                Section {
+                    Text("各群聊的基础消息关注规则请在对应群聊详情中调整。")
+                        .summonFont(.footnote).foregroundStyle(.secondary)
+                }
             case .connections:
                 connectionSections
             }
@@ -500,7 +503,13 @@ struct SummonExecutionView: View {
             if let error { InlineError(message: error) }
             if detail == .null && busy { ProgressView() }
             if let status = detail["status"].string {
-                Section("执行事实") {
+                let summaryText = executionReadableSummary(detail)
+                if !summaryText.isEmpty {
+                    Section("任务摘要") {
+                        Text(summaryText).summonFont(.body).textSelection(.enabled)
+                    }
+                }
+                Section("执行状态") {
                     LabeledContent("状态", value: SummonFormat.status(status))
                     let lastError = detail["last_error"]
                     let errorText = [lastError["code"].string, lastError["message"].string]
@@ -538,10 +547,12 @@ struct SummonExecutionView: View {
                     }
                     .id(detail["control_version"].stringValue + option.id)
                 }
-                Section("输入与输出") {
-                    ForEach(Array(logPages.enumerated()), id: \.offset) { _, page in logRows(page) }
-                    if logPages.last?["next_cursor"].string != nil {
-                        Button("读取后续日志") { Task { await load(append: true) } }.disabled(busy || !store.protocolReady)
+                Section {
+                    DisclosureGroup("查看原始执行日志（排障）") {
+                        ForEach(Array(logPages.enumerated()), id: \.offset) { _, page in logRows(page) }
+                        if logPages.last?["next_cursor"].string != nil {
+                            Button("读取后续日志") { Task { await load(append: true) } }.disabled(busy || !store.protocolReady)
+                        }
                     }
                 }
             }
@@ -1062,6 +1073,454 @@ private struct SummonLimitsEditor: View {
                 TextField(resourceName(key), text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 }))
                     .keyboardType(.numberPad).accessibilityLabel(resourceName(key))
             }
+        }
+    }
+}
+
+// MARK: - Unified Panel (Workspace Overview + Token Usage)
+
+private let overviewLiveStatuses: Set<String> = [
+    "opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"
+]
+
+private func cleanSummaryLine(_ raw: String?, fallback: String = "") -> String {
+    let trimmed = (raw ?? "")
+        .replacingOccurrences(of: "\n", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return fallback }
+    if (trimmed.hasPrefix("{") && trimmed.hasSuffix("}")) || (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")) {
+        if let data = trimmed.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["summary", "title", "message", "text", "result"] {
+                if let val = obj[key] as? String, !val.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let clean = val.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    return clean.count > 100 ? String(clean.prefix(98)) + "…" : clean
+                }
+            }
+            return fallback.isEmpty ? "结构化执行输出（点开可查看详情）" : fallback
+        }
+    }
+    return trimmed.count > 100 ? String(trimmed.prefix(98)) + "…" : trimmed
+}
+
+private func executionReadableSummary(_ item: SummonJSONValue) -> String {
+    let status = item["status"].stringValue
+    if status == "needs_input" || status == "awaiting_input" {
+        return cleanSummaryLine(
+            item["waiting_summary"].string ?? item["live_progress"].string ?? item["work_summary"].string,
+            fallback: "等待确认或输入"
+        )
+    }
+    if overviewLiveStatuses.contains(status) {
+        return cleanSummaryLine(
+            item["live_progress"].string ?? item["work_summary"].string ?? item["waiting_summary"].string,
+            fallback: "正在执行任务…"
+        )
+    }
+    if status == "failed", let err = item["last_error"]["message"].string, !err.isEmpty {
+        return cleanSummaryLine(item["work_summary"].string ?? err)
+    }
+    let fallback = (item["kind"].string == "conversation" ? "内部对话" : (item["engine"].string ?? "执行会话"))
+        + " · " + SummonFormat.status(status)
+    return cleanSummaryLine(
+        item["work_summary"].string ?? item["last_output_summary"].string ?? item["live_progress"].string,
+        fallback: fallback
+    )
+}
+
+private func memorySummaryText(_ item: SummonJSONValue) -> String {
+    if let text = item.string { return cleanSummaryLine(text) }
+    for key in ["summary", "content", "text", "title", "note", "fact"] {
+        if let text = item[key].string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return cleanSummaryLine(text)
+        }
+    }
+    return "长期记忆条目"
+}
+
+private func memoryScopeLabel(_ item: SummonJSONValue, rooms: [SummonRoom]) -> String {
+    let scopes = item["applies_to"].array ?? []
+    guard !scopes.isEmpty else { return "默认范围" }
+    return scopes.map { scope in
+        let kind = scope["kind"].stringValue
+        if kind == "bot" { return "全群通用" }
+        if kind == "room" {
+            let rid = scope["id"].stringValue
+            let name = rooms.first { $0.id == rid }?.name ?? String(rid.prefix(8))
+            return "仅限 \(name)"
+        }
+        return kind
+    }.joined(separator: " · ")
+}
+
+@MainActor
+struct WorkspacePanelView: View {
+    enum PanelTab: String, CaseIterable, Identifiable {
+        case overview, usage
+        var id: String { rawValue }
+        var title: String { self == .overview ? "工作总览" : "Token 用量" }
+    }
+
+    @Environment(SummonStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    var onOpenRoom: (String) -> Void = { _ in }
+    @State private var selectedTab: PanelTab = .overview
+    @State private var showCreateBot = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("面板视图", selection: $selectedTab) {
+                    ForEach(PanelTab.allCases) { tab in
+                        Text(tab.title).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+                if selectedTab == .overview {
+                    WorkspaceOverviewList(onOpenRoom: { roomID in
+                        dismiss()
+                        onOpenRoom(roomID)
+                    })
+                } else {
+                    TokenUsageView(embedded: true)
+                }
+            }
+            .background(SummonTheme.background)
+            .navigationTitle("面板")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
+                if selectedTab == .overview {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("创建 Bot", systemImage: "plus") { showCreateBot = true }
+                            .disabled(!store.protocolReady)
+                    }
+                }
+            }
+            .summonSheet(isPresented: $showCreateBot) {
+                CreateBotView { _ in showCreateBot = false }
+            }
+        }
+    }
+}
+
+@MainActor
+private struct WorkspaceOverviewList: View {
+    @Environment(SummonStore.self) private var store
+    let onOpenRoom: (String) -> Void
+    @State private var executions: [SummonJSONValue] = []
+    @State private var files: [SummonJSONValue] = []
+    @State private var expandedRooms: Set<String> = []
+    @State private var expandedBots: Set<String> = []
+    @State private var loading = false
+    @State private var error: String?
+
+    private var activeGroups: [SummonRoom] {
+        store.rooms.filter { $0.isGroup && !$0.isArchived }.sorted { a, b in
+            let aLive = executionsForRoom(a.id).contains { overviewLiveStatuses.contains($0["status"].stringValue) }
+            let bLive = executionsForRoom(b.id).contains { overviewLiveStatuses.contains($0["status"].stringValue) }
+            if aLive != bLive { return aLive }
+            return (a.lastMessage?.createdAt ?? a.updatedAt ?? "") > (b.lastMessage?.createdAt ?? b.updatedAt ?? "")
+        }
+    }
+
+    private var unassignedBots: [SummonBot] {
+        let assigned = Set(activeGroups.flatMap(\.members))
+        return store.bots.filter { !assigned.contains($0.id) }
+    }
+
+    private func executionsForRoom(_ roomID: String) -> [SummonJSONValue] {
+        executions.filter { $0["space"]["kind"].string == "room" && $0["space"]["id"].string == roomID }
+    }
+
+    private func executionsFor(roomID: String, botID: String) -> [SummonJSONValue] {
+        executionsForRoom(roomID).filter {
+            ($0["execution_actor"]["id"].string ?? $0["bot_id"].string) == botID
+        }
+    }
+
+    private func filesForRoom(_ roomID: String) -> [SummonJSONValue] {
+        files.filter { $0["deleted_room"].bool != true && $0["space"]["kind"].string == "room" && $0["space"]["id"].string == roomID }
+    }
+
+    private func filesForBot(_ botID: String) -> [SummonJSONValue] {
+        files.filter { $0["deleted_room"].bool != true && $0["space"]["kind"].string == "bot" && $0["space"]["id"].string == botID }
+    }
+
+    private func memoriesFor(bot: SummonBot, roomID: String) -> [SummonJSONValue] {
+        (bot.memory_items ?? []).filter { item in
+            let scopes = item["applies_to"].array ?? []
+            if scopes.isEmpty { return true }
+            return scopes.contains { $0["kind"].string == "bot" || ($0["kind"].string == "room" && $0["id"].string == roomID) }
+        }
+    }
+
+    private func roleOrder(_ bot: SummonBot, in room: SummonRoom) -> Int {
+        if room.lead_bot_id == bot.id || bot.role_id == "group-lead" { return 0 }
+        if bot.role_id == "eggbot" { return 2 }
+        if bot.role_id == "tool-onboarding" { return 3 }
+        return 1
+    }
+
+    private func roleBadge(_ bot: SummonBot, in room: SummonRoom) -> String? {
+        if room.lead_bot_id == bot.id || bot.role_id == "group-lead" { return "主控" }
+        if bot.role_id == "eggbot" { return "孵化" }
+        if bot.role_id == "tool-onboarding" { return "接口" }
+        return nil
+    }
+
+    var body: some View {
+        List {
+            if let error { Section { InlineError(message: error) } }
+            if loading && executions.isEmpty && files.isEmpty {
+                Section { ProgressView("正在同步工作总览…") }
+            }
+
+            Section("群聊（点击逐层展开）") {
+                if activeGroups.isEmpty {
+                    Text("暂无活跃群聊").foregroundStyle(.secondary)
+                }
+                ForEach(activeGroups) { room in
+                    roomRow(room)
+                }
+            }
+
+            if !store.archivedRooms.isEmpty || !unassignedBots.isEmpty {
+                Section("归档与未分组") {
+                    ForEach(store.archivedRooms) { room in
+                        roomRow(room)
+                    }
+                    ForEach(unassignedBots) { bot in
+                        NavigationLink {
+                            BotDetailsView(botID: bot.id)
+                        } label: {
+                            HStack(spacing: 10) {
+                                MemberAvatar(bot: bot, size: 32)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bot.name).summonFont(.body, weight: .medium)
+                                    Text("未加入活跃群聊").summonFont(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(SummonTheme.background)
+        .refreshable { await reload() }
+        .task(id: store.protocolReady) { if store.protocolReady { await reload() } }
+    }
+
+    @ViewBuilder
+    private func roomRow(_ room: SummonRoom) -> some View {
+        let isExpanded = Binding(
+            get: { expandedRooms.contains(room.id) },
+            set: { open in
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    if open { expandedRooms.insert(room.id) } else { expandedRooms.remove(room.id) }
+                }
+            }
+        )
+        let members = room.members
+            .filter { $0 != "user" }
+            .compactMap { id in store.bots.first { $0.id == id } }
+            .sorted { roleOrder($0, in: room) < roleOrder($1, in: room) }
+        let roomExecs = executionsForRoom(room.id)
+        let liveCount = roomExecs.filter { overviewLiveStatuses.contains($0["status"].stringValue) }.count
+        let roomFiles = filesForRoom(room.id)
+
+        DisclosureGroup(isExpanded: isExpanded) {
+            Button {
+                onOpenRoom(room.id)
+            } label: {
+                Label("进入群聊", systemImage: "arrow.up.right.circle")
+                    .summonFont(.subheadline, weight: .medium)
+            }
+
+            ForEach(members) { bot in
+                botSubRow(bot: bot, room: room)
+            }
+
+            if !roomFiles.isEmpty {
+                DisclosureGroup {
+                    ForEach(roomFiles, id: \.prettyPrinted) { file in
+                        if let ref = SummonReference(file["ref"]) {
+                            NavigationLink {
+                                SummonFileView(ref: ref, room: SummonReference(kind: "room", id: room.id))
+                            } label: {
+                                HStack {
+                                    Image(systemName: "doc.text").foregroundStyle(.secondary)
+                                    Text(file["name"].string ?? file["path"].string ?? store.label(ref))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("v\(file["revision"].int ?? 1)")
+                                        .summonFont(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("群共享资料（\(roomFiles.count)）", systemImage: "book")
+                        .summonFont(.subheadline, weight: .medium)
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                RoomAvatar(room: room, size: 38)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(room.name).summonFont(.body, weight: .semibold).lineLimit(1)
+                        if room.isArchived {
+                            Text("归档").summonFont(.caption2).foregroundStyle(.secondary)
+                        }
+                        if liveCount > 0 {
+                            Circle().fill(SummonTheme.ok).frame(width: 7, height: 7)
+                        }
+                    }
+                    let meta = [
+                        "\(members.count) 位伙伴",
+                        liveCount > 0 ? "\(liveCount) 进行中" : (roomExecs.isEmpty ? nil : "\(roomExecs.count) 条执行"),
+                        roomFiles.isEmpty ? nil : "\(roomFiles.count) 份资料"
+                    ].compactMap { $0 }.joined(separator: " · ")
+                    Text(meta).summonFont(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 3)
+        }
+    }
+
+    @ViewBuilder
+    private func botSubRow(bot: SummonBot, room: SummonRoom) -> some View {
+        let key = "\(room.id):\(bot.id)"
+        let isExpanded = Binding(
+            get: { expandedBots.contains(key) },
+            set: { open in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if open { expandedBots.insert(key) } else { expandedBots.remove(key) }
+                }
+            }
+        )
+        let execs = executionsFor(roomID: room.id, botID: bot.id)
+        let mems = memoriesFor(bot: bot, roomID: room.id)
+        let bFiles = filesForBot(bot.id)
+        let liveCount = execs.filter { overviewLiveStatuses.contains($0["status"].stringValue) }.count
+        let badge = roleBadge(bot, in: room)
+
+        DisclosureGroup(isExpanded: isExpanded) {
+            NavigationLink {
+                BotDetailsView(botID: bot.id)
+            } label: {
+                Label("查看 / 编辑 Bot", systemImage: "person.text.rectangle")
+                    .summonFont(.footnote)
+            }
+
+            if !execs.isEmpty {
+                Text("执行对话（\(execs.count)）")
+                    .summonFont(.caption, weight: .semibold).foregroundStyle(.secondary)
+                ForEach(Array(execs.prefix(8).enumerated()), id: \.offset) { _, ex in
+                    if let ref = SummonReference(ex["execution_ref"]) {
+                        let status = ex["status"].stringValue
+                        NavigationLink {
+                            SummonExecutionView(ref: ref)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(SummonFormat.status(status))
+                                        .summonFont(.caption2, weight: .semibold)
+                                        .foregroundStyle(overviewLiveStatuses.contains(status) ? SummonTheme.ok : status == "failed" ? SummonTheme.warn : .secondary)
+                                    Text(ex["kind"].string == "conversation" ? "内部对话" : (ex["engine"].string ?? "执行"))
+                                        .summonFont(.caption2).foregroundStyle(.secondary)
+                                }
+                                Text(executionReadableSummary(ex))
+                                    .summonFont(.footnote).foregroundStyle(.primary).lineLimit(2)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+
+            if !mems.isEmpty {
+                Text("沉淀记忆（\(mems.count)）")
+                    .summonFont(.caption, weight: .semibold).foregroundStyle(.secondary)
+                ForEach(Array(mems.prefix(8).enumerated()), id: \.offset) { _, mem in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(memoryScopeLabel(mem, rooms: store.rooms))
+                            .summonFont(.caption2).foregroundStyle(.secondary)
+                        Text(memorySummaryText(mem))
+                            .summonFont(.footnote).foregroundStyle(.primary).lineLimit(3)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            if !bFiles.isEmpty {
+                Text("私有资料（\(bFiles.count)）")
+                    .summonFont(.caption, weight: .semibold).foregroundStyle(.secondary)
+                ForEach(bFiles, id: \.prettyPrinted) { file in
+                    if let ref = SummonReference(file["ref"]) {
+                        NavigationLink {
+                            SummonFileView(ref: ref)
+                        } label: {
+                            HStack {
+                                Image(systemName: "doc").foregroundStyle(.secondary)
+                                Text(file["name"].string ?? file["path"].string ?? store.label(ref)).lineLimit(1)
+                                Spacer()
+                                Text("v\(file["revision"].int ?? 1)").summonFont(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if execs.isEmpty && mems.isEmpty && bFiles.isEmpty {
+                Text("暂无执行对话或沉淀记忆")
+                    .summonFont(.caption).foregroundStyle(.secondary)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                MemberAvatar(bot: bot, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(bot.name).summonFont(.subheadline, weight: .medium).lineLimit(1)
+                        if let badge {
+                            Text(badge).summonFont(.caption2).foregroundStyle(.secondary)
+                        }
+                        if liveCount > 0 {
+                            Circle().fill(SummonTheme.ok).frame(width: 6, height: 6)
+                        }
+                    }
+                    let summaryBits = [
+                        execs.isEmpty ? nil : "\(execs.count) 执行",
+                        mems.isEmpty ? nil : "\(mems.count) 记忆",
+                        bFiles.isEmpty ? nil : "\(bFiles.count) 资料"
+                    ].compactMap { $0 }.joined(separator: " · ")
+                    Text(summaryBits.isEmpty ? "空闲" : summaryBits)
+                        .summonFont(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func reload() async {
+        guard store.protocolReady, !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            async let execList = store.list("/api/executions")
+            async let fileList = store.list("/api/files")
+            let (e, f) = try await (execList, fileList)
+            executions = e
+            files = f
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
         }
     }
 }

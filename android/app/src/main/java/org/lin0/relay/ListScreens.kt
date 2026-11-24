@@ -256,6 +256,7 @@ private sealed interface HomeDetailsTarget {
 fun ConversationListScreen(
     store: SummonStore,
     updater: SummonAppUpdater,
+    onOpenPanel: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenRoom: (String) -> Unit,
@@ -665,39 +666,24 @@ fun ConversationListScreen(
                         )
                     }
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(268.dp).heightIn(max = menuHeight)) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(216.dp).heightIn(max = menuHeight)) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         ModelQuotaSignal(model, "默认模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
                     }
-                    DropdownMenuItem(text = { Text("Token 统计") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenUsage() })
-                    DropdownMenuItem(text = { Text("显示与外观") }, leadingIcon = { Icon(Icons.Filled.Contrast, null) }, onClick = { menu = false; showDisplay = true })
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
+                    DropdownMenuItem(text = { Text("面板") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenPanel() })
                     DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
-                    DropdownMenuItem(text = { Text("模型与用量") }, leadingIcon = { Icon(Icons.Filled.Memory, null) }, onClick = { menu = false; onOpenModels() })
                     if (hiddenEntries.isNotEmpty()) {
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
                         DropdownMenuItem(
                             text = { Text("已隐藏群聊（${hiddenEntries.size}）") },
                             leadingIcon = { Icon(Icons.Filled.VisibilityOff, null) },
                             onClick = { menu = false; showHidden = true },
                         )
                     }
-                    HorizontalDivider(Modifier.padding(vertical = 6.dp), color = palette.hairline)
-                    ResourceSection.entries.forEach { section ->
-                        DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenResource(section) })
-                    }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    shape = CircleShape,
-                    color = palette.glassPill,
-                    border = BorderStroke(0.8.dp, palette.bubbleStroke),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.size(40.dp).clip(CircleShape).clickable(enabled = store.protocolReady) { onOpenResource(ResourceSection.Bots) },
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Groups, "团队成员", tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(20.dp))
-                    }
-                }
                 Surface(
                     shape = CircleShape,
                     color = palette.glassPill,
@@ -917,7 +903,14 @@ fun ConversationListScreen(
         }
     }
     if (showDisplay) DisplaySettingsSheet { showDisplay = false }
-    if (showSettings) SettingsSheet(store, updater) { showSettings = false }
+    if (showSettings) SettingsSheet(
+        store = store,
+        updater = updater,
+        onOpenModels = { showSettings = false; onOpenModels() },
+        onOpenWakeups = { showSettings = false; onOpenResource(ResourceSection.Wakeups) },
+        onOpenConnections = { showSettings = false; onOpenResource(ResourceSection.Connections) },
+        onDismiss = { showSettings = false },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1342,7 +1335,14 @@ private fun messageSummary(message: SummonMessage): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismiss: () -> Unit) {
+private fun SettingsSheet(
+    store: SummonStore,
+    updater: SummonAppUpdater,
+    onOpenModels: () -> Unit,
+    onOpenWakeups: () -> Unit,
+    onOpenConnections: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val display = LocalSummonDisplay.current
@@ -1362,19 +1362,34 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("个人信息", color = palette.textSecondary)
+            Text("通用", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
             OutlinedTextField(userName, { userName = it }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
             TextButton(enabled = userName != store.settings.userName, onClick = {
                 store.setUserName(userName); userName = store.settings.userName
             }) { Text("保存显示名称") }
-            Spacer(Modifier.height(12.dp))
-            Text("服务连接", color = palette.textSecondary)
+            Spacer(Modifier.height(10.dp))
+            Text("显示与外观", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+            DisplaySettingsControls()
+            TextButton(onClick = { display.reset() }) { Text("恢复默认显示") }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
+            Text("模型、订阅与连接", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+            Spacer(Modifier.height(6.dp))
+            Surface(shape = RoundedCornerShape(14.dp), color = palette.surface, border = BorderStroke(0.6.dp, palette.hairline)) {
+                Column {
+                    ActionOptionRow(Icons.Filled.Memory, "模型连接") { if (store.protocolReady) onOpenModels() }
+                    HorizontalDivider(color = palette.hairline)
+                    ActionOptionRow(Icons.Filled.Schedule, "订阅与提醒") { if (store.protocolReady) onOpenWakeups() }
+                    HorizontalDivider(color = palette.hairline)
+                    ActionOptionRow(Icons.Filled.Link, "执行连接与目录") { if (store.protocolReady) onOpenConnections() }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
+            Text("实例连接", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
             OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的实例地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             OutlinedTextField(token, { token = it }, label = { Text("实例访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
             Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
-            Text("Bot  ${store.bots.size}")
-            Text("会话  ${store.rooms.size}")
+            Text("Bot  ${store.bots.size} · 会话  ${store.rooms.size}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = palette.warn, modifier = Modifier.padding(vertical = 6.dp)) }
             Button(onClick = {
                 scope.launch {
@@ -1386,11 +1401,7 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             }, enabled = !saving && baseURL.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
-            Text("草稿和待确认的发送保存在这台设备。重新连接后，可按原发送记录查询保存状态。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(20.dp))
-            Text("显示与外观", style = MaterialTheme.typography.titleMedium)
-            DisplaySettingsControls()
-            TextButton(onClick = { display.reset() }) { Text("恢复默认显示") }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
             ClientUpdateSettings(updater)
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
             Spacer(Modifier.height(24.dp))

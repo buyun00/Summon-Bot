@@ -49,7 +49,7 @@ private val usagePurposes = mapOf("fast_read" to "① 快读收件", "conversati
 private val usageStatuses = mapOf("succeeded" to "完成", "failed" to "失败", "cancelled" to "取消", "pending" to "调用中", "unknown" to "结果未知")
 
 @Composable
-fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
+fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit, embedded: Boolean = false) {
     var period by remember { mutableStateOf("today") }
     var dimension by remember { mutableStateOf("bots") }
     var sort by remember { mutableStateOf("totalTokens") }
@@ -83,10 +83,12 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
     val ranking = overview[if (dimension == "bots") "bots" else "rooms"].array.orEmpty()
         .sortedByDescending { (it[sort] as? SummonJson.Num)?.value ?: 0.0 }
     Scaffold(containerColor = palette.background, topBar = {
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-            Text("Token 统计", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { revision++ }, enabled = !loading) { Text("刷新") }
+        if (!embedded) {
+            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                Text("Token 用量", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = { revision++ }, enabled = !loading) { Text("刷新") }
+            }
         }
     }) { padding ->
         LazyColumn(Modifier.padding(padding), contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

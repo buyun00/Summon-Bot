@@ -1,21 +1,40 @@
 package org.lin0.relay
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,9 +48,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -109,9 +131,9 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
                 SummonRecordRow(item["path"].string ?: store.label(ref), "v" + item["revision"].stringValue) { detail = ref }
             }
             ResourceSection.Wakeups -> {
-                val (basic, extra) = items.partition { it["rule"]["kind"].string == "room_base" }
-                WakeupRows(store, "默认接收", basic) { editor = EditorRoute("wakeup", it) }
-                WakeupRows(store, "定时与提醒", extra) { editor = EditorRoute("wakeup", it) }
+                val extra = items.filter { it["rule"]["kind"].string != "room_base" }
+                WakeupRows(store, "定时提醒与自定义订阅", extra) { editor = EditorRoute("wakeup", it) }
+                Text("各群聊的基础消息关注规则请在对应群聊详情中调整。", color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
             ResourceSection.Connections -> {
                 Text("执行连接", style = MaterialTheme.typography.titleMedium)
@@ -417,6 +439,7 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
     var busy by remember(ref) { mutableStateOf(false) }
     var error by remember(ref) { mutableStateOf<String?>(null) }
     var nested by remember(ref) { mutableStateOf<SummonReference?>(null) }
+    var showRawLogs by remember(ref) { mutableStateOf(false) }
 
     fun run(work: suspend () -> Unit) {
         if (busy || !store.protocolReady) return
@@ -476,7 +499,23 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
         }
         if (busy) CircularProgressIndicator()
         error?.let { SummonError(it) }
-        detail["status"].string?.let { Text("连接状态 · " + summonStatus(it)) }
+        if (detail != SummonJson.Null) {
+            val readableSummary = executionReadableSummary(detail)
+            if (readableSummary.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = LocalSummonPalette.current.surface,
+                    border = BorderStroke(0.6.dp, LocalSummonPalette.current.hairline),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("任务摘要", style = MaterialTheme.typography.labelSmall, color = LocalSummonPalette.current.textSecondary)
+                        SelectionContainer { Text(readableSummary, style = MaterialTheme.typography.bodyMedium) }
+                    }
+                }
+            }
+        }
+        detail["status"].string?.let { Text("状态 · " + summonStatus(it)) }
         val lastError = detail["last_error"]
         val errorText = listOfNotNull(lastError["code"].string, lastError["message"].string)
             .filter { it.isNotEmpty() }.joinToString(" · ")
@@ -486,7 +525,6 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
         (detail["execution_actor"]["id"].string ?: detail["bot_id"].string)?.let { Text("执行身份 · " + store.name(it)) }
         detail["submitted_by"]["id"].string?.let { Text("提交者 · " + store.name(it)) }
         detail["latest_call_id"].string?.let { id -> TextButton(onClick = { nested = SummonReference("call", id) }) { Text("调用 $id") } }
-        if (detail["native"].obj != null) SelectionContainer { Text(detail["native"].pretty, fontFamily = FontFamily.Monospace) }
         stopResults.forEach { row ->
             val target = SummonReference.parse(row["target"]) ?: return@forEach
             Text(store.label(target) + " · " + summonStatus(row["control"]["stop_status"].stringValue))
@@ -496,23 +534,30 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
                 NativeInput(option, busy || !store.protocolReady) { value -> command(option.kind, value, option.target) }
             }
         }
-        if (pages.isNotEmpty()) Text("输入与输出", style = MaterialTheme.typography.titleMedium)
-        pages.forEach { page ->
-            val outputs = page["output_pages"].array ?: listOfNotNull(page["output_page"].takeUnless { it == SummonJson.Null })
-            if (outputs.isEmpty() && page["output"] != SummonJson.Null) {
-                SelectionContainer { Text(page["output"].string ?: page["output"].pretty, fontFamily = FontFamily.Monospace) }
+        if (pages.isNotEmpty() || detail["native"].obj != null) {
+            TextButton(onClick = { showRawLogs = !showRawLogs }) {
+                Text(if (showRawLogs) "收起原始执行日志" else "查看原始执行日志（排障）")
             }
-            outputs.forEach { output -> SelectionContainer { Text(output["text"].stringValue, fontFamily = FontFamily.Monospace) } }
-            (page["messages"].array.orEmpty() + page["output_events"].array.orEmpty()).forEach { entry ->
-                val message = entry["message"].takeUnless { it == SummonJson.Null } ?: entry
-                val content = message["content"].array?.joinToString("\n") { it["text"].string ?: it.pretty }
-                    ?: message["content"].string ?: message["text"].string ?: message.pretty
-                Text(message["role"].string ?: entry["type"].string ?: "输出", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                SelectionContainer { Text(content, fontFamily = FontFamily.Monospace) }
+            if (showRawLogs) {
+                if (detail["native"].obj != null) SelectionContainer { Text(detail["native"].pretty, fontFamily = FontFamily.Monospace) }
+                pages.forEach { page ->
+                    val outputs = page["output_pages"].array ?: listOfNotNull(page["output_page"].takeUnless { it == SummonJson.Null })
+                    if (outputs.isEmpty() && page["output"] != SummonJson.Null) {
+                        SelectionContainer { Text(page["output"].string ?: page["output"].pretty, fontFamily = FontFamily.Monospace) }
+                    }
+                    outputs.forEach { output -> SelectionContainer { Text(output["text"].stringValue, fontFamily = FontFamily.Monospace) } }
+                    (page["messages"].array.orEmpty() + page["output_events"].array.orEmpty()).forEach { entry ->
+                        val message = entry["message"].takeUnless { it == SummonJson.Null } ?: entry
+                        val content = message["content"].array?.joinToString("\n") { it["text"].string ?: it.pretty }
+                            ?: message["content"].string ?: message["text"].string ?: message.pretty
+                        Text(message["role"].string ?: entry["type"].string ?: "输出", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        SelectionContainer { Text(content, fontFamily = FontFamily.Monospace) }
+                    }
+                }
+                if (pages.lastOrNull()?.get("next_cursor")?.string != null) {
+                    TextButton(enabled = !busy && store.protocolReady, onClick = { run { load(append = true) } }) { Text("读取后续日志") }
+                }
             }
-        }
-        if (pages.lastOrNull()?.get("next_cursor")?.string != null) {
-            TextButton(enabled = !busy && store.protocolReady, onClick = { run { load(append = true) } }) { Text("读取后续日志") }
         }
     }
     if (showStop) AlertDialog(onDismissRequest = { showStop = false }, title = { Text("选择停止范围") },
@@ -549,4 +594,537 @@ private fun NativeInput(option: SummonInputOption, disabled: Boolean, submit: (S
         } catch (_: Exception) { error = "JSON 输入格式无效。" }
     }) { Text(option.label) }
     error?.let { SummonError(it) }
+}
+
+private val overviewLiveStatuses = setOf(
+    "opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"
+)
+
+private fun cleanSummaryLine(raw: String?, fallback: String = ""): String {
+    val trimmed = (raw ?: "").replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
+    if (trimmed.isEmpty()) return fallback
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        val parsed = runCatching { SummonJson.parse(trimmed) }.getOrNull()
+        if (parsed != null) {
+            for (k in listOf("summary", "title", "message", "text", "result")) {
+                val extracted = parsed[k].string?.replace('\n', ' ')?.trim()
+                if (!extracted.isNullOrEmpty()) {
+                    return if (extracted.length > 100) extracted.take(98) + "…" else extracted
+                }
+            }
+            return fallback.ifEmpty { "结构化执行输出（点开可查看详情）" }
+        }
+    }
+    return if (trimmed.length > 100) trimmed.take(98) + "…" else trimmed
+}
+
+private fun executionReadableSummary(item: SummonJson): String {
+    val status = item["status"].stringValue
+    if (status == "needs_input" || status == "awaiting_input") {
+        return cleanSummaryLine(
+            item["waiting_summary"].string ?: item["live_progress"].string ?: item["work_summary"].string,
+            "等待确认或输入",
+        )
+    }
+    if (status in overviewLiveStatuses) {
+        return cleanSummaryLine(
+            item["live_progress"].string ?: item["work_summary"].string ?: item["waiting_summary"].string,
+            "正在执行任务…",
+        )
+    }
+    if (status == "failed") {
+        val err = item["last_error"]["message"].string
+        if (!err.isNullOrBlank()) return cleanSummaryLine(item["work_summary"].string ?: err)
+    }
+    val fallback = (if (item["kind"].string == "conversation") "内部对话" else item["engine"].string ?: "执行会话") +
+        " · " + summonStatus(status)
+    return cleanSummaryLine(
+        item["work_summary"].string ?: item["last_output_summary"].string ?: item["live_progress"].string,
+        fallback,
+    )
+}
+
+private fun memorySummaryText(item: SummonJson): String {
+    item.string?.let { return cleanSummaryLine(it) }
+    for (k in listOf("summary", "content", "text", "title", "note", "fact")) {
+        val text = item[k].string?.trim()
+        if (!text.isNullOrEmpty()) return cleanSummaryLine(text)
+    }
+    return "长期记忆条目"
+}
+
+private fun memoryScopeLabel(item: SummonJson, rooms: List<SummonRoom>): String {
+    val scopes = item["applies_to"].array.orEmpty()
+    if (scopes.isEmpty()) return "默认范围"
+    return scopes.joinToString(" · ") { scope ->
+        when (scope["kind"].stringValue) {
+            "bot" -> "全群通用"
+            "room" -> {
+                val rid = scope["id"].stringValue
+                val name = rooms.firstOrNull { it.id == rid }?.name ?: rid.take(8)
+                "仅限 $name"
+            }
+            else -> scope["kind"].stringValue
+        }
+    }
+}
+
+@Composable
+fun WorkspacePanelScreen(
+    store: SummonStore,
+    onBack: () -> Unit,
+    onOpenRoom: (String) -> Unit,
+) {
+    val palette = LocalSummonPalette.current
+    var selectedTab by remember { mutableStateOf(0) } // 0 = 工作总览, 1 = Token 用量
+    var showCreateBot by remember { mutableStateOf(false) }
+
+    Scaffold(
+        containerColor = palette.background,
+        topBar = {
+            Column(Modifier.fillMaxWidth().statusBarsPadding()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                    Text("面板", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    if (selectedTab == 0) {
+                        IconButton(enabled = store.protocolReady, onClick = { showCreateBot = true }) {
+                            Icon(Icons.Filled.Add, "创建 Bot")
+                        }
+                    }
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.surface)
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf("工作总览", "Token 用量").forEachIndexed { idx, label ->
+                        val active = selectedTab == idx
+                        Surface(
+                            shape = RoundedCornerShape(9.dp),
+                            color = if (active) palette.surfaceElevated else Color.Transparent,
+                            shadowElevation = if (active) 1.dp else 0.dp,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .clickable { selectedTab = idx },
+                        ) {
+                            Box(Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Text(
+                                    label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (active) MaterialTheme.colorScheme.onSurface else palette.textSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            if (selectedTab == 0) {
+                WorkspaceOverviewBody(store = store, onOpenRoom = onOpenRoom)
+            } else {
+                TokenUsageScreen(store = store, onBack = onBack, embedded = true)
+            }
+        }
+    }
+
+    if (showCreateBot) {
+        CreateBotSheet(store = store, onCreated = { showCreateBot = false }, onDismiss = { showCreateBot = false })
+    }
+}
+
+@Composable
+private fun WorkspaceOverviewBody(
+    store: SummonStore,
+    onOpenRoom: (String) -> Unit,
+) {
+    val palette = LocalSummonPalette.current
+    val scope = rememberCoroutineScope()
+    var executions by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
+    var files by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
+    var expandedRooms by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var expandedBots by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var detail by remember { mutableStateOf<SummonReference?>(null) }
+    var detailRoom by remember { mutableStateOf<SummonReference?>(null) }
+
+    suspend fun reload() {
+        if (loading || !store.protocolReady) return
+        loading = true; error = null
+        try {
+            executions = store.list("/api/executions")
+            files = store.list("/api/files")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            error = failure.localizedMessage
+        } finally {
+            loading = false
+        }
+    }
+
+    LaunchedEffect(store.protocolReady) { reload() }
+
+    detail?.let { selected ->
+        when (selected.kind) {
+            "bot" -> BotDetailsScreen(store, selected.id) { detail = null }
+            "session", "conversation" -> ExecutionDetail(store, selected) { detail = null }
+            "file" -> FileDetail(store, selected, detailRoom) { detail = null; detailRoom = null }
+            else -> ReferenceDetail(store, selected) { detail = null }
+        }
+        return
+    }
+
+    fun execsForRoom(roomId: String) = executions.filter {
+        it["space"]["kind"].string == "room" && it["space"]["id"].string == roomId
+    }
+
+    fun execsForBot(roomId: String, botId: String) = execsForRoom(roomId).filter {
+        (it["execution_actor"]["id"].string ?: it["bot_id"].string) == botId
+    }
+
+    fun filesForRoom(roomId: String) = files.filter {
+        it["deleted_room"].bool != true && it["space"]["kind"].string == "room" && it["space"]["id"].string == roomId
+    }
+
+    fun filesForBot(botId: String) = files.filter {
+        it["deleted_room"].bool != true && it["space"]["kind"].string == "bot" && it["space"]["id"].string == botId
+    }
+
+    fun memoriesForBot(bot: SummonBot, roomId: String) = bot.memoryItems.filter { item ->
+        val scopes = item["applies_to"].array.orEmpty()
+        scopes.isEmpty() || scopes.any { it["kind"].string == "bot" || (it["kind"].string == "room" && it["id"].string == roomId) }
+    }
+
+    fun roleOrder(bot: SummonBot, room: SummonRoom): Int = when {
+        room.leadBotId == bot.id || bot.roleId == "group-lead" -> 0
+        bot.roleId == "eggbot" -> 2
+        bot.roleId == "tool-onboarding" -> 3
+        else -> 1
+    }
+
+    fun roleBadge(bot: SummonBot, room: SummonRoom): String? = when {
+        room.leadBotId == bot.id || bot.roleId == "group-lead" -> "主控"
+        bot.roleId == "eggbot" -> "孵化"
+        bot.roleId == "tool-onboarding" -> "接口"
+        else -> null
+    }
+
+    val activeGroups = store.rooms
+        .filter { it.isGroup && !it.isArchived }
+        .sortedWith(
+            compareByDescending<SummonRoom> { r -> execsForRoom(r.id).any { it["status"].stringValue in overviewLiveStatuses } }
+                .thenByDescending { it.lastMessage?.createdAt ?: it.updatedAt.orEmpty() },
+        )
+    val assignedBotIds = activeGroups.flatMap { it.members }.toSet()
+    val unassignedBots = store.bots.filter { it.id !in assignedBotIds }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("群聊（点击逐层展开）", style = MaterialTheme.typography.labelMedium, color = palette.textSecondary)
+            TextButton(enabled = !loading && store.protocolReady, onClick = { scope.launch { reload() } }) { Text("刷新") }
+        }
+        if (loading && executions.isEmpty() && files.isEmpty()) {
+            CircularProgressIndicator(Modifier.size(22.dp))
+        }
+        error?.let { SummonError(it) }
+        if (activeGroups.isEmpty() && !loading) {
+            Text("暂无活跃群聊", color = palette.textSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        activeGroups.forEach { room ->
+            OverviewRoomCard(
+                store = store,
+                room = room,
+                isOpen = room.id in expandedRooms,
+                expandedBots = expandedBots,
+                execsForRoom = execsForRoom(room.id),
+                execsForBot = { botId -> execsForBot(room.id, botId) },
+                filesForRoom = filesForRoom(room.id),
+                filesForBot = { botId -> filesForBot(botId) },
+                memoriesForBot = { bot -> memoriesForBot(bot, room.id) },
+                roleOrder = { bot -> roleOrder(bot, room) },
+                roleBadge = { bot -> roleBadge(bot, room) },
+                onToggleRoom = {
+                    expandedRooms = if (room.id in expandedRooms) expandedRooms - room.id else expandedRooms + room.id
+                },
+                onToggleBot = { key ->
+                    expandedBots = if (key in expandedBots) expandedBots - key else expandedBots + key
+                },
+                onOpenRoom = { onOpenRoom(room.id) },
+                onOpenDetail = { ref, rRef ->
+                    detailRoom = rRef
+                    detail = ref
+                },
+            )
+        }
+
+        if (store.archivedRooms.isNotEmpty() || unassignedBots.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text("归档与未分组", style = MaterialTheme.typography.labelMedium, color = palette.textSecondary)
+            store.archivedRooms.forEach { room ->
+                OverviewRoomCard(
+                    store = store,
+                    room = room,
+                    isOpen = room.id in expandedRooms,
+                    expandedBots = expandedBots,
+                    execsForRoom = execsForRoom(room.id),
+                    execsForBot = { botId -> execsForBot(room.id, botId) },
+                    filesForRoom = filesForRoom(room.id),
+                    filesForBot = { botId -> filesForBot(botId) },
+                    memoriesForBot = { bot -> memoriesForBot(bot, room.id) },
+                    roleOrder = { bot -> roleOrder(bot, room) },
+                    roleBadge = { bot -> roleBadge(bot, room) },
+                    onToggleRoom = {
+                        expandedRooms = if (room.id in expandedRooms) expandedRooms - room.id else expandedRooms + room.id
+                    },
+                    onToggleBot = { key ->
+                        expandedBots = if (key in expandedBots) expandedBots - key else expandedBots + key
+                    },
+                    onOpenRoom = { onOpenRoom(room.id) },
+                    onOpenDetail = { ref, rRef ->
+                        detailRoom = rRef
+                        detail = ref
+                    },
+                )
+            }
+            unassignedBots.forEach { bot ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = palette.surface,
+                    border = BorderStroke(0.6.dp, palette.hairline),
+                    modifier = Modifier.fillMaxWidth().clickable { detail = SummonReference("bot", bot.id) },
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        MemberAvatar(bot, 32.dp)
+                        Column {
+                            Text(bot.name, style = MaterialTheme.typography.bodyMedium)
+                            Text("未加入活跃群聊", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun OverviewRoomCard(
+    store: SummonStore,
+    room: SummonRoom,
+    isOpen: Boolean,
+    expandedBots: Set<String>,
+    execsForRoom: List<SummonJson>,
+    execsForBot: (String) -> List<SummonJson>,
+    filesForRoom: List<SummonJson>,
+    filesForBot: (String) -> List<SummonJson>,
+    memoriesForBot: (SummonBot) -> List<SummonJson>,
+    roleOrder: (SummonBot) -> Int,
+    roleBadge: (SummonBot) -> String?,
+    onToggleRoom: () -> Unit,
+    onToggleBot: (String) -> Unit,
+    onOpenRoom: () -> Unit,
+    onOpenDetail: (SummonReference, SummonReference?) -> Unit,
+) {
+    val palette = LocalSummonPalette.current
+    val members = room.members
+        .filter { it != "user" }
+        .mapNotNull { id -> store.bots.firstOrNull { it.id == id } }
+        .sortedBy { roleOrder(it) }
+    val liveCount = execsForRoom.count { it["status"].stringValue in overviewLiveStatuses }
+    val meta = listOfNotNull(
+        "${members.size} 位伙伴",
+        when {
+            liveCount > 0 -> "$liveCount 进行中"
+            execsForRoom.isNotEmpty() -> "${execsForRoom.size} 条执行"
+            else -> null
+        },
+        filesForRoom.takeIf { it.isNotEmpty() }?.let { "${it.size} 份资料" },
+    ).joinToString(" · ")
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = palette.surface,
+        border = BorderStroke(0.7.dp, if (liveCount > 0) palette.ok.copy(alpha = 0.45f) else palette.hairline),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleRoom)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                RoomAvatar(room, store.bots, 40.dp, showOutline = false)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(room.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (room.isArchived) Text("归档", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                        if (liveCount > 0) Box(Modifier.size(7.dp).clip(CircleShape).background(palette.ok))
+                    }
+                    Text(meta, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                }
+                Icon(if (isOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, tint = palette.textSecondary)
+            }
+
+            if (isOpen) {
+                HorizontalDivider(color = palette.hairline)
+                Column(Modifier.padding(start = 16.dp, end = 14.dp, top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onOpenRoom) { Text("进入群聊 →") }
+
+                    members.forEach { bot ->
+                        val botKey = "${room.id}:${bot.id}"
+                        val botOpen = botKey in expandedBots
+                        val execs = execsForBot(bot.id)
+                        val mems = memoriesForBot(bot)
+                        val bFiles = filesForBot(bot.id)
+                        val botLive = execs.count { it["status"].stringValue in overviewLiveStatuses }
+                        val badge = roleBadge(bot)
+                        val bits = listOfNotNull(
+                            execs.takeIf { it.isNotEmpty() }?.let { "${it.size} 执行" },
+                            mems.takeIf { it.isNotEmpty() }?.let { "${it.size} 记忆" },
+                            bFiles.takeIf { it.isNotEmpty() }?.let { "${it.size} 资料" },
+                        ).joinToString(" · ").ifEmpty { "空闲" }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = palette.background,
+                            border = BorderStroke(0.6.dp, palette.hairline),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onToggleBot(botKey) }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    MemberAvatar(bot, 32.dp)
+                                    Column(Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(bot.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            badge?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary) }
+                                            if (botLive > 0) Box(Modifier.size(6.dp).clip(CircleShape).background(palette.ok))
+                                        }
+                                        Text(bits, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                    }
+                                    Icon(if (botOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, tint = palette.textSecondary, modifier = Modifier.size(18.dp))
+                                }
+
+                                if (botOpen) {
+                                    HorizontalDivider(color = palette.hairline)
+                                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(onClick = { onOpenDetail(SummonReference("bot", bot.id), null) }) { Text("查看 / 编辑 Bot") }
+
+                                        if (execs.isNotEmpty()) {
+                                            Text("执行对话（${execs.size}）", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                            execs.take(8).forEach { ex ->
+                                                val ref = SummonReference.parse(ex["execution_ref"]) ?: return@forEach
+                                                val status = ex["status"].stringValue
+                                                Column(
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(palette.surface)
+                                                        .clickable { onOpenDetail(ref, null) }
+                                                        .padding(10.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                                ) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        Text(
+                                                            summonStatus(status),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = when {
+                                                                status in overviewLiveStatuses -> palette.ok
+                                                                status == "failed" -> palette.warn
+                                                                else -> palette.textSecondary
+                                                            },
+                                                        )
+                                                        Text(
+                                                            if (ex["kind"].string == "conversation") "内部对话" else ex["engine"].string ?: "执行",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = palette.textSecondary,
+                                                        )
+                                                    }
+                                                    Text(
+                                                        executionReadableSummary(ex),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        if (mems.isNotEmpty()) {
+                                            Text("沉淀记忆（${mems.size}）", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                            mems.take(8).forEach { mem ->
+                                                Column(
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(palette.surface)
+                                                        .padding(10.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                                ) {
+                                                    Text(memoryScopeLabel(mem, store.rooms), style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                                    Text(memorySummaryText(mem), style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                        }
+
+                                        if (bFiles.isNotEmpty()) {
+                                            Text("私有资料（${bFiles.size}）", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                            bFiles.forEach { file ->
+                                                val ref = SummonReference.parse(file["ref"]) ?: return@forEach
+                                                SummonRecordRow(file["name"].string ?: file["path"].string ?: store.label(ref), "v${file["revision"].int ?: 1}") {
+                                                    onOpenDetail(ref, null)
+                                                }
+                                            }
+                                        }
+
+                                        if (execs.isEmpty() && mems.isEmpty() && bFiles.isEmpty()) {
+                                            Text("暂无执行对话或沉淀记忆", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (filesForRoom.isNotEmpty()) {
+                        Text("群共享资料（${filesForRoom.size}）", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, modifier = Modifier.padding(top = 4.dp))
+                        filesForRoom.forEach { file ->
+                            val ref = SummonReference.parse(file["ref"]) ?: return@forEach
+                            SummonRecordRow(file["name"].string ?: file["path"].string ?: store.label(ref), "v${file["revision"].int ?: 1}") {
+                                onOpenDetail(ref, SummonReference("room", room.id))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

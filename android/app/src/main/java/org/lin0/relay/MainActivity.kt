@@ -151,11 +151,19 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                             ConversationListScreen(
                                 store,
                                 updater = model.updater,
+                                onOpenPanel = { nav.navigate("panel") },
                                 onOpenUsage = { nav.navigate("usage") },
                                 onOpenModels = { nav.navigate("models") },
                                 onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                                 onOpenNewGroup = { nav.navigate("new-group") },
                                 onOpenResource = { section -> nav.navigate("resources/${section.name}") },
+                            )
+                        }
+                        composable("panel") {
+                            WorkspacePanelScreen(
+                                store = store,
+                                onBack = { nav.popBackStack() },
+                                onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                             )
                         }
                         composable("new-group") {

@@ -131,6 +131,8 @@ function syncDisplaySettingsControls() {
 }
 const SETTINGS_TABS = [
   { id: 'general', title: '通用', icon: 'settings' },
+  { id: 'models', title: '模型', icon: 'spark' },
+  { id: 'wakeups', title: '订阅', icon: 'clock' },
   { id: 'connection', title: '连接', icon: 'link' },
   { id: 'updates', title: '更新', icon: 'install' },
 ];
@@ -199,7 +201,7 @@ function renderSettingsPanelBody(tab) {
         </div>
         <div class="settings-row">
           <div class="settings-row-copy">
-            <strong>预览效果</strong>
+            <strong>显示偏好</strong>
             <small id="display-save-status"></small>
           </div>
           <button type="button" class="secondary-button small-button" data-action="display-reset">恢复默认</button>
@@ -207,14 +209,30 @@ function renderSettingsPanelBody(tab) {
       </div>
     </div>`;
   }
+  if (tab === 'models') {
+    return globalThis.SummonModels.render({ esc, icon, embedded: true });
+  }
+  if (tab === 'wakeups') {
+    const custom = (state.wakeups || []).filter(item => item.rule.kind !== 'room_base');
+    return `<div class="settings-section">
+      <div class="settings-group-head">
+        <h3 class="settings-group-label">定时提醒与自定义订阅</h3>
+        <button type="button" class="primary-button small-button" data-action="add-wakeup">${icon('plus', 14)}新增订阅</button>
+      </div>
+      <div class="settings-card">
+        ${custom.length ? custom.map(item => `<div class="settings-row settings-wakeup-item">${renderWakeupRow(item)}</div>`).join('')
+          : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无定时或自定义订阅</strong><small>可为任意 Bot 设置定时巡检、周期汇报或事件触发提醒</small></div></div>'}
+        ${ui.listPages?.wakeups?.next_cursor ? '<div class="settings-row"><button type="button" class="text-button" data-action="more-list" data-kind="wakeups" data-endpoint="/api/wakeups">加载更多</button></div>' : ''}
+      </div>
+      <p class="settings-footnote">各群聊的基础消息关注规则（全量监听 / 仅 @ 唤醒）请在对应群聊右侧详情面板中调整。</p>
+    </div>`;
+  }
   if (tab === 'connection') {
     const isDesktop = Boolean(window.SummonDesktop?.openConnectionSettings);
     const localInstance = document.documentElement.dataset.localInstance === 'true' || location.hostname === '127.0.0.1' || location.hostname === 'localhost';
-    const summary = globalThis.SummonModels?.current?.();
-    const chatModel = summary?.chat?.configured === false ? '尚未配置' : [summary?.chat?.name, summary?.chat?.model].filter(Boolean).join(' · ') || '点击查看';
-    const workEngine = summary?.work?.enabled === false || summary?.work?.configured === false ? '待接入' : [summary?.work?.name, summary?.work?.model].filter(Boolean).join(' · ') || '点击查看';
-    const connCount = (state.connections || []).length;
-    const wsCount = (state.workspaces || []).length;
+    const usage = state.resourceUsage;
+    const connections = state.connections || [];
+    const workspaces = state.workspaces || [];
     return `<div class="settings-section">
       <h3 class="settings-group-label">实例</h3>
       <div class="settings-card">
@@ -231,31 +249,44 @@ function renderSettingsPanelBody(tab) {
       </div>
     </div>
     <div class="settings-section">
-      <h3 class="settings-group-label">模型与执行</h3>
-      <div class="settings-card">
-        <div class="settings-row">
-          <div class="settings-row-copy">
-            <strong>默认聊天模型</strong>
-            <small>${esc(chatModel)}</small>
-          </div>
-          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="models">配置</button>
-        </div>
-        <div class="settings-row">
-          <div class="settings-row-copy">
-            <strong>工作引擎</strong>
-            <small>${esc(workEngine)}</small>
-          </div>
-          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="models">配置</button>
-        </div>
-        <div class="settings-row">
-          <div class="settings-row-copy">
-            <strong>执行连接与目录</strong>
-            <small>${connCount} 个执行连接 · ${wsCount} 个执行目录</small>
-          </div>
-          <button type="button" class="secondary-button small-button" data-action="settings-navigate" data-view="connections">管理</button>
-        </div>
+      <div class="settings-group-head">
+        <h3 class="settings-group-label">执行目录（Workspace）</h3>
+        <button type="button" class="secondary-button small-button" data-action="edit-workspace">${icon('plus', 14)}登记目录</button>
       </div>
-    </div>`;
+      <div class="settings-card">
+        ${workspaces.length ? workspaces.map(item => `<div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>${esc(item.name)} <span class="settings-pill">${item.write ? '可写' : '只读'}</span></strong>
+            <small>${esc(item.path)}</small>
+          </div>
+          ${item.revision != null ? `<button type="button" class="secondary-button small-button" data-action="edit-workspace" data-id="${esc(item.id)}">编辑</button>` : ''}
+        </div>`).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>未登记执行目录</strong><small>登记本机项目目录后，群聊和执行引擎才能读写对应代码库</small></div></div>'}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-group-head">
+        <h3 class="settings-group-label">外部执行连接</h3>
+        <button type="button" class="secondary-button small-button" data-action="edit-connection">${icon('plus', 14)}新增连接</button>
+      </div>
+      <div class="settings-card">
+        ${connections.length ? connections.map(item => `<div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>${esc(item.name || item.id)}</strong>
+            <small>${esc(item.protocol || item.kind || item.id)}${item.maintainer ? ' · ' + esc(item.maintainer.name || nameOf(item.maintainer.id)) : ''}</small>
+          </div>
+          <div class="settings-row-actions">
+            <button type="button" class="text-button" data-action="open-connection" data-id="${esc(item.id)}">接入信息</button>
+            ${item.id !== 'pi' ? `<button type="button" class="secondary-button small-button" data-action="edit-connection" data-id="${esc(item.id)}">设置</button>` : ''}
+          </div>
+        </div>`).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无外部执行连接</strong></div></div>'}
+      </div>
+    </div>
+    ${usage ? `<div class="settings-section">
+      <h3 class="settings-group-label">宿主资源</h3>
+      <div class="settings-card">
+        <div class="settings-row"><dl class="settings-resource-grid">${Object.entries(resourceLabels).map(([key, label]) => `<div><dt>${esc(label)}</dt><dd>${esc(usage[key] ?? 0)}</dd></div>`).join('')}</dl></div>
+      </div>
+    </div>` : ''}`;
   }
   return `<div class="settings-section">
     <h3 class="settings-group-label">客户端下载与更新</h3>
@@ -299,6 +330,41 @@ function renderSettingsModalShell(tab = ui.settingsTab || 'general') {
     </div>
   </div>`;
 }
+function refreshOpenSettingsBody() {
+  const modal = $('#modal');
+  if (!modal?.open || !modal.classList.contains('settings-modal')) return;
+  if (ui.settingsTab === 'updates') return;
+  const body = $('.settings-main-body', modal);
+  if (!body) return;
+  const active = document.activeElement;
+  if (active && body.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) && active.type !== 'range') return;
+  const oldTop = body.scrollTop;
+  body.innerHTML = renderSettingsPanelBody(ui.settingsTab);
+  body.scrollTop = oldTop;
+  if (ui.settingsTab === 'general') { syncDisplaySettingsControls(); applyTheme(); }
+}
+async function loadSettingsTabData(tab) {
+  if (!ui.protocolReady) return;
+  if (tab === 'models') {
+    await globalThis.SummonModels.load(api, render, toast, refresh);
+    refreshOpenSettingsBody();
+  } else if (tab === 'wakeups') {
+    try {
+      const page = await api('/api/wakeups');
+      setListPage('wakeups', page);
+      refreshOpenSettingsBody();
+    } catch {}
+  } else if (tab === 'connection') {
+    try {
+      const first = await api('/api/connections');
+      Object.assign(state, { connections: first.items, resourceUsage: first.usage });
+      const [connections, workspaces] = await Promise.allSettled([readList('/api/connections', first), readList('/api/workspaces')]);
+      if (connections.status === 'fulfilled') state.connections = connections.value;
+      if (workspaces.status === 'fulfilled') state.workspaces = workspaces.value;
+      refreshOpenSettingsBody();
+    } catch {}
+  }
+}
 function openSettingsModal(tab = 'general', releasesUrl = ui.releasesUrl) {
   const modal = $('#modal');
   const alreadySettings = modal.open && modal.classList.contains('settings-modal');
@@ -306,6 +372,7 @@ function openSettingsModal(tab = 'general', releasesUrl = ui.releasesUrl) {
     displayDiagnosticSnapshot = captureDisplayDiagnostics();
     captureMotion($('#modal-content'));
   }
+  ui.returnToSettingsTab = null;
   ui.menu = null;
   renderTopbar();
   modal.classList.remove('create-bot-modal');
@@ -314,6 +381,9 @@ function openSettingsModal(tab = 'general', releasesUrl = ui.releasesUrl) {
   if (ui.settingsTab === 'general') { syncDisplaySettingsControls(); applyTheme(); }
   if (ui.settingsTab === 'updates') window.SummonClients?.mount?.(releasesUrl || ui.releasesUrl);
   if (!modal.open) showModal(modal);
+  if (['models', 'wakeups', 'connection'].includes(ui.settingsTab)) {
+    void loadSettingsTabData(ui.settingsTab);
+  }
 }
 window.SummonOpenSettings = openSettingsModal;
 function openDisplaySettings() { return openSettingsModal('general'); }
@@ -361,10 +431,9 @@ const labels = {
   revoked:'访问已撤销', access_revoked:'访问已撤销', retry:'等待重试', suspended:'运行已挂起', not_submitted:'未提交',
 };
 const tabs = [
-  { id:'chat', title:'消息', icon:'chat' }, { id:'members', title:'成员', icon:'people' },
-  { id:'executions', title:'执行会话', icon:'computer' }, { id:'files', title:'资料', icon:'knowledge' },
-  { id:'wakeups', title:'订阅与提醒', icon:'clock' }, { id:'connections', title:'执行连接', icon:'link' },
-  { id:'models', title:'模型与用量', icon:'computer' }, { id:'usage', title:'Token 统计', icon:'layers' },
+  { id:'chat', title:'消息', icon:'chat' },
+  { id:'overview', title:'工作总览', icon:'layers' },
+  { id:'usage', title:'Token 用量', icon:'layers' },
 ];
 const protocolVersion = 3;
 const DRAFT_ROOM_ID = '__new_group__';
@@ -401,7 +470,7 @@ const resourceLabels = {
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', lastPanelView:'members', settingsTab:'general', roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
+  view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomActivities:[], roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -601,7 +670,12 @@ ui.avatarSelectionRevision = 0;
 function captureMotion(root) { return window.SummonMotion?.capture(root) || (window.SummonAvatars?.capture?.(root), null); }
 function hydrateMotion(root, before) { if (window.SummonMotion) window.SummonMotion.hydrate(root, before || undefined); else window.SummonAvatars?.hydrate?.(root); }
 function showModal(modal) { if (window.SummonMotion) window.SummonMotion.openDialog(modal); else { if (!modal.open) modal.showModal(); window.SummonAvatars?.hydrate?.(modal); } }
-async function closeModal(modal = $('#modal')) { if (window.SummonMotion) await window.SummonMotion.closeDialog(modal); else modal.close(); }
+async function closeModal(modal = $('#modal'), { suppressReturn = false } = {}) {
+  const returnTab = !suppressReturn && !modal.classList.contains('settings-modal') ? ui.returnToSettingsTab : null;
+  if (returnTab) ui.returnToSettingsTab = null;
+  if (window.SummonMotion) await window.SummonMotion.closeDialog(modal); else modal.close();
+  if (returnTab) openSettingsModal(returnTab);
+}
 const renderSignature = html => html.replace(/summon-avatar-clip-\d+/g, 'summon-avatar-clip').replace(/crew-\d+/g, 'crew-id').replace(/paper-avatar-\d+/g,'paper-avatar-id');
 
 
@@ -624,7 +698,7 @@ function roomById(id) { return state.rooms.find(room => room.id === id) || (stat
 function nameOf(id) { return id === 'user' ? ownerName() : botById(id)?.name || (['system', 'platform'].includes(id) ? 'Summon 平台' : id || 'Summon 平台'); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
 function renderPageNavBar(activeView = ui.view) {
-  const shortTitles = { members:'成员', executions:'执行', files:'资料', wakeups:'订阅', connections:'连接', models:'模型', usage:'用量' };
+  const shortTitles = { overview:'工作总览', usage:'Token 用量' };
   return `<nav class="page-nav-bar" aria-label="页面导航"><div class="page-nav-left"><button type="button" class="float-pill-btn" data-action="navigate" data-view="chat">${icon('back', 15)}<span>聊天</span></button><div class="page-nav-tabs">${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button type="button" class="${activeView === tab.id ? 'active' : ''}" data-action="navigate" data-view="${tab.id}">${shortTitles[tab.id] || tab.title}</button>`).join('')}</div></div></nav>`;
 }
 window.SummonPageNav = renderPageNavBar;
@@ -854,6 +928,14 @@ function preserveView() {
     panelSection:$('.detail-panel')?.dataset.section, top:main.scrollTop, chatScroll:captureChatScroll($('.messages')),
     focusId:active?.id, start:active?.selectionStart, end:active?.selectionEnd };
 }
+function canvasOverviewContext() {
+  return {
+    state, esc, icon, avatar, groupAvatar, labels, LIVE_EXEC_STATUSES,
+    executionLabel, executionError, executionPath, refKey, sameRef,
+    roomById, botById, nameOf, formatTime, formatMemoryScope, formatBotModelSummary,
+    renderReference, renderBotControls, api, toast, refresh, selectRoom,
+  };
+}
 function render() {
   persistClientSession();
   const activeEl = document.activeElement;
@@ -864,10 +946,26 @@ function render() {
   const saved = preserveView();
   const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? 'chat:' + activeChatKey : 'list') : ui.view);
   renderTopbar();
-  const views = { chat:renderChat, members:renderMembers, executions:renderExecutions, files:renderFiles, wakeups:renderWakeups, connections:renderConnections,
-    models:() => globalThis.SummonModels.render({ esc, icon }), usage:() => globalThis.SummonUsage.render({ esc, icon }) };
-  const key = ui.view + ':' + ({ chat:activeChatKey, members:ui.botId, executions:refKey(ui.executionRef), files:ui.fileId }[ui.view] || '');
-  const main = $('#main-content'), html = views[ui.view](), signature = renderSignature(html);
+  globalThis.SummonCanvasOverview?.setContext(canvasOverviewContext());
+  const main = $('#main-content');
+  if (ui.view === 'overview') {
+    const key = 'overview:canvas';
+    if (main.dataset.viewKey !== key || !main.querySelector('[data-cv-host]')) {
+      $('.messages')?._summonChatScroll?.stop();
+      main.innerHTML = globalThis.SummonCanvasOverview.renderShell();
+      ui.lastMainHtml = null;
+      main.dataset.viewKey = key;
+      main.scrollTop = 0;
+    }
+    globalThis.SummonCanvasOverview.mount(main);
+    refreshOpenSettingsBody();
+    window.SummonMotion?.finishNavigation(navigation);
+    return;
+  }
+  const views = { chat:renderChat, usage:() => globalThis.SummonUsage.render({ esc, icon }) };
+  const viewFn = views[ui.view] || renderChat;
+  const key = ui.view + ':' + (ui.view === 'chat' ? activeChatKey : '');
+  const html = viewFn(), signature = renderSignature(html);
   const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView:saved.key === key, ready:ui.creatingRoom || ui.messagesRoomId === ui.roomId, wasReady:saved.chatReady });
   if (ui.lastMainHtml !== signature || main.dataset.viewKey !== key) {
     const motion = captureMotion(main);
@@ -878,6 +976,7 @@ function render() {
   }
   syncBotActivityDock();
   restoreFocus(saved); restoreConversation(); markCurrentRoomRead();
+  refreshOpenSettingsBody();
   window.SummonMotion?.finishNavigation(navigation);
 }
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
@@ -1005,47 +1104,19 @@ async function loadCurrent() {
   const nav = ui.navigationSeq;
   const current = () => nav === ui.navigationSeq;
   if (!ui.protocolReady) return;
-  if (ui.view === 'models') return globalThis.SummonModels.load(api, render, toast, refresh);
   if (ui.view === 'usage') return globalThis.SummonUsage.load(api);
-  if (ui.view === 'executions') {
-    const [page, detached] = await Promise.all([
+  if (ui.view === 'overview') {
+    const [execPage, detached, filesPage, workspaces] = await Promise.allSettled([
       api('/api/executions'),
-      api('/api/executions/detached').catch(() => ({ items: [] })),
+      api('/api/executions/detached'),
+      api('/api/files'),
+      state.workspaces?.length ? Promise.resolve(state.workspaces) : readList('/api/workspaces'),
     ]);
     if (!current()) return;
-    setListPage('executions', page);
-    state.detached = detached.items || [];
-    if (ui.executionRef) await loadExecution(ui.executionRef);
-    return;
-  }
-  if (ui.view === 'files') {
-    const page = await api('/api/files');
-    if (!current()) return;
-    setListPage('files', page);
-    if (ui.fileId) {
-      try { await loadFile(ui.fileId, null, ui.fileRevision); }
-      catch (error) {
-        if (error.status !== 404 && error.status !== 403) throw error;
-        ui.fileDetail = null; ui.fileId = null; ui.fileRevision = null;
-        toast('此文件已不可读取。',true);
-      }
-    }
-    return;
-  }
-  if (ui.view === 'wakeups') {
-    const page = await api('/api/wakeups');
-    if (current()) setListPage('wakeups', page);
-    return;
-  }
-  if (ui.view === 'connections') {
-    const first = await api('/api/connections');
-    if (!current()) return;
-    Object.assign(state, { connections:first.items, resourceUsage:first.usage });
-    const [connections, workspaces] = await Promise.allSettled([readList('/api/connections',first),readList('/api/workspaces')]);
-    if (current()) {
-      if (connections.status === 'fulfilled') state.connections = connections.value;
-      if (workspaces.status === 'fulfilled') state.workspaces = workspaces.value;
-    }
+    if (execPage.status === 'fulfilled') setListPage('executions', execPage.value);
+    if (detached.status === 'fulfilled') state.detached = detached.value.items || [];
+    if (filesPage.status === 'fulfilled') setListPage('files', filesPage.value);
+    if (workspaces.status === 'fulfilled' && Array.isArray(workspaces.value)) state.workspaces = workspaces.value;
     return;
   }
   if (ui.view !== 'chat' || !ui.roomId) return;
@@ -1241,6 +1312,11 @@ async function restoreCachedState() {
 }
 
 async function navigate(view) {
+  if (view === 'models') return openSettingsModal('models');
+  if (view === 'wakeups') return openSettingsModal('wakeups');
+  if (view === 'connections') return openSettingsModal('connection');
+  if (['members', 'executions', 'files'].includes(view)) view = 'overview';
+  if (!['chat', 'overview', 'usage'].includes(view)) view = 'chat';
   ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view;
   if (view !== 'chat') { ui.creatingRoom = false; ui.lastPanelView = view; }
   if (view === 'chat' && !ui.creatingRoom) await restoreRoomMessages(ui.roomId);
@@ -1732,7 +1808,10 @@ function openFileEdit(element) {
   });
 }
 
-function wakeupById(id) { return (ui.view === 'chat' ? ui.roomWakeups : state.wakeups)?.find(item => item.id === id); }
+function wakeupById(id) {
+  return (state.wakeups || []).find(item => item.id === id)
+    || (ui.roomWakeups || []).find(item => item.id === id);
+}
 function wakeupRequest(item, data) { return api('/api/wakeups','POST',{ bot:{ kind:'bot', id:item.bot_id }, id:item.id, revision:item.revision, ...data }); }
 
 function openWakeupEdit(item, roomId) {
@@ -1997,8 +2076,16 @@ async function openReference(ref) {
          <a class="secondary-button" href="${esc(downloadUrl)}" download="${esc(fileName)}">流式下载</a>
        </div>`);
   }
-  if (ref.kind === 'file') { ui.fileId = ref.id; ui.fileDetail = null; ui.fileRevision = null; return navigate('files'); }
-  if (ref.kind === 'session' || ref.kind === 'conversation') { ui.executionRef = ref; ui.executionDetail = null; ui.stopResults = null; return navigate('executions'); }
+  if (ref.kind === 'file') {
+    await navigate('overview');
+    globalThis.SummonCanvasOverview?.focusFile(ref.id);
+    return;
+  }
+  if (ref.kind === 'session' || ref.kind === 'conversation') {
+    await navigate('overview');
+    globalThis.SummonCanvasOverview?.focusExecution(ref);
+    return;
+  }
   if (ref.kind === 'bot') return act('open-bot-details',{ dataset:{ id:ref.id } });
   if (ref.kind === 'room') return selectRoom(ref.id);
   if (ref.kind === 'event') {
@@ -2145,8 +2232,13 @@ async function act(action, element) {
   if (action === 'close-modal') return closeModal();
   if (action === 'open-settings') return openSettingsModal(element.dataset.tab || 'general');
   if (action === 'settings-tab') return openSettingsModal(element.dataset.tab || 'general');
-  if (action === 'settings-navigate') { await closeModal(); return navigate(element.dataset.view); }
-  if (action === 'open-panel') return navigate(ui.lastPanelView || 'members');
+  if (action === 'settings-navigate') { await closeModal($('#modal'), { suppressReturn: true }); return navigate(element.dataset.view); }
+  if (action === 'open-panel') return navigate(ui.lastPanelView || 'overview');
+  if (action === 'open-panel-room') {
+    await navigate('overview');
+    if (element.dataset.room) globalThis.SummonCanvasOverview?.focusRoom(element.dataset.room);
+    return;
+  }
   if (action === 'client-downloads') return openSettingsModal('updates', ui.releasesUrl);
   if (action === 'desktop-connection') return window.SummonDesktop?.openConnectionSettings();
   if (action === 'update-app') { await persistClientSession(); location.reload(); return; }
@@ -2314,13 +2406,22 @@ async function act(action, element) {
   if (action === 'edit-file') return openFileEdit(element);
   if (action === 'more-file') { await loadFile(ui.fileId,ui.fileDetail.next_cursor,ui.fileDetail.revision); return render(); }
   if (action === 'add-wakeup' || action === 'edit-wakeup') return openWakeupEdit(wakeupById(id),element.dataset.room);
-  if (action === 'toggle-wakeup') { const item = wakeupById(id); await wakeupRequest(item,{ enabled:!item.enabled }); return refresh(); }
+  if (action === 'toggle-wakeup') {
+    const item = wakeupById(id);
+    if (!item) return;
+    await wakeupRequest(item,{ enabled:!item.enabled });
+    await refresh();
+    if ($('#modal')?.open && $('#modal')?.classList.contains('settings-modal') && ui.settingsTab === 'wakeups') void loadSettingsTabData('wakeups');
+    return;
+  }
   if (action === 'delete-wakeup') {
     const item = wakeupById(id);
     if (!item || !confirm('确认删除这条订阅/提醒规则？')) return;
     await api('/api/wakeups/' + encodeURIComponent(item.id), 'DELETE', { revision: item.revision });
     toast('订阅规则已删除');
-    return refresh();
+    await refresh();
+    if ($('#modal')?.open && $('#modal')?.classList.contains('settings-modal') && ui.settingsTab === 'wakeups') void loadSettingsTabData('wakeups');
+    return;
   }
   if (action === 'prompt-toggle') {
     const msgId = element.dataset.msgId, qid = element.dataset.qid, optId = element.dataset.optId, mode = element.dataset.mode;
@@ -2377,6 +2478,7 @@ function selectField(label, name, options, value, help = '') { return `<div clas
 function botOptions() { return state.bots.map(bot => ({ value: bot.id, label: bot.name })); }
 function openModal(title, description, content, save, submitLabel = '保存') {
   const modal = $('#modal');
+  if (modal.open && modal.classList.contains('settings-modal')) ui.returnToSettingsTab = ui.settingsTab;
   captureMotion($('#modal-content'));
   modal.classList.remove('create-bot-modal', 'settings-modal'); ui.menu = null; renderTopbar();
   const header = `<div class="modal-header"><div><h2>${esc(title)}</h2>${description ? `<p>${esc(description)}</p>` : ''}</div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close',17)}</button></div>`;
@@ -2485,6 +2587,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
     closeFloatingMenus();
     const lb = $('#lightbox'); if (lb && !lb.hidden) { lb.hidden = true; lb.innerHTML = ''; }
+    if (ui.view === 'overview' && !$('#modal')?.open && globalThis.SummonCanvasOverview?.closeInspectorIfOpen()) return;
     if (ui.detailOpen && !$('#modal')?.open) { ui.detailOpen = false; ui.profileBotId = null; render(); }
   }
 });
@@ -2957,19 +3060,14 @@ function renderTopbar() {
   const html = `<div class="sidebar-toolbar"><summon-wordmark></summon-wordmark>
       <div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索群聊" aria-label="搜索群聊">` : ''}
         <button class="round-button" data-action="toggle-search" title="搜索群聊" aria-label="搜索群聊">${icon('search', 20)}</button></div>
-      <button class="round-button ${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members" title="团队成员" aria-label="团队成员" aria-pressed="${ui.view === 'members'}">${icon('people', 19)}</button>
       <button class="round-button create-button ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 23)}</button></div>
     <div class="contacts-scroll">${contactsHtml}</div>
     <div class="sidebar-controls">
       <div class="rail-quick-actions">
         <button type="button" class="rail-action-btn ${creatingActive ? 'selected' : ''}" data-action="new-room" title="新建群聊" aria-label="新建群聊" aria-pressed="${creatingActive}">${icon('plus', 20)}</button>
-        <button type="button" class="rail-action-btn ${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members" title="团队成员" aria-label="团队成员">${icon('people', 18)}</button>
+        <button type="button" class="rail-action-btn ${ui.view !== 'chat' ? 'selected' : ''}" data-action="open-panel" title="面板" aria-label="面板">${icon('layers', 18)}</button>
         <button type="button" class="rail-action-btn" data-action="open-settings" title="设置" aria-label="设置">${icon('settings', 18)}</button>
       </div>
-      <nav class="sidebar-shortcuts" aria-label="常用功能">
-      <button class="${ui.view === 'members' ? 'selected' : ''}" data-action="navigate" data-view="members">${icon('people', 17)}<span>成员</span></button>
-      <button class="${ui.view === 'executions' ? 'selected' : ''}" data-action="navigate" data-view="executions">${icon('computer', 17)}<span>执行</span></button>
-      <button class="${ui.view === 'files' ? 'selected' : ''}" data-action="navigate" data-view="files">${icon('knowledge', 17)}<span>资料</span></button></nav>
     <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor">
       <button class="sidebar-owner" data-action="toggle-apps" aria-label="设置" aria-expanded="${ui.menu === 'apps'}">
       <span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png" width="100" height="100" alt="">
@@ -3444,7 +3542,7 @@ function renderNewGroupDraft() {
   const accent = eggAppearance.color || '#7D824B';
   const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
-        <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
+        <button type="button" class="text-button" data-action="open-settings" data-tab="models">配置模型</button></div>`
     : '';
   const writableWorkspaces = (state.workspaces || []).filter(item => item.write !== false);
   const selectedWs = writableWorkspaces.find(item => item.id === ui.draftWorkspaceId) || null;
@@ -3533,7 +3631,7 @@ function renderChat() {
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
-        <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
+        <button type="button" class="text-button" data-action="open-settings" data-tab="models">配置模型</button></div>`
     : '';
   const body = `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
@@ -3645,7 +3743,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
     <div class="bot-execution-drawer-head">
       <strong>${activeCount ? `进行中（${activeCount}）` : '最近执行'}</strong>
       <div class="bot-execution-drawer-actions">
-        <button type="button" class="text-button" data-action="navigate" data-view="executions">全部记录</button>
+        <button type="button" class="text-button" data-action="open-panel-room" data-room="${esc(room.id)}">全部记录</button>
         <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起执行过程">${icon('close', 15)}</button>
       </div>
     </div>

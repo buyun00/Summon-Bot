@@ -109,7 +109,7 @@ struct ModelQuotaDetailsView: View {
     let item: SummonJSONValue
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: item); Divider(); NavigationLink("管理模型与用量") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
+            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: item); Divider(); NavigationLink("管理模型连接") { ModelSettingsView(embedded: true) }; Spacer(minLength: 0) }.padding(24)
                 .background(SummonTheme.background).navigationTitle("额度").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
@@ -117,6 +117,7 @@ struct ModelQuotaDetailsView: View {
 }
 
 @MainActor struct ModelSettingsView: View {
+    var embedded = false
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var data: SummonJSONValue = .null
@@ -127,50 +128,67 @@ struct ModelQuotaDetailsView: View {
     private var entries: [SummonJSONValue] { data["connections"].array ?? [] }
     private var selected: SummonJSONValue { entries.first { $0["id"] == draft["id"] } ?? .null }
     var body: some View {
-        NavigationStack {
-            Form {
-                if let error { Section { Text(error).foregroundStyle(.orange) } }
-                Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
-                Section("默认模型连接") {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                        Button { draft = entry; login = .null } label: {
-                            HStack(spacing: 12) {
-                                ModelBrandImage(item: entry)
-                                VStack(alignment: .leading) {
-                                    Text(entry["name"].stringValue)
-                                    Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                VStack(alignment: .trailing) {
-                                    if entry["active"].bool == true { Text("默认").foregroundStyle(modelTint) }
-                                    if entry["configured"].bool == false { Text("待连接").foregroundStyle(.secondary) }
-                                }.summonFont(.caption)
+        if embedded {
+            formContent
+                .navigationTitle("模型连接")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) }
+                }
+        } else {
+            NavigationStack {
+                formContent
+                    .navigationTitle("模型连接")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
+                        ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) }
+                    }
+            }
+        }
+    }
+    private var formContent: some View {
+        Form {
+            if let error { Section { Text(error).foregroundStyle(.orange) } }
+            Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
+            Section("默认模型连接") {
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                    Button { draft = entry; login = .null } label: {
+                        HStack(spacing: 12) {
+                            ModelBrandImage(item: entry)
+                            VStack(alignment: .leading) {
+                                Text(entry["name"].stringValue)
+                                Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
                             }
+                            Spacer()
+                            VStack(alignment: .trailing) {
+                                if entry["active"].bool == true { Text("默认").foregroundStyle(modelTint) }
+                                if entry["configured"].bool == false { Text("待连接").foregroundStyle(.secondary) }
+                            }.summonFont(.caption)
                         }
                     }
-                    Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }
                 }
-                if draft.object != nil {
-                    ModelConnectionForm(entry: draft, selected: selected, presets: data["presets"].array ?? [], busy: busy,
-                        save: { payload in run { try await save(payload) } },
-                        importCodex: { run { data = try await store.request(path: "/api/model-settings/local/import", method: "POST", body: .object(["kind": draft["kind"]])); draft = entries.first { $0["id"].stringValue == data["importedId"].stringValue } ?? .null; try await store.refreshModelUsage(force: true) } },
-                        authorize: { run { login = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/login", method: "POST", body: .object([:])) } },
-                        setDefault: { id in run {
-                            data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": id]))
-                            try await store.refreshModelUsage(force: true)
-                        } },
-                        remove: { run { data = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))", method: "DELETE"); draft = entries.first { $0["active"].bool == true } ?? .null; try await store.refreshModelUsage(force: true) } },
-                        discover: { try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/models?discover=1")["models"].array ?? [] })
-                        .id("\(draft["id"].stringValue)-\(draft["kind"].stringValue)-\(selected["configured"].stringValue)")
-                }
-                if ["starting", "waiting"].contains(login["status"].stringValue) { Section("订阅授权") { Text(login["userCode"].stringValue).summonFont(.title2).textSelection(.enabled); if let url = URL(string: login["verificationUri"].stringValue), ["https", "http"].contains(url.scheme ?? "") { Link("打开授权页面", destination: url) }; Button("取消授权") { run { login = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login", method: "DELETE") } } } }
-                if !login["error"].stringValue.isEmpty { Text(login["error"].stringValue).foregroundStyle(.orange) }
-                Section { Text("新建 Bot 使用这里选择的默认模型。").summonFont(.caption).foregroundStyle(.secondary) }
-            }.navigationTitle("模型与用量").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) } }
-                .task(id: store.protocolReady) { guard store.protocolReady else { return }; do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
-                .task(id: login["id"].stringValue + login["status"].stringValue) { await pollLogin() }
+                Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }
+            }
+            if draft.object != nil {
+                ModelConnectionForm(entry: draft, selected: selected, presets: data["presets"].array ?? [], busy: busy,
+                    save: { payload in run { try await save(payload) } },
+                    importCodex: { run { data = try await store.request(path: "/api/model-settings/local/import", method: "POST", body: .object(["kind": draft["kind"]])); draft = entries.first { $0["id"].stringValue == data["importedId"].stringValue } ?? .null; try await store.refreshModelUsage(force: true) } },
+                    authorize: { run { login = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/login", method: "POST", body: .object([:])) } },
+                    setDefault: { id in run {
+                        data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": id]))
+                        try await store.refreshModelUsage(force: true)
+                    } },
+                    remove: { run { data = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))", method: "DELETE"); draft = entries.first { $0["active"].bool == true } ?? .null; try await store.refreshModelUsage(force: true) } },
+                    discover: { try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/models?discover=1")["models"].array ?? [] })
+                    .id("\(draft["id"].stringValue)-\(draft["kind"].stringValue)-\(selected["configured"].stringValue)")
+            }
+            if ["starting", "waiting"].contains(login["status"].stringValue) { Section("订阅授权") { Text(login["userCode"].stringValue).summonFont(.title2).textSelection(.enabled); if let url = URL(string: login["verificationUri"].stringValue), ["https", "http"].contains(url.scheme ?? "") { Link("打开授权页面", destination: url) }; Button("取消授权") { run { login = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login", method: "DELETE") } } } }
+            if !login["error"].stringValue.isEmpty { Text(login["error"].stringValue).foregroundStyle(.orange) }
+            Section { Text("新建 Bot 使用这里选择的默认模型。").summonFont(.caption).foregroundStyle(.secondary) }
         }
+        .task(id: store.protocolReady) { guard store.protocolReady else { return }; do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
+        .task(id: login["id"].stringValue + login["status"].stringValue) { await pollLogin() }
     }
     private func component(_ value: SummonJSONValue) -> String { SummonAPIClient.component(value.stringValue) }
     private func run(_ action: @escaping @MainActor () async throws -> Void) { guard !busy else { return }; Task { busy = true; error = nil; defer { busy = false }; do { try await action() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } } }
