@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-const STATE_COLLECTIONS = ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'];
+const STATE_COLLECTIONS = ['bots', 'archivedBots', 'rooms', 'archivedRooms', 'executions', 'files', 'wakeups', 'connections'];
 const ROOM_COLLECTIONS = ['messages'];
 const emptyPatch = () => ({ values: {}, collections: {} });
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);

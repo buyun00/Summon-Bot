@@ -158,7 +158,8 @@ const icons = {
   panel: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 3v18"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>',
   folderPlus: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 10v6M9 13h6"/>',
-  eyeOff: '<path d="M17.94 17.94A10.1 10.1 0 0 1 12 19c-7 0-10-7-10-7a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="m1 1 22 22"/>',
+  archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  archiveRestore: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M12 17v-5m-2.5 2.5L12 12l2.5 2.5"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
   check: '<path d="m5 12 5 5L20 7"/>',
 };
@@ -205,17 +206,17 @@ const NEW_GROUP_SUGGESTIONS = [
     prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
   },
 ];
-const state = { bots: [], archivedBots: [], roles: [], rooms: [], executions: [], detached: [], files: [], wakeups: [], connections: [], workspaces: [] };
+const state = { bots: [], archivedBots: [], roles: [], rooms: [], archivedRooms: [], executions: [], detached: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
   view:'chat', roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
-  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomActivities:[], roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomActivities:[], roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
-  avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
+  avatarSelectionRevision:0, searchOpen:false, roomQuery:'', archiveDrawerOpen:false, menu:null, sendingRooms:new Set(), navigationSeq:0,
   messageCache:new Map(), roomReadSeq:{}, executionInputs:new Map(), loadingExecutions:new Map(),
   promptDrafts:new Map(), promptSubmitting:new Set(), execPromptDrafts:new Map(), execPromptBusy:new Set(),
   historyEpoch:null, historyGeneration:0, retiredHistoryEpochs:new Set(),
@@ -393,7 +394,6 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
     const message = receipt.message;
     if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId || message.senderId !== 'user') throw new Error('服务器回执不完整');
     entry.message = message; entry.status = 'saved';
-    if (ui.roomId === entry.roomId && Array.isArray(receipt.deliveries)) ui.roomDeliveries.set(message.id, receipt.deliveries);
   } catch (error) {
     if (ui.localMessages[entry.roomId]?.[entry.clientId] === entry) {
       entry.status = error.messageRejected ? 'rejected' : 'unconfirmed';
@@ -430,7 +430,8 @@ function contactTime(value) {
 }
 function formatDay(value) { const time = new Date(value); return Number.isNaN(time.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(time); }
 function botById(id) { return state.bots.find(bot => bot.id === id); }
-function roomById(id) { return state.rooms.find(room => room.id === id); }
+function isArchivedRoom(room) { return Boolean(room?.archived_at); }
+function roomById(id) { return state.rooms.find(room => room.id === id) || (state.archivedRooms || []).find(room => room.id === id); }
 function nameOf(id) { return id === 'user' ? ownerName() : botById(id)?.name || (['system', 'platform'].includes(id) ? 'Summon 平台' : id || 'Summon 平台'); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
 function renderPageNavBar(activeView = ui.view) {
@@ -787,7 +788,8 @@ async function refresh(force = false) {
       await restoreRoomMessages(ui.roomId);
     }
     if (!botById(ui.botId)) ui.botId = state.bots[0]?.id ?? null;
-    const visibleRooms = new Set(state.rooms.map(room => room.id));
+    if (ui.archiveDrawerOpen && !(state.archivedRooms || []).length) ui.archiveDrawerOpen = false;
+    const visibleRooms = new Set([...state.rooms, ...(state.archivedRooms || [])].map(room => room.id));
     for (const id of ui.messageCache.keys()) if (!visibleRooms.has(id)) {
       ui.messageCache.delete(id);
       void globalThis.SummonCache?.removeRoom(id);
@@ -862,7 +864,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, deliveries, summaries = {}, activities = [], suspendedRuns = [], messageStates = {}, chainState = null, staleWaits = [], room, cursor } = synced.snapshot;
+  const { messages, activities = [], suspendedRuns = [], room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -870,15 +872,12 @@ async function loadCurrent() {
   reconcileRoomMessages(id, messages);
   if (ui.roomId !== id) return;
   ui.messagesRoomId = id; ui.messages = cached.messages; ui.historyCursor = cached.historyCursor;
-  ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries || {})]);
-  ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(summaries || {})]);
   ui.roomActivities = Array.isArray(activities) ? activities : [];
   ui.roomSuspendedRuns = Array.isArray(suspendedRuns) ? suspendedRuns : [];
-  ui.roomMessageStates = messageStates || {};
-  ui.roomChainState = chainState || null;
-  ui.roomStaleWaits = Array.isArray(staleWaits) ? staleWaits : [];
-  const index = state.rooms.findIndex(item => item.id === id);
-  if (room && room.revision >= state.rooms[index].revision) state.rooms[index] = room;
+  const activeIndex = state.rooms.findIndex(item => item.id === id);
+  if (room && activeIndex >= 0 && room.revision >= state.rooms[activeIndex].revision) state.rooms[activeIndex] = room;
+  const archivedIndex = (state.archivedRooms || []).findIndex(item => item.id === id);
+  if (room && archivedIndex >= 0 && room.revision >= state.archivedRooms[archivedIndex].revision) state.archivedRooms[archivedIndex] = room;
   const roomRef = encodeURIComponent(id);
   const roomDetails = [
     readList('/api/executions?room=' + roomRef).then(items => { if (ui.roomId === id && current()) ui.roomExecutions = items; }),
@@ -915,8 +914,6 @@ async function loadOlderMessages() {
   current.historyCursor = response.cursor;
   if (ui.roomId === id) {
     ui.messages = current.messages; ui.historyCursor = current.historyCursor;
-    ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(response.deliveries || {})]);
-    ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(response.summaries || {})]);
     render();
   }
 }
@@ -931,8 +928,6 @@ async function restoreRoomMessages(id) {
   }
   if (ui.roomId !== id || generation !== ui.historyGeneration) return;
   ui.messages = cached?.messages || []; ui.historyCursor = cached?.historyCursor; ui.messagesRoomId = cached ? id : null;
-  ui.roomDeliveries = new Map(Object.entries(cached?.snapshot.deliveries || {}));
-  ui.roomSummaries = new Map(Object.entries(cached?.snapshot.summaries || {}));
   ui.roomActivities = Array.isArray(cached?.snapshot.activities) ? cached.snapshot.activities : [];
   ui.roomExecutions = []; ui.roomWakeups = []; ui.roomFiles = [];
 }
@@ -943,7 +938,7 @@ async function acceptHistoryEpoch(response, generation) {
   if (epoch === ui.historyEpoch) return true;
   if (generation !== ui.historyGeneration || ui.retiredHistoryEpochs.has(epoch)) { scheduleRefresh(); return false; }
   ui.retiredHistoryEpochs.add(ui.historyEpoch); ui.historyEpoch = epoch; ui.historyGeneration++;
-  ui.messages = []; ui.roomDeliveries.clear(); ui.roomSummaries.clear(); ui.roomActivities = []; ui.messagesRoomId = null;
+  ui.messages = []; ui.roomActivities = []; ui.roomSuspendedRuns = []; ui.messagesRoomId = null;
   ui.messageCache.clear(); ui.stateSnapshot = null; ui.stateCursor = null;
   await globalThis.SummonCache?.resetHistory(epoch, clientSessionSnapshot());
   return true;
@@ -1165,6 +1160,7 @@ async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
       members: [],
       mode: 'group',
       title,
+      auto_title: true,
       skip_welcome: true,
       ...(workspace ? { workspace } : {}),
     });
@@ -1186,9 +1182,6 @@ async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
     ui.messagesRoomId = room.id;
     ui.messages = [];
     ui.historyCursor = null;
-    ui.roomMessageStates = {};
-    ui.roomChainState = null;
-    ui.roomStaleWaits = [];
     ui.roomSuspendedRuns = [];
     ui.roomActivities = [];
     ui.openRoomExecution = null;
@@ -1212,7 +1205,7 @@ async function selectRoom(id) {
   if (!id) return;
   ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
-  ui.roomMessageStates = {}; ui.roomChainState = null; ui.roomStaleWaits = []; ui.roomSuspendedRuns = []; ui.roomActivities = [];
+  ui.roomSuspendedRuns = []; ui.roomActivities = [];
   ui.openRoomExecution = null; ui.activityTickerIndex = 0;
   location.hash = 'chat';
   await restoreRoomMessages(id);
@@ -1243,7 +1236,7 @@ async function roomWorkspaceField(current) {
 
 async function openRoomEdit() {
   const room = roomById(ui.roomId);
-  if (!room) return;
+  if (!room || isArchivedRoom(room)) return;
   const old = room.members.filter(id => id !== 'user');
   const workspaceField = room.mode === 'group' ? await roomWorkspaceField(room.workspace?.id) : '';
   openModal('编辑会话', '', field('会话名称', 'title', room.name, { placeholder:'留空保留原名称' }) + workspaceField + memberChoices(old), async data => {
@@ -1252,6 +1245,37 @@ async function openRoomEdit() {
       ...(workspaceField && data.get('workspace') !== (room.workspace?.id || '') ? {workspace:data.get('workspace') || null} : {}),
       add_members:selected.filter(id => !old.includes(id)), remove_members:previous.filter(id => !selected.includes(id)) });
   });
+}
+
+async function archiveRoom(roomId) {
+  const room = roomById(roomId || ui.roomId);
+  if (!room?.archivable || isArchivedRoom(room)) return;
+  await api(roomPath(room.id) + '/archive', 'POST', { revision: room.revision });
+  const key = `room:${room.id}`;
+  if (homeOrg.pinnedKeys.includes(key)) {
+    homeOrg.pinnedKeys = homeOrg.pinnedKeys.filter(k => k !== key);
+    saveHomeOrg();
+  }
+  const wasSelected = ui.roomId === room.id;
+  await refresh();
+  if (wasSelected && !ui.archiveDrawerOpen) {
+    const next = defaultGroupRoom();
+    ui.detailOpen = false;
+    ui.profileBotId = null;
+    if (next) await selectRoom(next.id);
+    else { ui.roomId = null; ui.creatingRoom = true; render(); }
+  }
+  toast(`已将「${room.name}」收进归档群助手`);
+}
+
+async function restoreRoom(roomId) {
+  const room = roomById(roomId || ui.roomId);
+  if (!room || !isArchivedRoom(room)) return;
+  await api(roomPath(room.id) + '/restore', 'POST', { revision: room.revision });
+  await refresh();
+  if (!(state.archivedRooms || []).length) ui.archiveDrawerOpen = false;
+  toast(`已将「${room.name}」移出归档`);
+  render();
 }
 
 async function stopCurrentRoom() {
@@ -1344,8 +1368,7 @@ async function openBotEdit(bot) {
     ${field('Pi 模型','pi_model_id',piOv.id || '',{ placeholder:'留空沿用连接/主模型' })}
     ${field('Pi 思考档','pi_thinking_level',piOv.thinking_level ?? '',{ placeholder:'例如 high / max',list:'bot-all-thinking-levels' })}
   </details>`;
-  const metaLine = `配置修订 r${bot.revision ?? 1} · 绑定来源：${bot.binding_source || initialMode} · 生效时机：快读下批生效，主对话下一轮新 run 生效，已开独立 Pi 锁定开工绑定`;
-  openModal('编辑 Bot', metaLine, field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
+  openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
     field('团队公开职责','public_duty',bot.public_duty || '') +
     selectField('内置职责','role_id',roles,role) +
     selectField('模型策略','model_mode',modes,initialMode) +
@@ -1873,9 +1896,17 @@ async function act(action, element) {
   if (action === 'toggle-folder') return toggleFolderCollapsed(id);
   if (action === 'home-pin') return togglePinEntry(element.dataset.key);
   if (action === 'home-move') return moveEntryToFolder(element.dataset.key, element.dataset.folder || null);
-  if (action === 'home-hide') return setHiddenEntry(element.dataset.key, true);
-  if (action === 'home-restore') { setHiddenEntry(element.dataset.key, false); return openHiddenConversationsModal(); }
-  if (action === 'manage-hidden') return openHiddenConversationsModal();
+  if (action === 'open-archive-assistant') {
+    $('.app-shell')?.classList.remove('sidebar-collapsed');
+    ui.archiveDrawerOpen = true;
+    return renderTopbar();
+  }
+  if (action === 'close-archive-assistant') {
+    ui.archiveDrawerOpen = false;
+    return renderTopbar();
+  }
+  if (action === 'archive-room') return archiveRoom(id || element.dataset.room);
+  if (action === 'restore-room') return restoreRoom(id || element.dataset.room);
   if (action === 'home-new-folder') {
     const targetKey = element.dataset.key;
     return openModal('新建分组', '', field('分组名称', 'name', '', { placeholder: '如 Tech、工作', required: true }), data => {
@@ -1901,7 +1932,7 @@ async function act(action, element) {
     return;
   }
   if (action === 'toggle-sidebar') { $('.app-shell')?.classList.toggle('sidebar-collapsed'); return; }
-  if (action === 'back-to-room-details') { ui.profileBotId = null; ui.detailTab = 'details'; ui.avatarEditing = false; render(); await loadCurrent(); return render(); }
+  if (action === 'back-to-room-details') { ui.profileBotId = null; ui.detailTab = 'members'; ui.avatarEditing = false; render(); await loadCurrent(); return render(); }
   if (action === 'copy-code') {
     const code = element.closest('.code-block')?.querySelector('pre code')?.textContent || '';
     await navigator.clipboard?.writeText(code);
@@ -1963,7 +1994,7 @@ async function act(action, element) {
     if (!ui.roomId && action === 'open-bot-details') { ui.botId = id; return navigate('members'); }
     ui.detailOpen = action === 'open-bot-details' || !ui.detailOpen;
     ui.profileBotId = action === 'open-bot-details' ? id : null;
-    ui.detailTab = 'details'; ui.avatarEditing = false; ui.roomFiles = [];
+    ui.detailTab = ui.profileBotId ? 'details' : 'members'; ui.avatarEditing = false; ui.roomFiles = [];
     render(); await loadCurrent(); return render();
   }
   if (action === 'close-details') { ui.detailOpen = false; ui.profileBotId = null; return render(); }
@@ -2098,12 +2129,6 @@ async function act(action, element) {
     toast('订阅规则已删除');
     return refresh();
   }
-  if (action === 'resume-room-chain') {
-    if (!ui.roomId) return;
-    await api(roomPath(ui.roomId) + '/resume-chain', 'POST', {});
-    toast('已恢复群内自动讨论');
-    return refresh();
-  }
   if (action === 'prompt-toggle') {
     const msgId = element.dataset.msgId, qid = element.dataset.qid, optId = element.dataset.optId, mode = element.dataset.mode;
     if (!msgId || !qid || !optId) return;
@@ -2138,23 +2163,6 @@ async function act(action, element) {
   }
   if (action === 'exec-prompt-skip') {
     return skipExecPromptCard(element.dataset.execKey);
-  }
-  if (action === 'manual-fallback') {
-    if (!ui.roomId || !id) return;
-    const room = roomById(ui.roomId);
-    const activeBots = (room?.members || []).filter(m => m !== 'user').map(botById).filter(b => b && b.enabled);
-    if (!activeBots.length) return toast('当前群内没有启用的 Bot 可点名', true);
-    if (activeBots.length === 1) {
-      await api(roomPath(ui.roomId) + '/messages/' + encodeURIComponent(id) + '/fallback', 'POST', { bot_id: activeBots[0].id });
-      toast(`已请 ${activeBots[0].name} 回应`);
-      return refresh();
-    }
-    openModal('指定成员补答', '', selectField('选择要唤醒的成员', 'bot_id', activeBots.map(b => ({ value: b.id, label: b.name })), activeBots[0].id), async data => {
-      const botId = data.get('bot_id');
-      await api(roomPath(ui.roomId) + '/messages/' + encodeURIComponent(id) + '/fallback', 'POST', { bot_id: botId });
-      toast(`已请 ${nameOf(botId)} 回应`);
-    }, '发送唤醒');
-    return;
   }
   if (action === 'more-list') {
     const page = ui.listPages[kind], endpoint = element.dataset.endpoint, navigation = ui.navigationSeq;
@@ -2207,11 +2215,22 @@ function openFloatingContextMenu(x, y, html) {
   menu.style.top = `${top}px`;
 }
 function openHomeEntryContextMenu(key, x, y) {
-  const entry = buildHomeEntries().find(item => item.key === key);
+  const entry = [...buildHomeEntries(state.rooms), ...buildHomeEntries(state.archivedRooms || [])].find(item => item.key === key);
   if (!entry) return;
+  const avatarHtml = groupAvatar(entry.room, 28, `ctx:group:${entry.id}`);
+  if (entry.archived) {
+    openFloatingContextMenu(x, y, `
+      <div class="floating-menu-preview">
+        <div class="floating-menu-preview-head">${avatarHtml}<strong>${esc(entry.title)}</strong></div>
+        <div class="floating-menu-preview-bubble">${esc(entry.fullPreview)}</div>
+      </div>
+      <button type="button" class="floating-menu-item" data-action="restore-room" data-id="${esc(entry.roomId)}">${icon('archiveRestore', 16)}<span>移出归档</span></button>
+      <button type="button" class="floating-menu-item" data-action="home-details" data-room="${esc(entry.roomId)}">${icon('info', 16)}<span>群聊详情</span></button>
+    `);
+    return;
+  }
   const pinned = isPinnedEntry(key);
   const currentFolder = folderIdForEntry(key);
-  const avatarHtml = groupAvatar(entry.room, 28, `ctx:group:${entry.id}`);
   const folderOptions = `
     <button type="button" class="floating-menu-sub-item" data-action="home-move" data-key="${esc(key)}" data-folder="">
       ${icon('folder', 15)}<span>${entry.isSystem ? '系统' : '群聊'}</span>${currentFolder === null ? icon('check', 15) : ''}
@@ -2231,8 +2250,8 @@ function openHomeEntryContextMenu(key, x, y) {
     <button type="button" class="floating-menu-item" data-action="home-toggle-move">${icon('folder', 16)}<span>移动到</span>${icon('chevronDown', 15)}</button>
     <div class="floating-menu-sub" hidden>${folderOptions}</div>
     <button type="button" class="floating-menu-item" data-action="home-details" data-room="${esc(entry.roomId)}">${icon('info', 16)}<span>群聊详情</span></button>
-    <div class="floating-menu-sep"></div>
-    <button type="button" class="floating-menu-item danger" data-action="home-hide" data-key="${esc(key)}">${icon('eyeOff', 16)}<span>隐藏</span></button>
+    ${entry.room.archivable ? `<div class="floating-menu-sep"></div>
+    <button type="button" class="floating-menu-item" data-action="archive-room" data-id="${esc(entry.roomId)}">${icon('archive', 16)}<span>归档到群助手</span></button>` : ''}
   `);
 }
 function openHomeFolderContextMenu(folderId, x, y) {
@@ -2242,17 +2261,6 @@ function openHomeFolderContextMenu(folderId, x, y) {
     <button type="button" class="floating-menu-item" data-action="folder-rename" data-id="${esc(folder.id)}">${icon('edit', 16)}<span>重命名分组</span></button>
     <button type="button" class="floating-menu-item danger" data-action="folder-delete" data-id="${esc(folder.id)}">${icon('close', 16)}<span>删除分组</span></button>
   `);
-}
-function openHiddenConversationsModal() {
-  const hiddenSet = new Set(homeOrg.hiddenKeys);
-  const hidden = buildHomeEntries().filter(entry => hiddenSet.has(entry.key));
-  const body = hidden.length
-    ? `<div class="hidden-list">${hidden.map(entry => `<div class="hidden-list-row">
-        <div class="hidden-list-copy"><strong>${esc(entry.title)}</strong><small>${esc(entry.preview)}</small></div>
-        <button type="button" class="secondary-button" data-action="home-restore" data-key="${esc(entry.key)}">取消隐藏</button>
-      </div>`).join('')}</div>`
-    : '<p class="panel-empty">没有已隐藏的对话</p>';
-  openModal('已隐藏对话', '点击“取消隐藏”可恢复显示在侧栏列表中。', body);
 }
 document.addEventListener('contextmenu', event => {
   const entryEl = event.target.closest('[data-home-key]');
@@ -2566,12 +2574,11 @@ function loadHomeOrg() {
     const raw = JSON.parse(localStorage.getItem(homeOrgStorageKey) || '{}');
     return {
       pinnedKeys: Array.isArray(raw.pinnedKeys) ? raw.pinnedKeys : [],
-      hiddenKeys: Array.isArray(raw.hiddenKeys) ? raw.hiddenKeys : [],
       folders: Array.isArray(raw.folders) ? raw.folders.filter(f => f && typeof f.id === 'string' && typeof f.name === 'string') : [],
       collapsedIds: Array.isArray(raw.collapsedIds) ? raw.collapsedIds : [],
     };
   } catch {
-    return { pinnedKeys: [], hiddenKeys: [], folders: [], collapsedIds: [] };
+    return { pinnedKeys: [], folders: [], collapsedIds: [] };
   }
 }
 let homeOrg = loadHomeOrg();
@@ -2579,24 +2586,11 @@ function saveHomeOrg() {
   try { localStorage.setItem(homeOrgStorageKey, JSON.stringify(homeOrg)); } catch {}
 }
 const isPinnedEntry = key => homeOrg.pinnedKeys.includes(key);
-const isHiddenEntry = key => homeOrg.hiddenKeys.includes(key);
 const isFolderCollapsed = id => homeOrg.collapsedIds.includes(id);
 const folderIdForEntry = key => homeOrg.folders.find(f => Array.isArray(f.keys) && f.keys.includes(key))?.id || null;
 function togglePinEntry(key) {
   if (isPinnedEntry(key)) homeOrg.pinnedKeys = homeOrg.pinnedKeys.filter(k => k !== key);
-  else {
-    homeOrg.hiddenKeys = homeOrg.hiddenKeys.filter(k => k !== key);
-    homeOrg.pinnedKeys = [...homeOrg.pinnedKeys, key];
-  }
-  saveHomeOrg(); renderTopbar();
-}
-function setHiddenEntry(key, hidden) {
-  if (hidden) {
-    homeOrg.pinnedKeys = homeOrg.pinnedKeys.filter(k => k !== key);
-    if (!homeOrg.hiddenKeys.includes(key)) homeOrg.hiddenKeys = [...homeOrg.hiddenKeys, key];
-  } else {
-    homeOrg.hiddenKeys = homeOrg.hiddenKeys.filter(k => k !== key);
-  }
+  else homeOrg.pinnedKeys = [...homeOrg.pinnedKeys, key];
   saveHomeOrg(); renderTopbar();
 }
 function moveEntryToFolder(key, folderId) {
@@ -2652,17 +2646,18 @@ function roomExclusiveLiveBot(room) {
   return null;
 }
 
-function buildHomeEntries() {
+function buildHomeEntries(sourceRooms = state.rooms) {
   const live = ui.streamConnected && !ui.connectionNotice;
   const entries = [];
-  for (const room of state.rooms) {
+  for (const room of sourceRooms || []) {
     if (directRoom(room)) continue;
+    const archived = isArchivedRoom(room);
     const last = room.lastMessage;
-    const active = live ? roomExclusiveLiveBot(room) : null;
+    const active = !archived && live ? roomExclusiveLiveBot(room) : null;
     const running = Boolean(active);
     const preview = active
       ? `${active.bot.name} · ${active.activity.text}`
-      : last ? roomPreview(room) : '开始聊天';
+      : last ? roomPreview(room) : (archived ? '已归档' : '开始聊天');
     const fullPreview = last?.content?.trim() || preview;
     entries.push({
       key: `room:${room.id}`,
@@ -2671,11 +2666,12 @@ function buildHomeEntries() {
       room,
       roomId: room.id,
       botId: null,
+      archived,
       isSystem: room.id === BOT_MAINTENANCE_ROOM_ID,
       title: room.name,
       preview,
       fullPreview,
-      sortDate: conversationUpdatedAt(room),
+      sortDate: archived ? (room.archived_at || conversationUpdatedAt(room)) : conversationUpdatedAt(room),
       running,
       paused: false,
       live,
@@ -2692,21 +2688,21 @@ function renderHomePinnedTile(entry) {
     <span class="pinned-tile-title">${esc(entry.title)}</span>
   </button>`;
 }
-function renderHomeEntryRow(entry) {
-  return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
+function renderHomeEntryRow(entry, { showArchivedBadge = false } = {}) {
+  return `<button class="contact-row ${entry.selected ? 'selected' : ''} ${entry.archived ? 'is-archived' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
     <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.id}`)}${entry.running ? '<i class="presence-dot running" aria-hidden="true"></i>' : ''}</span>
-    <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
-    ${unreadRoomBadge(entry.room)}
+    <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${showArchivedBadge ? '<span class="contact-archive-tag">已归档</span>' : renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
+    ${entry.archived ? '' : unreadRoomBadge(entry.room)}
   </button>`;
 }
 function renderTopbar() {
   const sidebar = $('#contact-sidebar'), oldTop = $('.contacts-scroll')?.scrollTop || 0;
   const query = ui.roomQuery.trim().toLowerCase();
-  const allEntries = buildHomeEntries();
-  const hiddenSet = new Set(homeOrg.hiddenKeys);
-  const visibleEntries = allEntries.filter(entry => !hiddenSet.has(entry.key));
+  const visibleEntries = buildHomeEntries(state.rooms);
+  const archivedEntries = buildHomeEntries(state.archivedRooms || []);
+  const allSearchEntries = [...visibleEntries, ...archivedEntries];
   const filteredEntries = query
-    ? visibleEntries.filter(entry => entry.title.toLowerCase().includes(query) || entry.preview.toLowerCase().includes(query))
+    ? allSearchEntries.filter(entry => entry.title.toLowerCase().includes(query) || entry.preview.toLowerCase().includes(query))
     : visibleEntries;
   const byKey = new Map(visibleEntries.map(entry => [entry.key, entry]));
   const pinnedEntries = query ? [] : homeOrg.pinnedKeys.map(key => byKey.get(key)).filter(Boolean);
@@ -2716,12 +2712,21 @@ function renderTopbar() {
   const defaultEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key) && !entry.isSystem);
   const systemEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key) && entry.isSystem);
   let contactsHtml = '';
-  if (pinnedEntries.length) {
-    contactsHtml += `<section class="sidebar-section pinned-section"><div class="pinned-shelf">${pinnedEntries.map(renderHomePinnedTile).join('')}</div></section>`;
-  }
   if (query) {
-    contactsHtml += `<section class="sidebar-section"><div class="bot-contacts">${filteredEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">没有匹配的群聊</p>'}</div></section>`;
+    contactsHtml += `<section class="sidebar-section"><div class="bot-contacts">${filteredEntries.map(entry => renderHomeEntryRow(entry, { showArchivedBadge: entry.archived })).join('') || '<p class="sidebar-empty">没有匹配的群聊</p>'}</div></section>`;
+  } else if (ui.archiveDrawerOpen && archivedEntries.length) {
+    contactsHtml += `<section class="sidebar-section archive-assistant-panel">
+      <div class="archive-assistant-header">
+        <button type="button" class="archive-assistant-back" data-action="close-archive-assistant" aria-label="返回群聊列表">${icon('chevronBack', 16)}<span>返回</span></button>
+        <strong>归档群助手</strong>
+        <span class="archive-assistant-count">${archivedEntries.length}</span>
+      </div>
+      <div class="bot-contacts">${archivedEntries.map(entry => renderHomeEntryRow(entry)).join('')}</div>
+    </section>`;
   } else {
+    if (pinnedEntries.length) {
+      contactsHtml += `<section class="sidebar-section pinned-section"><div class="pinned-shelf">${pinnedEntries.map(renderHomePinnedTile).join('')}</div></section>`;
+    }
     if (defaultEntries.length || !homeOrg.folders.length) {
       const collapsed = isFolderCollapsed('__default__');
       contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span class="folder-header-label"><span>群聊</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length}</span></button>
@@ -2734,16 +2739,25 @@ function renderTopbar() {
       contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span class="folder-header-label"><span>${esc(folder.name)}</span>${icon('chevronDown', 13)}</span><span class="folder-count">${folderEntries.length}</span></button>
         <div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意群聊可移入此分组</p>'}</div></section>`;
     }
+    if (archivedEntries.length) {
+      const previewNames = archivedEntries.slice(0, 3).map(e => e.title).join('、')
+        + (archivedEntries.length > 3 ? ` 等 ${archivedEntries.length} 个群` : '');
+      const hasSelectedArchived = archivedEntries.some(e => e.selected);
+      contactsHtml += `<section class="sidebar-section archive-assistant-section"><div class="bot-contacts">
+        <button type="button" class="contact-row archive-assistant-row ${hasSelectedArchived ? 'selected' : ''}" data-action="open-archive-assistant" title="归档群助手（${archivedEntries.length} 个已归档群聊）">
+          <span class="contact-avatar-wrap"><span class="archive-assistant-avatar" aria-hidden="true">${icon('archive', 20)}</span></span>
+          <span class="contact-copy"><span class="contact-heading"><strong>归档群助手</strong><span class="archive-assistant-count">${archivedEntries.length}</span></span><span class="contact-preview">${esc(previewNames)}</span></span>
+        </button>
+      </div></section>`;
+    }
     if (systemEntries.length) {
       const collapsed = isFolderCollapsed('__system__');
       contactsHtml += `<section class="sidebar-section folder-section system-folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__system__"><span class="folder-header-label"><span>系统</span>${icon('chevronDown', 13)}</span><span class="folder-count">${systemEntries.length}</span></button>
         <div class="bot-contacts">${systemEntries.map(renderHomeEntryRow).join('')}</div></section>`;
     }
   }
-  const hiddenCount = allEntries.filter(entry => hiddenSet.has(entry.key)).length;
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
     ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
-    ${hiddenCount ? `<button data-action="manage-hidden">${icon('eyeOff', 19)}已隐藏群聊（${hiddenCount}）</button>` : ''}
     ${window.SummonDesktop?.openConnectionSettings ? `<button data-action="desktop-connection">${icon('computer', 19)}实例连接</button>` : ''}
     <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
     <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
@@ -2843,7 +2857,7 @@ function richText(value) {
 }
 function botMention(id, label) {
   const bot = botById(id); if (!bot) return esc(label || nameOf(id));
-  return `<button type="button" class="bot-mention" data-action="open-bot-details" data-id="${esc(id)}" style="--member-color:${esc(botAvatar(bot).color)}">${avatar(id, 25, '')}<span>@${esc(label || bot.name)}</span></button>`;
+  return `<button type="button" class="bot-mention" data-action="open-bot-details" data-id="${esc(id)}" style="--member-color:${esc(botAvatar(bot).color)}">@${esc(label || bot.name)}</button>`;
 }
 const refType = { room:'会话', event:'消息', file:'文件', workspace_file:'工作区活文件', bot:'Bot', session:'执行会话', conversation:'内部对话', call:'调用', wakeup:'订阅', connection:'连接' };
 const roomRef = id => ({ kind:'room', id });
@@ -2899,34 +2913,26 @@ function renderBotMemorySection(bot) {
 }
 
 function renderDelivery(message) {
-  if (message._delivery) return renderSendStatus(message);
-  const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run => {
+  return message._delivery ? renderSendStatus(message) : '';
+}
+
+function renderRoomSuspendedBanner() {
+  const runs = ui.roomSuspendedRuns || [];
+  if (!runs.length) return '';
+  const latestByBot = new Map();
+  for (const run of runs) latestByBot.set(run.bot_id, run);
+  return `<div class="suspended-runs-banner">${[...latestByBot.values()].map(run => {
     const errCode = run.error?.code;
     const isAuth = errCode === 'auth_expired';
     const isQuota = errCode === 'quota_exhausted';
-    const summary = isAuth ? '模型登录已失效，需要重新登录或换绑'
-      : isQuota ? '模型额度已用尽，需要更换模型连接'
-      : '暂时无法回复，请重试';
+    const summary = isAuth ? '模型登录已失效' : isQuota ? '模型额度已用尽' : '暂时无法回复';
     const actionBtn = isAuth
-      ? '<button type="button" class="text-button" data-action="navigate" data-view="models">重新登录 / 换绑</button>'
+      ? '<button type="button" class="text-button" data-action="navigate" data-view="models">重新登录</button>'
       : isQuota
-        ? '<button type="button" class="text-button" data-action="navigate" data-view="models">更换模型连接</button>'
+        ? '<button type="button" class="text-button" data-action="navigate" data-view="models">更换模型</button>'
         : `<button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button>`;
-    return `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} · ${esc(summary)}</span>${actionBtn}</div>`;
-  }).join('');
-  const msgState = ui.roomMessageStates?.[message.id];
-  const stateNotice = !suspended && msgState?.state === 'unanswered'
-    ? `<div class="message-delivery" role="status" data-message-state="unanswered"><span>${esc(msgState.unavailable_reason || '暂无人接手')}</span>
-        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`
-    : '';
-  const hostFallbackNotice = msgState?.host_fallback_delivered
-    ? `<div class="message-delivery" role="status"><span>后台成果已就绪并同步宿主私聊</span>
-        ${msgState.host_fallback_room_id ? `<button type="button" class="text-button" data-action="select-room" data-id="${esc(msgState.host_fallback_room_id)}">前往查看</button>` : ''}</div>`
-    : '';
-  const staleWaitNotice = (ui.roomStaleWaits || []).filter(w => w.origin_message_id === message.id).map(w =>
-    `<div class="message-delivery" role="status"><span>${esc(nameOf(w.bot_id))} 等待已超过 ${Math.floor(w.elapsed_seconds / 60)} 分钟</span>
-      <button type="button" class="text-button" data-action="stop-room">打断</button></div>`).join('');
-  return suspended + stateNotice + hostFallbackNotice + staleWaitNotice;
+    return `<div class="suspended-run-row" role="status"><span>${esc(nameOf(run.bot_id))} · ${esc(summary)}</span>${actionBtn}</div>`;
+  }).join('')}</div>`;
 }
 
 function getPromptDraft(msgId) {
@@ -3208,10 +3214,11 @@ async function skipExecPromptCard(key) {
   return submitExecPromptCard(key, skipId);
 }
 
-function renderChatMessage(message, timeline, grouped, isGroup) {
+function renderChatMessage(message, timeline, grouped, isGroup, previous = null) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
   const senderLabel = message.senderName || nameOf(sender);
-  const parent = timeline.find(item => item.id === message.replyTo);
+  const showReplyQuote = Boolean(message.replyTo && message.replyTo !== previous?.id);
+  const parent = showReplyQuote ? timeline.find(item => item.id === message.replyTo) : null;
   const pinned = roomById(ui.roomId)?.pins.some(ref => ref.kind === 'event' && ref.id === message.id);
   const mentions = message.mentions || [];
   const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(senderLabel)}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
@@ -3219,7 +3226,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
   const avatarSlot = own || (!isGroup && !platform) ? '' : grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
     ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'message:' + message.id)}</button>`
     : `<span class="message-avatar">${avatar(sender,36,'message:' + message.id)}</span>`;
-  const reply = message.replyTo ? `<button type="button" class="reply-quote" data-action="open-reference" data-kind="event" data-id="${esc(message.replyTo)}">
+  const reply = showReplyQuote ? `<button type="button" class="reply-quote" data-action="open-reference" data-kind="event" data-id="${esc(message.replyTo)}">
     <strong>${esc(parent ? nameOf(parent.senderId) : '引用消息')}</strong><span>${esc(parent ? messagePreview(parent) : '查看原文')}</span></button>` : '';
   const actions = message._delivery ? '' : `<div class="bubble-actions">
     <button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back',16)}</button>
@@ -3302,7 +3309,6 @@ function renderNewGroupDraft() {
           <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="描述你想建的群" placeholder="说说想建什么群、要做什么事，或点上方建议直接开始…" ${ui.creatingRoomBusy ? 'disabled' : ''}>${esc(draftText)}</textarea>
           <button type="submit" class="composer-send" ${!ui.protocolReady || ui.creatingRoomBusy || !draftText.trim() ? 'disabled' : ''} aria-label="创建并发送">${icon('send',22)}</button>
         </form>
-        <div class="composer-hint">Enter 创建并发送<span> · </span>Shift + Enter 换行</div>
       </div>
     </section>
   </div>`;
@@ -3323,14 +3329,17 @@ function renderChat() {
     const divider = day !== previousDay ? `<div class="date-divider">${esc(day)}</div>` : '';
     const grouped = day === previousDay && previous?.senderId === message.senderId && elapsed >= 0 && elapsed <= 120000;
     previousDay = day;
-    return divider + renderChatMessage(message, timeline, grouped, isGroup);
+    return divider + renderChatMessage(message, timeline, grouped, isGroup, previous);
   }).join('');
-  const subtitle = isGroup ? `${members.length} 位伙伴` : bot ? botActivity(bot).text : '';
+  const archived = isArchivedRoom(room);
+  const subtitle = archived ? `已归档 · ${members.length} 位伙伴` : isGroup ? `${members.length} 位伙伴` : bot ? botActivity(bot).text : '';
   const header = `<div class="floating-header"><div class="header-left"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack',23)}</button>
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
     ${room ? `<button type="button" class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
-    <div class="chat-header-actions">${room ? '<button type="button" class="text-button" data-action="stop-room" title="一键打断本群全部在途工作">打断在途</button>' : ''}</div></div>`;
+    <div class="chat-header-actions">${room && archived
+      ? `<button type="button" class="secondary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button>`
+      : ''}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
@@ -3339,7 +3348,7 @@ function renderChat() {
   const body = `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
       ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}</div>
-      ${renderRoomPendingPrompts()}
+      ${archived ? '' : renderRoomPendingPrompts()}
       ${renderChatComposer(room, members)}`;
   return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}"
     style="--accent:${esc(currentAccent())}"><section class="conversation">${header}${body}</section>${ui.detailOpen && room ? renderDetailPanel(room, ui.profileBotId ? profileBot() : null) : ''}</div>`;
@@ -3400,13 +3409,16 @@ function collectRoomActivityItems(room, members) {
 
 function renderRoomExecutionDrawer(room, liveItems) {
   if (ui.openRoomExecution !== room.id) return '';
-  const executions = [...(ui.roomExecutions || [])].sort((a, b) => {
+  const allExecutions = [...(ui.roomExecutions || [])].sort((a, b) => {
     const aLive = LIVE_EXEC_STATUSES.has(a.status) ? 0 : 1;
     const bLive = LIVE_EXEC_STATUSES.has(b.status) ? 0 : 1;
     if (aLive !== bLive) return aLive - bLive;
     return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
   });
-  const liveBotsInExec = new Set(executions.filter(e => LIVE_EXEC_STATUSES.has(e.status)).map(e => e.execution_actor?.id || e.bot_id));
+  const liveExecutions = allExecutions.filter(e => LIVE_EXEC_STATUSES.has(e.status));
+  const recentFinished = allExecutions.filter(e => !LIVE_EXEC_STATUSES.has(e.status)).slice(0, 3);
+  const executions = [...liveExecutions, ...recentFinished];
+  const liveBotsInExec = new Set(liveExecutions.map(e => e.execution_actor?.id || e.bot_id));
   const syntheticLiveRows = liveItems.filter(item => !liveBotsInExec.has(item.botId)).map(item => `
     <div class="bot-execution-item is-live">
       ${face(botAvatar(item.botId), 24, { key: `drawer-live:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
@@ -3438,10 +3450,10 @@ function renderRoomExecutionDrawer(room, liveItems) {
       </div>
     </button>`;
   }).join('');
-  const totalCount = executions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
+  const activeCount = liveExecutions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
   return `<section class="bot-execution-drawer" role="region" aria-label="执行过程">
     <div class="bot-execution-drawer-head">
-      <strong>执行过程${totalCount ? `（${totalCount}）` : ''}</strong>
+      <strong>${activeCount ? `进行中（${activeCount}）` : '最近执行'}</strong>
       <div class="bot-execution-drawer-actions">
         <button type="button" class="text-button" data-action="navigate" data-view="executions">全部记录</button>
         <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起执行过程">${icon('close', 15)}</button>
@@ -3470,10 +3482,13 @@ function renderFloatingBotActivity(room, members) {
           </button>`).join('')}
         </div>
       </div>
-      <button type="button" class="activity-expand-pill" data-action="toggle-room-executions" aria-expanded="${drawerOpen}" title="${drawerOpen ? '收起执行过程' : '展开执行过程'}">
-        <span class="activity-ticker-badge" data-activity-badge hidden></span>
-        <span class="activity-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
-      </button>
+      <div class="bot-activity-controls">
+        <button type="button" class="activity-stop-btn" data-action="stop-room" title="停止本群在途工作">停止</button>
+        <button type="button" class="activity-expand-pill" data-action="toggle-room-executions" aria-expanded="${drawerOpen}" title="${drawerOpen ? '收起执行过程' : '展开执行过程'}">
+          <span class="activity-ticker-badge" data-activity-badge hidden></span>
+          <span class="activity-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+        </button>
+      </div>
     </div>
   </div>`;
 }
@@ -3540,6 +3555,12 @@ function syncBotActivityDock() {
 }
 
 function renderChatComposer(room, members) {
+  if (isArchivedRoom(room)) {
+    return `<div class="composer-wrap"><div class="archived-room-bar" role="status">
+      <div class="archived-room-bar-copy">${icon('archive', 18)}<span>该群聊已归档到群助手，Bot 自动唤醒已暂停，历史记录与资料均已保留。</span></div>
+      <button type="button" class="primary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档继续聊天</button>
+    </div></div>`;
+  }
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"
       class="mention-choice" data-action="toggle-mention" data-id="${esc(member.id)}" aria-pressed="${mentions.includes(member.id)}">
@@ -3548,11 +3569,8 @@ function renderChatComposer(room, members) {
   const reply = selectedReply ? `<div class="reply-preview">${avatar(selectedReply.senderId,25,'')}<span>回复 ${esc(nameOf(selectedReply.senderId))}
     · ${esc(messagePreview(selectedReply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
   const floatingActivity = renderFloatingBotActivity(room, members);
-  const chainNotice = ui.roomChainState?.paused
-    ? `<div class="message-delivery" role="status" style="margin:0 0 8px"><span>连续纯文本自动讨论已暂停（发新消息即可自动重置）</span>
-        <button type="button" class="text-button" data-action="resume-room-chain">继续讨论</button></div>`
-    : '';
-  return `<div class="composer-wrap">${floatingActivity}${chainNotice}${reply}${renderAttachmentDrafts()}
+  const suspendedBanner = renderRoomSuspendedBanner();
+  return `<div class="composer-wrap">${floatingActivity}${suspendedBanner}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" ${ref.kind === 'workspace_file' ? `data-workspace-id="${esc(ref.workspace_id)}" data-path="${esc(ref.path)}"` : `data-id="${esc(ref.id)}"`}>${icon('close',14)}</button></span>`).join('')}</div>` : ''}
     <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
@@ -3562,13 +3580,13 @@ function renderChatComposer(room, members) {
         data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
         <button class="icon-button" type="button" data-action="add-reference" title="添加资料引用" aria-label="添加资料引用">${icon('link',18)}</button></div>
       <button type="submit" class="composer-send" ${sendBusy(room.id) ? 'disabled' : ''} aria-label="发送消息">${icon('send',22)}</button>
-    </form><div class="composer-hint">Enter 发送<span> · </span>Shift + Enter 换行</div></div>`;
+    </form></div>`;
 }
 
 function renderDetailPanel(room, bot) {
   const tab = ui.detailTab;
   const tabs = bot ? [{ id:'details', label:'详情' }, { id:'library', label:'资料' }] :
-    [{ id:'details', label:'关注' }, { id:'members', label:'成员' }, { id:'library', label:'资料' }, { id:'pins', label:'置顶' }];
+    [{ id:'members', label:'成员' }, { id:'library', label:'资料' }, { id:'pins', label:'置顶' }, { id:'details', label:'订阅' }];
   let body;
   if (bot && ui.avatarEditing) body = renderAvatarPicker('edit');
   else if (tab === 'members') {
@@ -3579,7 +3597,7 @@ function renderDetailPanel(room, bot) {
         : memberBot?.role_id === 'tool-onboarding' ? '接口' : '';
       return `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44)}<span>${esc(nameOf(id))}${badge ? ` <em class="member-role-badge">${esc(badge)}</em>` : ''}</span></button>`;
     }).join('')}
-      <button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button></div>`;
+      ${isArchivedRoom(room) ? '' : `<button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button>`}</div>`;
   } else if (tab === 'library') {
     const space = bot ? { kind:'bot', id:bot.id } : roomRef(room.id);
     const filesList = (ui.roomFiles && ui.roomFiles.length) ? ui.roomFiles : (bot ? (bot.bot_files || []) : (room.room_files || []));
@@ -3612,9 +3630,12 @@ function renderDetailPanel(room, bot) {
   const toolbarLeft = showBackToRoom
     ? `<button type="button" class="text-button" data-action="back-to-room-details">${icon('back', 15)} 返回群聊</button>`
     : `<span class="subtle" style="font-size:var(--text-caption)">${bot ? (ui.avatarEditing ? '编辑头像' : '伙伴详情') : '会话详情'}</span>`;
+  const archived = isArchivedRoom(room);
   const footer = bot
     ? `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>${renderBotControls(bot)}</div>`
-    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="stop-room">打断在途</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button>${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`;
+    : archived
+      ? `<div class="detail-panel-footer"><button type="button" class="primary-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button>${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`
+      : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button>${room.archivable ? `<button type="button" class="secondary-button" data-action="archive-room" data-id="${esc(room.id)}">归档</button>` : ''}${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`;
   return `<aside class="detail-panel" data-section="${esc(tab + ':' + (bot?.id || room.id))}"><div class="detail-panel-inner">
     <div class="detail-panel-toolbar">${toolbarLeft}<button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',20)}</button></div>
     <div class="profile-identity">${bot ? `<button class="profile-avatar" data-action="edit-avatar" aria-label="编辑头像" title="点击实时编辑头像">${face(ui.avatarEditing ? ui.avatarDraft : botAvatar(bot),104,{ key:'slot:profile',preview:true,followPointer:true })}</button>` : groupAvatar(room,92)}
@@ -4040,15 +4061,6 @@ window.addEventListener('pagehide', () => { persistClientSession(); });
 syncMobileViewport();
 
 document.addEventListener('toggle', event => { if(event.target.matches?.('.crew-custom')) ui.avatarCustomOpen = event.target.open; }, true);
-document.addEventListener('toggle', event => {
-  const detail = event.target;
-  if (!detail.isConnected || detail.closest?.('[data-motion-ghost]')) return;
-  if (detail.matches?.('[data-delivery-id]')) {
-    const expanded = ui.expandedDeliveries ||= new Set();
-    if (detail.open) expanded.add(detail.dataset.deliveryId);
-    else expanded.delete(detail.dataset.deliveryId);
-  }
-},true);
 
 const initialView = location.hash.slice(1);
 if (tabs.some(tab => tab.id === initialView)) ui.view = initialView;

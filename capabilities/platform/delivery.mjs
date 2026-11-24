@@ -423,6 +423,9 @@ export class Deliveries {
   }
 
   queueEvent(event, waits = [], matchWakeups = true, excludedBotId) {
+    if (event.roomId && this.store.get('rooms', event.roomId)?.archivedAt) {
+      matchWakeups = false;
+    }
     if (event.type === 'work.tool' && event.roomId) {
       this.noteRoomActivity(event.roomId, 'tool_progress');
     }
@@ -482,6 +485,10 @@ export class Deliveries {
         const next_due = rule.interval_ms ? scheduledMs + (Math.floor((now - scheduledMs) / rule.interval_ms) + 1) * rule.interval_ms : null;
         const targetBot = this.store.get('platform-bots', bot_id);
         if (!targetBot || !targetBot.enabled || targetBot.archivedAt) {
+          this.store.save(wakeupRecords, { id: wakeup.id, next_due, ...(!rule.interval_ms ? { enabled: false, archived: true } : {}) });
+          continue;
+        }
+        if (rule.scope?.kind === 'room' && this.store.get('rooms', rule.scope.id)?.archivedAt) {
           this.store.save(wakeupRecords, { id: wakeup.id, next_due, ...(!rule.interval_ms ? { enabled: false, archived: true } : {}) });
           continue;
         }
@@ -549,6 +556,22 @@ export class Deliveries {
         if (item.wait_refs?.length) continue;
         const bot = this.store.get('platform-bots', item.bot_id);
         if (bot && bot.enabled && !bot.archivedAt) continue;
+        this.store.save(deliveryRecords, { id: item.id, status: 'skipped_while_paused', processed_at: now, retry_at: null });
+        purged++;
+      }
+    });
+    if (purged) this.emit('delivery');
+    return purged;
+  }
+
+  purgeArchivedRoomDeliveries(roomId) {
+    const now = new Date().toISOString();
+    let purged = 0;
+    this.store.transaction(() => {
+      for (const item of this.store.list(deliveryRecords)) {
+        if (item.event?.roomId !== roomId) continue;
+        if (!['pending', 'received', 'unknown'].includes(item.status)) continue;
+        if (item.wait_refs?.length) continue;
         this.store.save(deliveryRecords, { id: item.id, status: 'skipped_while_paused', processed_at: now, retry_at: null });
         purged++;
       }

@@ -1335,6 +1335,20 @@ export class SummonPlatform {
     return result;
   }
 
+  async archiveRoom(roomId, revision, actor = user) {
+    const result = this.room.archiveRoom(roomId, revision, actor);
+    this.deliveries.purgeArchivedRoomDeliveries(result.id);
+    await this.stopRoom(result.id, actor);
+    this.emit('room', result);
+    return result;
+  }
+
+  async restoreRoom(roomId, revision, actor = user) {
+    const result = this.room.restoreRoom(roomId, revision, actor);
+    this.emit('room', result);
+    return result;
+  }
+
   async stopRoom(roomId, actor = user) {
     const room = this.room.room(roomId, actor.id);
     const conversations = this.store.list('platform-conversations').filter(c => c.space?.kind === 'room' && c.space.id === room.id);
@@ -1650,22 +1664,11 @@ export class SummonPlatform {
     };
   }
 
-  roomMessageStates(roomId, messages = []) {
-    const result = {};
-    for (const msg of messages) {
-      if (msg.senderId === 'user') {
-        const status = this.roomMessageStatus(roomId, msg);
-        if (status) result[msg.id] = status;
-      }
-    }
-    return result;
-  }
-
   checkUnansweredFallbacks() {
     if (this.draining || !this.runtime) return;
     const cutoff = Date.now() - 15 * 60 * 1000;
     for (const room of this.store.list('rooms')) {
-      if (room.mode !== 'group') continue;
+      if (room.mode !== 'group' || room.archivedAt) continue;
       const recent = this.room.latestMessage.get(room.id);
       if (!recent) continue;
       const latest = JSON.parse(recent.data);
@@ -1691,33 +1694,6 @@ export class SummonPlatform {
       this.deliveries.enqueue(fallbackBot.id, event, [{ id: keyOf('unanswered_fallback', latest.id), revision: 1, kind: 'unanswered_fallback' }], []);
       this.emit('room');
     }
-  }
-
-  triggerManualFallback(roomId, messageId, botId) {
-    const room = this.room.room(roomId, user.id);
-    const bot = botId ? this.getBot(botId) : this.naturalFallbackBot(room);
-    if (!bot || !bot.enabled || bot.archivedAt || !room.members.includes(bot.id)) {
-      reject('bot_unavailable', 'Selected Bot is unavailable in this Room', 409);
-    }
-    const row = this.room.messageRow.get(messageId);
-    if (!row) reject('message_not_found', 'Message not found', 404);
-    const msg = this.room.projectMessage(row);
-    if (msg.roomId !== room.id) reject('message_not_found', 'Message does not belong to this Room', 404);
-    const event = {
-      ...this.room.messageEventFor(msg),
-      fallback_reason: 'host_manual_fallback',
-      fallback_guidance: 'The host explicitly asked you to respond to this message.',
-    };
-    const delivery = this.deliveries.enqueue(bot.id, event, [{ id: keyOf('manual_fallback', messageId, randomUUID()), revision: 1, kind: 'unanswered_fallback' }], []);
-    this.store.save('unanswered-fallbacks', {
-      id: messageId,
-      room_id: room.id,
-      bot_id: bot.id,
-      manual: true,
-      created_at: new Date().toISOString(),
-    });
-    this.emit('room');
-    return { ok: true, bot_id: bot.id, delivery_id: delivery.id };
   }
 
   async tick({ observations = true, deliveries = true } = {}) {

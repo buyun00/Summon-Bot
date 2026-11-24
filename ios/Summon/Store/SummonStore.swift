@@ -290,13 +290,8 @@ final class SummonStore {
         let live: Set<String> = ["opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
         return (roomExecutions[id] ?? []).filter { live.contains($0["status"].stringValue) }
     }
-    func suspendedRunsForMessage(roomID: String, messageID: String) -> [SummonJSONValue] {
-        (roomSuspendedRuns[roomID] ?? []).filter { run in
-            (run["event_ids"].array ?? []).contains { $0.string == messageID }
-        }
-    }
-    func messageState(roomID: String, messageID: String) -> SummonJSONValue? {
-        roomMessageStates[roomID]?[messageID]
+    func suspendedRunsForRoom(_ roomID: String) -> [SummonJSONValue] {
+        roomSuspendedRuns[roomID] ?? []
     }
     func retrySuspendedRun(conversationID: String, runID: String?) async throws {
         var payload: [String: SummonJSONValue] = [
@@ -306,14 +301,8 @@ final class SummonStore {
         _ = try await request(path: "/api/executions/retry", method: "POST", body: .object(payload))
         scheduleRefresh()
     }
-    func triggerManualFallback(roomID: String, messageID: String, botID: String? = nil) async throws {
-        var payload: [String: SummonJSONValue] = [:]
-        if let botID, !botID.isEmpty { payload["bot_id"] = .string(botID) }
-        _ = try await request(
-            path: Self.roomPath(roomID) + "/messages/" + SummonAPIClient.component(messageID) + "/fallback",
-            method: "POST",
-            body: .object(payload)
-        )
+    func stopRoom(_ roomID: String) async throws {
+        _ = try await request(path: Self.roomPath(roomID) + "/stop", method: "POST", body: .object([:]))
         scheduleRefresh()
     }
     func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {

@@ -149,7 +149,7 @@ const definitions = [
       role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator. Regular group Rooms automatically include the group lead Bot (created synchronously), EggBot, and the tool-onboarding Bot, and can bind one writable project workspace shared by current members.',
-    object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId, lead_name: text, skip_welcome: flag }, ['members'])],
+    object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId, lead_name: text, skip_welcome: flag, auto_title: flag }, ['members'])],
   ['configure_room', 'Update the title, membership, pins or project workspace in one Room revision. Any member can bind a workspace id or absolute host directory path (auto-registered as a workspace) or set workspace:null to unbind.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],

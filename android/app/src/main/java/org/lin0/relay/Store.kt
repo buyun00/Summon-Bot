@@ -266,12 +266,8 @@ class SummonStore(private val app: Context) {
         val live = setOf("opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input")
         return roomExecutions[id].orEmpty().filter { it["status"].stringValue in live }
     }
-    fun suspendedRunsForMessage(roomId: String, messageId: String): List<SummonJson> =
-        roomSuspendedRuns[roomId].orEmpty().filter { run ->
-            run["event_ids"].array.orEmpty().any { it.string == messageId }
-        }
-    fun messageState(roomId: String, messageId: String): SummonJson? =
-        roomMessageStates[roomId]?.get(messageId)
+    fun suspendedRunsForRoom(roomId: String): List<SummonJson> =
+        roomSuspendedRuns[roomId].orEmpty()
     suspend fun retrySuspendedRun(conversationId: String, runId: String?) {
         val fields = mutableListOf(
             "target" to SummonJson.obj("kind" to SummonJson.Str("conversation"), "id" to SummonJson.Str(conversationId))
@@ -280,9 +276,8 @@ class SummonStore(private val app: Context) {
         request("/api/executions/retry", "POST", SummonJson.Obj(fields.toMap()))
         scheduleRefresh()
     }
-    suspend fun triggerManualFallback(roomId: String, messageId: String, botId: String? = null) {
-        val body = if (!botId.isNullOrBlank()) SummonJson.obj("bot_id" to SummonJson.Str(botId)) else SummonJson.obj()
-        request(roomPath(roomId) + "/messages/" + SummonApiClient.component(messageId) + "/fallback", "POST", body)
+    suspend fun stopRoom(roomId: String) {
+        request(roomPath(roomId) + "/stop", "POST", SummonJson.obj())
         scheduleRefresh()
     }
     fun pendingMessage(message: SummonMessage): SummonPendingMessage? =

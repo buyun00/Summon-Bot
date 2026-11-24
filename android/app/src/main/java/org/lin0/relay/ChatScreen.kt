@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -334,8 +335,9 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                     }
                 }
             }
-            items(messages, key = { it.id }) { message ->
-                MessageRow(store, roomID, message, onOpenModels = onOpenModels) { store.setDraftReply(message.id, roomID) }
+            itemsIndexed(messages, key = { _, it -> it.id }) { index, message ->
+                val previousId = if (index > 0) messages[index - 1].id else null
+                MessageRow(store, roomID, message, previousId) { store.setDraftReply(message.id, roomID) }
                 Spacer(Modifier.height(18.dp))
             }
         }
@@ -470,10 +472,12 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                             .thenByDescending { it["updated_at"].string ?: it["created_at"].string.orEmpty() }
                     )
                 }
-                val liveExecBots = sortedExecs.filter { it["status"].stringValue in LIVE_EXECUTION_STATUSES }
-                    .mapNotNull { it["execution_actor"]["id"].string ?: it["bot_id"].string }.toSet()
+                val liveExecs = sortedExecs.filter { it["status"].stringValue in LIVE_EXECUTION_STATUSES }
+                val visibleExecs = liveExecs + sortedExecs.filter { it["status"].stringValue !in LIVE_EXECUTION_STATUSES }.take(3)
+                val liveExecBots = liveExecs.mapNotNull { it["execution_actor"]["id"].string ?: it["bot_id"].string }.toSet()
                 val syntheticLive = activeBotItems.filter { it.key !in liveExecBots }
-                val totalCount = sortedExecs.size + syntheticLive.size
+                val activeCount = liveExecs.size + syntheticLive.size
+                val totalCount = visibleExecs.size + syntheticLive.size
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = palette.glassPill,
@@ -488,7 +492,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                         ) {
                             Icon(Icons.Filled.Terminal, null, tint = palette.textSecondary, modifier = Modifier.size(15.dp))
                             Text(
-                                "执行过程（$totalCount）",
+                                if (activeCount > 0) "进行中（$activeCount）" else "最近执行",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = palette.textSecondary,
                                 modifier = Modifier.weight(1f),
@@ -521,7 +525,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                                     }
                                 }
                             }
-                            sortedExecs.forEach { exec ->
+                            visibleExecs.forEach { exec ->
                                 val ref = SummonReference.parse(exec["execution_ref"]) ?: return@forEach
                                 val status = exec["status"].stringValue
                                 val isLive = status in LIVE_EXECUTION_STATUSES
@@ -619,12 +623,74 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                                 color = palette.textSecondary,
                             )
                         }
+                        Text(
+                            "停止",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable {
+                                    scope.launch {
+                                        runCatching { store.stopRoom(roomID) }
+                                            .onFailure { localError = it.localizedMessage }
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
                         Icon(
                             if (executionsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                             if (executionsExpanded) "收起执行过程" else "展开执行过程",
                             tint = palette.textSecondary,
                             modifier = Modifier.size(16.dp),
                         )
+                    }
+                }
+            }
+            val roomSuspendedRuns = store.suspendedRunsForRoom(roomID)
+            if (roomSuspendedRuns.isNotEmpty()) {
+                val latestByBot = linkedMapOf<String, SummonJson>()
+                roomSuspendedRuns.forEach { run -> latestByBot[run["bot_id"].stringValue] = run }
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    latestByBot.values.forEach { run ->
+                        val botName = store.name(run["bot_id"].stringValue)
+                        val errCode = run["error"]["code"].stringValue
+                        val isAuth = errCode == "auth_expired"
+                        val isQuota = errCode == "quota_exhausted"
+                        val summary = when {
+                            isAuth -> "模型登录已失效"
+                            isQuota -> "模型额度已用尽"
+                            else -> "暂时无法回复"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = palette.warn.copy(alpha = 0.1f),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text("$botName · $summary", style = MaterialTheme.typography.labelSmall, color = palette.warn)
+                                val convId = run["conversation_id"].string
+                                if (isAuth) {
+                                    TextButton(onClick = onOpenModels) { Text("重新登录") }
+                                } else if (isQuota) {
+                                    TextButton(onClick = onOpenModels) { Text("更换模型") }
+                                } else if (convId != null) {
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            runCatching { store.retrySuspendedRun(convId, run["run_id"].string) }
+                                                .onSuccess { localError = null }
+                                                .onFailure { localError = it.localizedMessage }
+                                        }
+                                    }) { Text("重试") }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -974,7 +1040,7 @@ private fun CodeBlockCard(language: String, code: String) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, onOpenModels: () -> Unit = {}, onReply: () -> Unit) {
+private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, previousId: String? = null, onReply: () -> Unit) {
     val palette = LocalSummonPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -986,7 +1052,6 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
     val saved = pending == null || pending.status == "sent"
     var reference by remember { mutableStateOf<SummonReference?>(null) }
     var menu by remember { mutableStateOf(false) }
-    var showDelivery by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start) {
@@ -1031,7 +1096,7 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         }
                     }
                 }
-                message.replyTo?.let { id ->
+                message.replyTo?.takeIf { it != previousId }?.let { id ->
                     val quoted = store.messagesForRoom(roomID).firstOrNull { it.id == id }
                     if (quoted != null) {
                         Row(
@@ -1143,98 +1208,6 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                                 enabled = store.protocolReady && roomID !in store.sendingRoomIDs,
                                 onClick = { scope.launch { store.retryMessage(pending.clientID) } },
                             ) { Text("查询并重试") }
-                        }
-                    }
-                } else if (message.isOwn) {
-                    val deliveries = store.deliveryFacts(message.id)
-                    if (deliveries.isEmpty()) {
-                        Text("消息已保存", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
-                    } else {
-                        Column(horizontalAlignment = Alignment.End, modifier = Modifier.animateContentSize()) {
-                            Text(
-                                if (showDelivery) "消息已保存 ▴" else "消息已保存 ▾",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textSecondary,
-                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { showDelivery = !showDelivery }.padding(horizontal = 4.dp, vertical = 2.dp),
-                            )
-                            if (showDelivery) {
-                                deliveries.forEach { fact ->
-                                    Text(
-                                        store.name(fact.botId) + " · " + summonStatus(fact.status),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = palette.textSecondary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                val suspendedRuns = store.suspendedRunsForMessage(roomID, message.id)
-                suspendedRuns.forEach { run ->
-                    val botName = store.name(run["bot_id"].stringValue)
-                    val errCode = run["error"]["code"].stringValue
-                    val isAuth = errCode == "auth_expired"
-                    val isQuota = errCode == "quota_exhausted"
-                    val summary = when {
-                        isAuth -> "模型登录已失效，需要重新登录或换绑"
-                        isQuota -> "模型额度已用尽，需要更换模型连接"
-                        else -> "暂时无法回复，请重试"
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("$botName · $summary", style = MaterialTheme.typography.labelSmall, color = palette.warn)
-                        val convId = run["conversation_id"].string
-                        if (isAuth) {
-                            TextButton(onClick = onOpenModels) { Text("重新登录 / 换绑") }
-                        } else if (isQuota) {
-                            TextButton(onClick = onOpenModels) { Text("更换模型连接") }
-                        } else if (convId != null) {
-                            TextButton(onClick = {
-                                scope.launch {
-                                    runCatching { store.retrySuspendedRun(convId, run["run_id"].string) }
-                                        .onSuccess { error = null }
-                                        .onFailure { error = it.localizedMessage }
-                                }
-                            }) { Text("重试") }
-                        }
-                    }
-                }
-                val msgState = store.messageState(roomID, message.id)
-                if (suspendedRuns.isEmpty() && msgState?.get("state")?.string == "unanswered") {
-                    val availableBots = room?.members.orEmpty().mapNotNull { store.bot(it) }.filter { !it.isPaused }
-                    var fallbackMenu by remember(message.id) { mutableStateOf(false) }
-                    val fallbackReason = msgState["unavailable_reason"].string
-                        ?: if (availableBots.isEmpty()) "当前暂无可用成员，请先启用或添加成员" else "暂无人接手"
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(fallbackReason,
-                            style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
-                        if (availableBots.size > 1) {
-                            Box {
-                                TextButton(onClick = { fallbackMenu = true }) { Text("点名补答") }
-                                DropdownMenu(expanded = fallbackMenu, onDismissRequest = { fallbackMenu = false }) {
-                                    availableBots.forEach { targetBot ->
-                                        DropdownMenuItem(
-                                            text = { Text(targetBot.name) },
-                                            onClick = {
-                                                fallbackMenu = false
-                                                scope.launch {
-                                                    runCatching { store.triggerManualFallback(roomID, message.id, targetBot.id) }
-                                                        .onSuccess { error = null }
-                                                        .onFailure { error = it.localizedMessage }
-                                                }
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        } else if (availableBots.size == 1) {
-                            val onlyBot = availableBots.first()
-                            TextButton(onClick = {
-                                scope.launch {
-                                    runCatching { store.triggerManualFallback(roomID, message.id, onlyBot.id) }
-                                        .onSuccess { error = null }
-                                        .onFailure { error = it.localizedMessage }
-                                }
-                            }) { Text("点名补答") }
                         }
                     }
                 }

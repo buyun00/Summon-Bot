@@ -552,9 +552,9 @@ html.dark .code-block { background: rgba(0, 0, 0, 0.34); }
 
 .bot-mention {
   background: color-mix(in srgb, var(--member-color, #648468) 14%, transparent);
-  color: var(--ink);
+  color: var(--ink-2);
   border-radius: 999px;
-  padding: 1px 8px 1px 4px;
+  padding: 1px 8px;
 }
 .bot-mention:hover { background: color-mix(in srgb, var(--member-color, #648468) 22%, transparent); }
 .outgoing .bot-mention {
@@ -586,16 +586,40 @@ html.dark .outgoing .bot-mention {
 }
 .reference-chip:hover { background: var(--active); color: var(--ink); }
 
+.chat-message:hover,
+.chat-message:focus-within { z-index: 3; }
 .bubble-actions {
-  background: transparent;
+  background: var(--pill-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
   color: var(--muted);
-  gap: 6px;
+  gap: 2px;
+  padding: 1px 4px;
+  border-radius: 999px;
 }
 .bubble-actions button {
-  padding: 2px 6px; border-radius: 7px;
+  padding: 2px 6px; border-radius: 999px;
   transition: background 140ms ease, color 140ms ease;
 }
 .bubble-actions button:hover { background: var(--hover); color: var(--ink); }
+
+.suspended-runs-banner {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 0 8px 8px;
+}
+.suspended-run-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--pill-bg));
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--line));
+  font-size: calc(12.5px * var(--ui-font-scale, 1));
+  color: var(--ink-2);
+}
+.suspended-run-row .text-button {
+  flex: none; color: var(--warn); font-weight: 600; text-decoration: none;
+}
+.suspended-run-row .text-button:hover { text-decoration: underline; }
 
 /* Delivery Receipt Disclosure & Retry */
 .message-delivery {
@@ -705,6 +729,22 @@ html.dark .outgoing .bot-mention {
 }
 .activity-summary {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bot-activity-controls {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+}
+.activity-stop-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--muted); background: transparent;
+  border: 1px solid transparent; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.activity-stop-btn:hover {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--red) 28%, transparent);
+  color: var(--red);
 }
 .activity-expand-pill {
   flex: none; display: inline-flex; align-items: center; gap: 4px;
@@ -1334,16 +1374,60 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
 .floating-menu-sub-item { padding: 7px 10px 7px 20px; font-size: calc(12.5px * var(--ui-font-scale, 1)); }
 .floating-menu-sub-item.accent { color: var(--ok); font-weight: 550; }
 
-.hidden-list { display: flex; flex-direction: column; gap: 10px; }
-.hidden-list-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 12px; border-radius: 14px; background: var(--hover);
+.archive-assistant-section { margin-top: 6px; }
+.archive-assistant-avatar {
+  width: 44px; height: 44px; border-radius: 14px;
+  display: inline-grid; place-items: center;
+  background: var(--hover); border: 1px solid var(--line);
+  color: var(--muted); flex: none;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
-.hidden-list-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.hidden-list-copy strong, .hidden-list-copy small {
+.archive-assistant-row:hover .archive-assistant-avatar,
+.archive-assistant-row.selected .archive-assistant-avatar {
+  color: var(--ink); border-color: var(--bubble-stroke);
+}
+.archive-assistant-count {
+  flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--hover); color: var(--muted);
+  font-size: calc(11px * var(--ui-font-scale, 1)); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.archive-assistant-panel { display: flex; flex-direction: column; gap: 4px; }
+.archive-assistant-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.archive-assistant-header strong {
+  flex: 1; min-width: 0; font-size: calc(13.5px * var(--ui-font-scale, 1));
+  font-weight: 600; color: var(--ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.hidden-list-copy small { color: var(--muted); }
+.archive-assistant-back {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 5px 8px 5px 4px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-size: calc(12.5px * var(--ui-font-scale, 1)); font-weight: 500;
+}
+.archive-assistant-back:hover { background: var(--hover); color: var(--ink); }
+.contact-archive-tag {
+  flex: none; padding: 1px 6px; border-radius: 999px;
+  background: var(--hover); color: var(--muted);
+  font-size: calc(10.5px * var(--ui-font-scale, 1)); font-weight: 500;
+}
+.contact-row.is-archived .contact-heading strong { opacity: 0.85; }
+.archived-room-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  padding: 13px 16px; border-radius: 18px;
+  background: var(--paper-elevated); border: 1px solid var(--line);
+}
+.archived-room-bar-copy {
+  display: inline-flex; align-items: center; gap: 10px; min-width: 0; flex: 1;
+  color: var(--muted); font-size: calc(13px * var(--ui-font-scale, 1)); line-height: 1.45;
+}
+.archived-room-bar-copy svg { flex: none; opacity: 0.78; }
+.app-shell.sidebar-collapsed .archive-assistant-header { display: none !important; }
+.app-shell.sidebar-collapsed .archive-assistant-avatar { width: 42px; height: 42px; border-radius: 13px; }
 
 html.summon-resizing *,
 html.summon-resizing *::before,

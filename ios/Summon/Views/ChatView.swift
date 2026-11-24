@@ -13,6 +13,7 @@ struct ChatView: View {
     @State private var staging = false
     @State private var showReferences = false
     @State private var showDetails = false
+    @State private var showModels = false
     @State private var activeExecutionRef: SummonReference?
     @State private var executionsExpanded = false
     @State private var activityTickerIndex = 0
@@ -128,8 +129,9 @@ struct ChatView: View {
                         Button("加载更早消息") { Task { await store.loadRoom(roomID, older: true) } }
                             .buttonStyle(.bordered).disabled(!store.protocolReady)
                     }
-                    ForEach(messages) { message in
-                        MessageRow(message: message, roomID: roomID) {
+                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                        let previousID = index > 0 ? messages[index - 1].id : nil
+                        MessageRow(message: message, roomID: roomID, previousID: previousID) {
                             store.setDraftReply(message.id, for: roomID)
                             composing = true
                         }.id(message.id)
@@ -244,6 +246,7 @@ struct ChatView: View {
             Task { await stagePhoto(item) }
         }
         .summonSheet(isPresented: $showDetails) { NavigationStack { RoomDetailsView(roomID: roomID) } }
+        .summonSheet(isPresented: $showModels) { ModelSettingsView() }
         .summonSheet(item: $activeExecutionRef) { ref in
             NavigationStack {
                 SummonExecutionView(ref: ref)
@@ -274,13 +277,16 @@ struct ChatView: View {
 
     private var executionDrawer: some View {
         let sorted = sortedRoomExecutions
-        let activeExecBotIDs = Set(sorted.filter { Self.liveExecutionStatuses.contains($0["status"].stringValue) }
-            .compactMap { $0["execution_actor"]["id"].string ?? $0["bot_id"].string })
+        let liveExecs = sorted.filter { Self.liveExecutionStatuses.contains($0["status"].stringValue) }
+        let recentFinished = Array(sorted.filter { !Self.liveExecutionStatuses.contains($0["status"].stringValue) }.prefix(3))
+        let visibleExecs = liveExecs + recentFinished
+        let activeExecBotIDs = Set(liveExecs.compactMap { $0["execution_actor"]["id"].string ?? $0["bot_id"].string })
         let syntheticLive = activeBotItems.filter { !activeExecBotIDs.contains($0.id) }
-        let totalCount = sorted.count + syntheticLive.count
+        let activeCount = liveExecs.count + syntheticLive.count
+        let totalCount = visibleExecs.count + syntheticLive.count
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Label("执行过程（\(totalCount)）", systemImage: "terminal")
+                Label(activeCount > 0 ? "进行中（\(activeCount)）" : "最近执行", systemImage: "terminal")
                     .summonFont(.caption, weight: .semibold)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -321,7 +327,7 @@ struct ChatView: View {
                         }
                         .padding(.vertical, 4)
                     }
-                    ForEach(Array(sorted.enumerated()), id: \.offset) { _, exec in
+                    ForEach(Array(visibleExecs.enumerated()), id: \.offset) { _, exec in
                         if let ref = SummonReference(exec["execution_ref"]) {
                             let status = exec["status"].stringValue
                             let isLive = Self.liveExecutionStatuses.contains(status)
@@ -392,37 +398,48 @@ struct ChatView: View {
                 let items = activeBotItems
                 let safeIndex = items.isEmpty ? 0 : (activityTickerIndex % items.count)
                 let current = items[safeIndex]
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        executionsExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        BotWorkingIndicator(
-                            bot: current.bot,
-                            name: current.name,
-                            status: current.status,
-                            motion: current.status == "运行异常" ? "failed" : "work"
-                        )
-                        .id(current.id)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .move(edge: .top).combined(with: .opacity)
-                        ))
-                        if items.count > 1 {
-                            Text("\(safeIndex + 1)/\(items.count)")
-                                .summonFont(.caption2, weight: .medium)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            executionsExpanded.toggle()
                         }
-                        Image(systemName: executionsExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                    } label: {
+                        HStack(spacing: 8) {
+                            BotWorkingIndicator(
+                                bot: current.bot,
+                                name: current.name,
+                                status: current.status,
+                                motion: current.status == "运行异常" ? "failed" : "work"
+                            )
+                            .id(current.id)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .move(edge: .top).combined(with: .opacity)
+                            ))
+                            if items.count > 1 {
+                                Text("\(safeIndex + 1)/\(items.count)")
+                                    .summonFont(.caption2, weight: .medium)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Image(systemName: executionsExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, 16)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    Button("停止") {
+                        Task {
+                            do { try await store.stopRoom(roomID); localError = nil }
+                            catch { localError = error.localizedDescription }
+                        }
+                    }
+                    .summonFont(.caption2, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
                 .clipped()
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: safeIndex)
                 .task(id: items.map(\.id)) {
@@ -437,6 +454,49 @@ struct ChatView: View {
                     }
                 }
                 .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
+            }
+            let roomSuspended = store.suspendedRunsForRoom(roomID)
+            if !roomSuspended.isEmpty {
+                let latestByBot: [SummonJSONValue] = {
+                    var seen: [String: SummonJSONValue] = [:]
+                    var order: [String] = []
+                    for run in roomSuspended {
+                        let key = run["bot_id"].stringValue
+                        if seen[key] == nil { order.append(key) }
+                        seen[key] = run
+                    }
+                    return order.compactMap { seen[$0] }
+                }()
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(latestByBot.indices, id: \.self) { index in
+                        let run = latestByBot[index]
+                        let botName = store.name(for: run["bot_id"].stringValue)
+                        let errCode = run["error"]["code"].stringValue
+                        let isAuth = errCode == "auth_expired"
+                        let isQuota = errCode == "quota_exhausted"
+                        let summary = isAuth ? "模型登录已失效" : isQuota ? "模型额度已用尽" : "暂时无法回复"
+                        HStack(spacing: 8) {
+                            Text("\(botName) · \(summary)").summonFont(.caption).foregroundStyle(SummonTheme.warn)
+                            Spacer()
+                            if isAuth {
+                                Button("重新登录") { showModels = true }.summonFont(.caption, weight: .medium).foregroundStyle(SummonTheme.warn)
+                            } else if isQuota {
+                                Button("更换模型") { showModels = true }.summonFont(.caption, weight: .medium).foregroundStyle(SummonTheme.warn)
+                            } else if let convID = run["conversation_id"].string {
+                                Button("重试") {
+                                    Task {
+                                        do { try await store.retrySuspendedRun(conversationID: convID, runID: run["run_id"].string); localError = nil }
+                                        catch { localError = error.localizedDescription }
+                                    }
+                                }.summonFont(.caption, weight: .medium).foregroundStyle(SummonTheme.warn)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(SummonTheme.warn.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .padding(.horizontal, 14)
             }
             if let pendingExec = pendingInputExecution, let ref = SummonReference(pendingExec["execution_ref"]) {
                 let pendingRequests = pendingExec["pending_requests"].array ?? []
@@ -637,13 +697,13 @@ private struct MessageRow: View {
     @Environment(SummonStore.self) private var store
     let message: SummonMessage
     let roomID: String
+    let previousID: String?
     let onReply: () -> Void
 
     private var bot: SummonBot? { store.bots.first { $0.id == message.senderId } }
     private var pending: SummonPendingMessage? { store.pendingMessage(for: message) }
     @State private var reference: SummonReference?
     @State private var failure: String?
-    @State private var showModels = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -657,24 +717,24 @@ private struct MessageRow: View {
                     Text(store.name(for: message.senderId)).summonFont(.caption, weight: .medium)
                     Text(SummonFormat.time(message.createdAt)).summonFont(.caption2).foregroundStyle(.tertiary)
                 }.foregroundStyle(.secondary)
-                if let replyID = message.replyTo,
-                   let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }) {
-                    HStack(spacing: 8) {
-                        Capsule()
-                            .fill(SummonTheme.ok)
-                            .frame(width: 2.5)
-                        Text("\(store.name(for: quoted.senderId))：\(quoted.content)")
-                            .summonFont(.caption)
-                            .lineLimit(3)
-                            .foregroundStyle(.secondary)
+                if let replyID = message.replyTo, replyID != previousID {
+                    if let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }) {
+                        HStack(spacing: 8) {
+                            Capsule()
+                                .fill(SummonTheme.ok)
+                                .frame(width: 2.5)
+                            Text("\(store.name(for: quoted.senderId))：\(quoted.content)")
+                                .summonFont(.caption)
+                                .lineLimit(3)
+                                .foregroundStyle(.secondary)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(SummonTheme.quoteBackground, in: RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        Button("查看引用的消息") { reference = SummonReference(kind: "event", id: replyID) }.summonFont(.caption)
                     }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(SummonTheme.quoteBackground, in: RoundedRectangle(cornerRadius: 12))
-                }
-                if let replyID = message.replyTo, !store.messagesForRoom(roomID).contains(where: { $0.id == replyID }) {
-                    Button("查看引用的消息") { reference = SummonReference(kind: "event", id: replyID) }.summonFont(.caption)
                 }
                 if !message.mentions.isEmpty {
                     HStack(spacing: 6) {
@@ -737,74 +797,6 @@ private struct MessageRow: View {
                             }
                         }
                     }
-                } else if message.isOwn {
-                    let facts = store.deliveryFacts(message.id)
-                    if !facts.isEmpty {
-                        DisclosureGroup("消息已保存") {
-                            ForEach(facts, id: \.bot_id) { fact in
-                                Text("\(store.name(for: fact.bot_id)) · \(SummonFormat.status(fact.status))").summonFont(.caption2)
-                            }
-                        }.summonFont(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("消息已保存").summonFont(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-                let suspendedRuns = store.suspendedRunsForMessage(roomID: roomID, messageID: message.id)
-                ForEach(suspendedRuns.indices, id: \.self) { index in
-                    let run = suspendedRuns[index]
-                    let botName = store.name(for: run["bot_id"].stringValue)
-                    let errCode = run["error"]["code"].stringValue
-                    let isAuth = errCode == "auth_expired"
-                    let isQuota = errCode == "quota_exhausted"
-                    let summary = isAuth ? "模型登录已失效，需要重新登录或换绑"
-                        : isQuota ? "模型额度已用尽，需要更换模型连接"
-                        : "暂时无法回复，请重试"
-                    HStack(spacing: 8) {
-                        Text("\(botName) · \(summary)").summonFont(.caption2).foregroundStyle(SummonTheme.warn)
-                        if isAuth {
-                            Button("重新登录 / 换绑") { showModels = true }
-                                .summonFont(.caption2).buttonStyle(.glass)
-                        } else if isQuota {
-                            Button("更换模型连接") { showModels = true }
-                                .summonFont(.caption2).buttonStyle(.glass)
-                        } else if let convID = run["conversation_id"].string {
-                            Button("重试") {
-                                Task {
-                                    do { try await store.retrySuspendedRun(conversationID: convID, runID: run["run_id"].string); failure = nil }
-                                    catch { failure = error.localizedDescription }
-                                }
-                            }.summonFont(.caption2).buttonStyle(.glass)
-                        }
-                    }
-                }
-                if suspendedRuns.isEmpty,
-                   let msgState = store.messageState(roomID: roomID, messageID: message.id),
-                   msgState["state"].string == "unanswered" {
-                    let availableBots = (store.room(id: roomID)?.members ?? []).compactMap { store.bot(id: $0) }.filter { !$0.isPaused }
-                    let fallbackReason = msgState["unavailable_reason"].string ?? (availableBots.isEmpty ? "当前暂无可用成员，请先启用或添加成员" : "暂无人接手")
-                    HStack(spacing: 8) {
-                        Text(fallbackReason)
-                            .summonFont(.caption2).foregroundStyle(.secondary)
-                        if availableBots.count > 1 {
-                            Menu("点名补答") {
-                                ForEach(availableBots) { targetBot in
-                                    Button(targetBot.name) {
-                                        Task {
-                                            do { try await store.triggerManualFallback(roomID: roomID, messageID: message.id, botID: targetBot.id); failure = nil }
-                                            catch { failure = error.localizedDescription }
-                                        }
-                                    }
-                                }
-                            }.summonFont(.caption2).buttonStyle(.glass)
-                        } else if let onlyBot = availableBots.first {
-                            Button("点名补答") {
-                                Task {
-                                    do { try await store.triggerManualFallback(roomID: roomID, messageID: message.id, botID: onlyBot.id); failure = nil }
-                                    catch { failure = error.localizedDescription }
-                                }
-                            }.summonFont(.caption2).buttonStyle(.glass)
-                        }
-                    }
                 }
                 if let failure { InlineError(message: failure) }
             }
@@ -830,7 +822,6 @@ private struct MessageRow: View {
             }
         }
         .summonSheet(item: $reference) { ref in NavigationStack { SummonReferenceView(ref: ref) } }
-        .summonSheet(isPresented: $showModels) { ModelSettingsView() }
     }
 }
 

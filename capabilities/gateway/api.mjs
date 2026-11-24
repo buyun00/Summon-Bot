@@ -79,11 +79,13 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });
         return { ...roomItem, room_files };
       };
+      const allRooms = room.rooms(user.id).map(enrichRoom);
       const state = {
         bots: visible.filter(bot => !bot.archivedAt).map(enrichBot),
         archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(enrichBot),
         roles: roleCatalog,
-        rooms: room.rooms(user.id).map(enrichRoom),
+        rooms: allRooms.filter(item => !item.archived_at),
+        archivedRooms: allRooms.filter(item => Boolean(item.archived_at)),
         modelSettings: models.summary(), historyEpoch, protocolVersion,
       };
       return snapshot('state', state, params);
@@ -153,30 +155,25 @@ export function createApi({ platform, room, attachments, models, connections, pu
         return access;
       }
     }
+    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/(archive|restore)$/))) {
+      const id = decodeURIComponent(match[1]);
+      if (method === 'POST') {
+        return match[2] === 'archive'
+          ? platform.archiveRoom(id, args.revision, user)
+          : platform.restoreRoom(id, args.revision, user);
+      }
+    }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)\/stop$/)) && method === 'POST') {
       return platform.stopRoom(decodeURIComponent(match[1]), user);
-    }
-    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/resume-chain$/)) && method === 'POST') {
-      const id = decodeURIComponent(match[1]);
-      room.room(id, user.id);
-      return platform.deliveries.resumeRoomChain(id);
-    }
-    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/messages\/([^/]+)\/fallback$/)) && method === 'POST') {
-      return platform.triggerManualFallback(decodeURIComponent(match[1]), decodeURIComponent(match[2]), args.bot_id || null);
     }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
       if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
       if (method === 'GET') {
         const result = await read(ref, params);
-        const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.hostMessageDeliveries(item.id)]));
-        const summaries = {};
         const activities = platform.runtime?.roomActivities?.(ref.id) || [];
         const suspendedRuns = platform.runtime.suspendedRunsForRoom(ref.id);
-        const messageStates = platform.roomMessageStates(ref.id, result.messages);
-        const chainState = platform.deliveries.roomChainState(ref.id);
-        const staleWaits = platform.runtime.staleWaitsForRoom(ref.id);
-        const value = { ...result, deliveries, summaries, activities, suspendedRuns, messageStates, chainState, staleWaits, historyEpoch };
+        const value = { ...result, activities, suspendedRuns, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);

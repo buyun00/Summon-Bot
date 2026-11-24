@@ -1687,59 +1687,6 @@ export class BotRuntime {
     return { inFlight, suspended };
   }
 
-  staleWaitsForRoom(roomId, thresholdMs = 120000) {
-    const nowMs = Date.now();
-    const cutoff = nowMs - thresholdMs;
-    const results = [];
-    const seenSessions = new Set();
-    for (const wait of this.platform.store.list(waitRecords)) {
-      if (!['waiting', 'pending_delivery', 'received'].includes(wait.status)) continue;
-      const updatedMs = Date.parse(wait.updated_at || wait.created_at || 0);
-      if (!updatedMs || updatedMs > cutoff) continue;
-      const conv = this.platform.executions.record({ kind: 'conversation', id: wait.conversation_id });
-      const targetSession = wait.target?.kind === 'session' ? this.platform.executions.record(wait.target) : null;
-      const matchRoom = (conv?.space?.kind === 'room' && conv.space.id === roomId) ||
-        targetSession?.origin_room?.id === roomId;
-      if (!matchRoom) continue;
-      if (targetSession?.id) seenSessions.add(targetSession.id);
-      results.push({
-        wait_id: wait.id,
-        ...(targetSession?.id ? { session_id: targetSession.id } : {}),
-        call_id: wait.call_id,
-        bot_id: wait.bot_id,
-        conversation_id: wait.conversation_id,
-        target: wait.target,
-        status: wait.status,
-        origin_message_id: targetSession?.origin_message_id || null,
-        work_summary: targetSession?.work_summary || null,
-        waiting_summary: targetSession?.waiting_summary || null,
-        elapsed_seconds: Math.max(1, Math.floor((nowMs - updatedMs) / 1000)),
-      });
-    }
-    for (const session of this.platform.store.list(sessionRecords)) {
-      if (seenSessions.has(session.id)) continue;
-      if (session.authority_revoked || session.control?.state !== 'active' || !this.platform.isActiveSession(session)) continue;
-      const matchRoom = session.origin_room?.id === roomId || (session.space?.kind === 'room' && session.space.id === roomId);
-      if (!matchRoom) continue;
-      const startedMs = Date.parse(session.created_at || session.updated_at || 0);
-      if (!startedMs || startedMs > cutoff) continue;
-      results.push({
-        wait_id: `session:${session.id}`,
-        session_id: session.id,
-        call_id: session.latest_call_id || session.id,
-        bot_id: session.bot_id || session.owner?.id || null,
-        conversation_id: session.owner_conversation_id || null,
-        target: { kind: 'session', id: session.id },
-        status: session.status,
-        origin_message_id: session.origin_message_id || null,
-        work_summary: session.work_summary || null,
-        waiting_summary: session.waiting_summary || null,
-        elapsed_seconds: Math.max(1, Math.floor((nowMs - startedMs) / 1000)),
-      });
-    }
-    return results;
-  }
-
   roomIdForConversation(conversation) {
     if (!conversation) return null;
     if (conversation.space?.kind === 'room') return conversation.space.id;

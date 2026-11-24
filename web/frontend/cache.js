@@ -6,12 +6,12 @@
   const roomPrefix = roomScope('');
   const databaseName = 'summon-state-v1';
   const collectionPaths = {
-    state: ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'],
+    state: ['bots', 'archivedBots', 'rooms', 'archivedRooms', 'executions', 'files', 'wakeups', 'connections'],
     room: ['messages'],
   };
   const valuePaths = {
     state: ['historyEpoch', 'modelSettings', 'limits', 'protocolVersion'],
-    room: ['historyEpoch', 'room', 'cursor', 'deliveries'],
+    room: ['historyEpoch', 'room', 'cursor'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -35,7 +35,7 @@
     if (!kind || !object(snapshot)) return false;
     if (kind === 'state' && (snapshot.protocolVersion !== 3 || !Array.isArray(snapshot.bots) || !Array.isArray(snapshot.rooms))) return false;
     if (kind === 'room' && (!object(snapshot.room) || snapshot.room.id !== scope.slice(roomPrefix.length) || !Number.isSafeInteger(snapshot.room.revision)
-      || !Array.isArray(snapshot.room.pins) || !Array.isArray(snapshot.messages) || !object(snapshot.deliveries))) return false;
+      || !Array.isArray(snapshot.room.pins) || !Array.isArray(snapshot.messages))) return false;
     return valuePaths[kind].every(path => {
       const value = getPath(snapshot, path);
       if (value === undefined) return true;
@@ -80,7 +80,7 @@
     }
     for (const [path, change] of Object.entries(patch.collections)) {
       if (!collectionPaths[kind].includes(path) || !object(change) || Object.keys(change).some(key => !['upserts', 'removed', 'order'].includes(key))) throw new Error('未知的同步集合');
-      const current = getPath(result, path);
+      const current = getPath(result, path) ?? [];
       if (!collectionValid(current) || !collectionValid(change.upserts) || !Array.isArray(change.removed) || change.removed.some(id => !validId(id)) || new Set(change.removed).size !== change.removed.length) throw new Error('无效的同步集合');
       const records = new Map(current.map(item => [item.id, item]));
       const removed = new Set(change.removed);
