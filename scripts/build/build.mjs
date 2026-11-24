@@ -18,13 +18,39 @@ const include = name => !name.split('/').some(part => ['node_modules', '.git', '
 const ignoredDepDirs = new Set(['node_modules', 'test', 'tests', '__tests__', 'docs', 'doc', 'examples', 'example', 'benchmark', 'benchmarks', '.github', 'dist-types']);
 const ignoredDepFile = /\.(?:d\.[cm]?ts|map|md|markdown|tsx?|mts|cts|flow)$/i;
 const ignoredDepMeta = /^(?:README|CHANGELOG|HISTORY|AUTHORS|CONTRIBUTORS)(?:\.|$)/i;
+const unusedDepPrefixes = [
+  'node_modules/@types/',
+  'node_modules/@aws-sdk/',
+  'node_modules/@smithy/',
+  'node_modules/@aws/',
+  'node_modules/@google/',
+  'node_modules/google-auth-library',
+  'node_modules/gaxios',
+  'node_modules/gcp-metadata',
+  'node_modules/gtoken',
+  'node_modules/hono',
+  'node_modules/@hono/',
+  'node_modules/express',
+  'node_modules/body-parser',
+  'node_modules/cors',
+  'node_modules/json-schema-to-ts',
+  'node_modules/@babel/',
+];
 
-function includeProdDepFile(name) {
-  const parts = name.split('/');
-  if (parts.some(part => ignoredDepDirs.has(part))) return false;
-  const base = parts[parts.length - 1];
-  if (ignoredDepFile.test(base) || ignoredDepMeta.test(base)) return false;
-  return true;
+function isUnusedProdPackage(pkgPath) {
+  return unusedDepPrefixes.some(prefix => pkgPath === prefix || pkgPath.startsWith(prefix + '/') || (prefix.endsWith('/') && pkgPath.startsWith(prefix)));
+}
+
+function includeProdDepFile(pkgPath) {
+  const skipMcpCjs = pkgPath === 'node_modules/@modelcontextprotocol/sdk';
+  return name => {
+    const parts = name.split('/');
+    if (skipMcpCjs && parts[0] === 'dist' && parts[1] === 'cjs') return false;
+    if (parts.some(part => ignoredDepDirs.has(part))) return false;
+    const base = parts[parts.length - 1];
+    if (ignoredDepFile.test(base) || ignoredDepMeta.test(base)) return false;
+    return true;
+  };
 }
 
 export async function copyProductionDependencies(sourceRoot, stage) {
@@ -32,7 +58,7 @@ export async function copyProductionDependencies(sourceRoot, stage) {
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;
-    if (path.includes('node_modules/@types/')) continue;
+    if (isUnusedProdPackage(path)) continue;
     const installed = join(sourceRoot, path);
     if (!existsSync(installed)) {
       if (info.optional) continue;
@@ -40,7 +66,7 @@ export async function copyProductionDependencies(sourceRoot, stage) {
     }
     const actual = await readJson(join(installed, 'package.json'));
     if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
-    await copyTree(installed, join(stage, path), includeProdDepFile);
+    await copyTree(installed, join(stage, path), includeProdDepFile(path));
     dependencies.push({ path, version: actual.version });
   }
   return dependencies;

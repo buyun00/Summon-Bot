@@ -6,14 +6,21 @@
 <link rel="stylesheet" href="setup.css">
 <script defer src="setup.js"></script>
 <body>
-  <main class="boot-stage" id="boot-stage">
-    <div class="boot-orb-wrap" id="boot-orb-wrap">
-      <div class="boot-orb-glow" aria-hidden="true"></div>
-      <div class="boot-orb" id="boot-orb">
-        <img src="icon.png" alt="Summon Bot">
-      </div>
+  <div class="boot-portal-backdrop" id="boot-portal-backdrop" aria-hidden="true"></div>
+  <div class="boot-portal-ring" id="boot-portal-ring" aria-hidden="true"></div>
+
+  <div class="boot-intro-center" id="boot-intro-center" aria-hidden="true">
+    <div class="boot-orb-wrap">
+      <div class="boot-orb-glow"></div>
+      <div class="boot-orb"><img src="icon.png" alt="Summon Bot"></div>
     </div>
-    <div class="boot-pill" id="boot-stage-text" role="status">正在准备本机环境…</div>
+    <div class="boot-wordmark">Summon Bot</div>
+  </div>
+
+  <main class="boot-floating-card" id="boot-floating-card" hidden>
+    <div class="boot-card-icon"><img src="icon.png" alt="Summon Bot"></div>
+    <h1 class="boot-card-title" id="boot-card-title">Summon Bot</h1>
+    <p class="boot-card-status" id="boot-stage-text" role="status">正在准备配置页…</p>
     <div class="boot-error-box" id="boot-error-box" hidden>
       <p class="boot-error-detail" id="boot-error-detail"></p>
       <div class="boot-actions">

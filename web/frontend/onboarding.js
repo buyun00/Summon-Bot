@@ -526,7 +526,7 @@
     }
   }
 
-  async function openOverlay({ preview = false } = {}) {
+  async function openOverlay({ preview = false, skipBloom = false } = {}) {
     if (ob.open) return;
     ob.open = true;
     ob.preview = preview;
@@ -535,7 +535,14 @@
     ob.statusText = '';
     const root = ensureOverlayElement();
     renderOverlayContent();
-    playArcDiaIntro(root);
+    if (skipBloom) {
+      const intro = root.querySelector('#ob-intro-center');
+      intro?.classList.add('is-settled');
+      root.classList.add('is-expanded', 'is-settled');
+      requestAnimationFrame(() => root.classList.add('is-ready'));
+    } else {
+      playArcDiaIntro(root);
+    }
     await loadCatalogAndLocal();
     if (ob.open) renderOverlayContent();
   }
@@ -657,8 +664,8 @@
     syncState,
     isFocusLocked,
     renderFocusHeaderActions,
-    startDesktopIntro({ preview = false } = {}) { void openOverlay({ preview }); },
-    startPreview() { void openOverlay({ preview: true }); },
+    startDesktopIntro({ preview = false, skipBloom = false } = {}) { void openOverlay({ preview, skipBloom }); },
+    startPreview() { void openOverlay({ preview: true, skipBloom: false }); },
     enterFocusFromDesktop,
     exitFocusMode,
     SUMMON_ROOM_ID,

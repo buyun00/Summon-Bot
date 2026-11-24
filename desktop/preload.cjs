@@ -1,8 +1,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 if (location.protocol === 'summon-setup:' && location.host === 'boot') {
+  const bootMode = new URLSearchParams(location.search).get('mode') || 'intro';
   contextBridge.exposeInMainWorld('SummonBoot', Object.freeze({
+    mode: bootMode,
     info: () => ipcRenderer.invoke('summon:boot-info'),
+    introDone: () => ipcRenderer.invoke('summon:boot-intro-done'),
     retry: () => ipcRenderer.invoke('summon:boot-retry'),
     openLogs: () => ipcRenderer.invoke('summon:open-logs'),
     close: () => ipcRenderer.invoke('summon:intro-close'),

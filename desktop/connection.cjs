@@ -1,4 +1,4 @@
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { mkdir, rename, rm } = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 const { join, resolve } = require('node:path');
@@ -11,6 +11,26 @@ const runtime = existsSync(join(packagedRuntime, 'scripts/installation/desktop.m
 const desktopScript = join(runtime, 'scripts/installation/desktop.mjs');
 const desktopSettings = () => import(pathToFileURL(desktopScript).href);
 const setupUrl = 'summon-setup://boot/index.html';
+
+function resolveLocalDataRootSync(profileRoot) {
+  const formalDataRoot = 'D:/Relay-Bot-data';
+  if (process.platform === 'win32' && existsSync(join(formalDataRoot, 'config', 'deployment.json'))) {
+    return formalDataRoot;
+  }
+  return join(resolve(profileRoot), 'data');
+}
+
+function isFreshInstallSync(profileRoot) {
+  try {
+    const dataRoot = resolveLocalDataRootSync(profileRoot);
+    const modelPath = join(dataRoot, 'config', 'model-connections.json');
+    if (!existsSync(modelPath)) return true;
+    const raw = JSON.parse(readFileSync(modelPath, 'utf8'));
+    return !raw?.activeId;
+  } catch {
+    return true;
+  }
+}
 
 function sessionCookie(origin) {
   const url = new URL(origin);
@@ -117,4 +137,4 @@ async function resolveLogsRoot(profileRoot) {
   return join(resolveLocalDataRoot(undefined, profileRoot), 'web', 'logs');
 }
 
-module.exports = { runtime, setupUrl, desktopSettings, prepareLocalConnection, resolveLogsRoot };
+module.exports = { runtime, setupUrl, desktopSettings, isFreshInstallSync, prepareLocalConnection, resolveLogsRoot };

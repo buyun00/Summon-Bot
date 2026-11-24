@@ -3,7 +3,7 @@ const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { runtime, setupUrl, prepareLocalConnection, resolveLogsRoot } = require('./connection.cjs');
+const { runtime, setupUrl, isFreshInstallSync, prepareLocalConnection, resolveLogsRoot } = require('./connection.cjs');
 
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
@@ -27,6 +27,7 @@ const stageLabels = {
 let mainWindow = null;
 let introWindow = null;
 let introDisplayBounds = null;
+let resolveIntroAnim = null;
 let timer, checking, booting = false;
 let connection = null;
 let bootState = { status: 'booting', stage: stageLabels.prepare, error: '' };
@@ -46,10 +47,10 @@ function setUpdate(value) {
 function setBootState(next) {
   bootState = { ...bootState, ...next };
   if (!introWindow || introWindow.isDestroyed()) return;
-  if (introWindow.webContents.getURL() === setupUrl) {
+  if (introWindow.webContents.getURL().startsWith(setupUrl)) {
     introWindow.webContents.send('summon:boot-state', bootState);
   } else {
-    introWindow.loadURL(setupUrl).catch(() => {});
+    introWindow.loadURL(`${setupUrl}?mode=quiet`).catch(() => {});
   }
 }
 
@@ -59,7 +60,7 @@ const isWeb = url => connection?.origin && webOrigin(url) === connection.origin;
 function isKnownSender(event, { allowBoot = false, allowIntroWeb = false, allowMainWeb = true } = {}) {
   const frame = event.senderFrame;
   if (!frame) return false;
-  if (allowBoot && introWindow && !introWindow.isDestroyed() && event.sender === introWindow.webContents && frame === introWindow.webContents.mainFrame && frame.url === setupUrl) {
+  if (allowBoot && introWindow && !introWindow.isDestroyed() && event.sender === introWindow.webContents && frame === introWindow.webContents.mainFrame && frame.url.startsWith(setupUrl)) {
     return true;
   }
   if (allowIntroWeb && introWindow && !introWindow.isDestroyed() && event.sender === introWindow.webContents && frame === introWindow.webContents.mainFrame && isWeb(frame.url) && new URL(frame.url).pathname === '/') {
@@ -166,9 +167,8 @@ function createIntroOverlayWindow(display = targetDisplayForMain()) {
   try { target.setAlwaysOnTop(true, 'screen-saver'); } catch {}
   try { target.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
   target.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: winHeight });
-  target.webContents.on('did-finish-load', () => {
+  target.webContents.once('did-finish-load', () => {
     if (target === introWindow && !target.isDestroyed()) {
-      target.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: winHeight });
       target.show();
       target.focus();
     }
@@ -236,41 +236,73 @@ function createMainWindow({ showImmediately = true, display = targetDisplayForMa
   return target;
 }
 
+function settleIntroOverlayWindow(width = 620, height = 700) {
+  if (!introWindow || introWindow.isDestroyed()) return null;
+  const display = introDisplayBounds
+    ? screen.getDisplayMatching(introDisplayBounds)
+    : targetDisplayForMain();
+  const area = display.workArea;
+  const w = Math.min(Math.max(480, Math.round(Number(width) || 620)), area.width - 32);
+  const h = Math.min(Math.max(520, Math.round(Number(height) || 700)), area.height - 32);
+  const x = Math.round(area.x + (area.width - w) / 2);
+  const y = Math.round(area.y + (area.height - h) / 2);
+  try { introWindow.setAlwaysOnTop(false); } catch {}
+  try { introWindow.setMovable(true); } catch {}
+  introWindow.setBounds({ x, y, width: w, height: h });
+  introWindow.focus();
+  return { x, y, width: w, height: h };
+}
+
 async function bootLocalInstance() {
   if (booting) return;
   booting = true;
+  const fresh = isFreshInstallSync(profile);
   const overlay = createIntroOverlayWindow();
   setBootState({ status: 'booting', stage: stageLabels.prepare, error: '' });
-  if (overlay.webContents.getURL() !== setupUrl) {
-    await overlay.loadURL(setupUrl).catch(() => {});
+
+  // Fresh install: start the full-screen Arc/Dia expansion at t = 0 while backend boots IN PARALLEL!
+  const introAnimDone = fresh
+    ? new Promise(done => {
+        resolveIntroAnim = done;
+        setTimeout(() => { resolveIntroAnim = null; done(); }, 2600);
+      })
+    : Promise.resolve();
+
+  const bootUrl = `${setupUrl}?mode=${fresh ? 'intro' : 'quiet'}`;
+  if (overlay.webContents.getURL() !== bootUrl) {
+    await overlay.loadURL(bootUrl).catch(() => {});
   }
+
   try {
-    const ready = await prepareLocalConnection(overlay.webContents.session, profile, progress => {
+    const preparePromise = prepareLocalConnection(overlay.webContents.session, profile, progress => {
       const label = stageLabels[progress?.stage] || stageLabels.prepare;
       if (overlay === introWindow && !overlay.isDestroyed()) {
         setBootState({ status: 'booting', stage: label, error: '' });
       }
     });
+    const [ready] = await Promise.all([preparePromise, introAnimDone]);
     connection = ready;
     if (ready.needsIntro) {
-      // Fresh install: expand directly to true OS full-screen inside the transparent overlay!
-      const introUrl = new URL('/?desktop_intro=1', ready.origin).href;
+      // Bloom already played across the full screen — settle into compact floating Setup Window!
+      settleIntroOverlayWindow(620, 700);
+      const introUrl = new URL(fresh ? '/?desktop_intro=ready' : '/?desktop_intro=1', ready.origin).href;
       await overlay.loadURL(introUrl);
       return;
     }
-    // Returning user: open the normal desktop window directly and retire the boot orb.
     const main = createMainWindow({ showImmediately: true });
     await main.loadURL(new URL('/', ready.origin).href);
     if (introWindow && !introWindow.isDestroyed()) {
       introWindow.close();
     }
   } catch (error) {
+    settleIntroOverlayWindow(580, 440);
     setBootState({
       status: 'error',
       stage: '本机服务未能启动',
       error: String(error?.message || '请重试或查看本机日志排查原因。'),
     });
   } finally {
+    resolveIntroAnim = null;
     booting = false;
   }
 }
@@ -396,22 +428,19 @@ ipcMain.handle('summon:preview-desktop-intro', async event => {
   return true;
 });
 
-ipcMain.handle('summon:intro-settle-window', (event, { width = 640, height = 720 } = {}) => {
+ipcMain.handle('summon:intro-settle-window', (event, { width = 620, height = 700 } = {}) => {
   trusted(event, { allowIntroWeb: true, allowMainWeb: false });
-  if (!introWindow || introWindow.isDestroyed()) return false;
-  const display = introDisplayBounds
-    ? screen.getDisplayMatching(introDisplayBounds)
-    : targetDisplayForMain();
-  const area = display.workArea;
-  const w = Math.min(Math.max(480, Math.round(Number(width) || 640)), area.width - 32);
-  const h = Math.min(Math.max(520, Math.round(Number(height) || 720)), area.height - 32);
-  const x = Math.round(area.x + (area.width - w) / 2);
-  const y = Math.round(area.y + (area.height - h) / 2);
-  try { introWindow.setAlwaysOnTop(false); } catch {}
-  try { introWindow.setMovable(true); } catch {}
-  introWindow.setBounds({ x, y, width: w, height: h });
-  introWindow.focus();
-  return { x, y, width: w, height: h };
+  return settleIntroOverlayWindow(width, height) || false;
+});
+
+ipcMain.handle('summon:boot-intro-done', event => {
+  trusted(event, { allowBoot: true, allowMainWeb: false });
+  if (resolveIntroAnim) {
+    const fn = resolveIntroAnim;
+    resolveIntroAnim = null;
+    fn();
+  }
+  return true;
 });
 
 ipcMain.handle('summon:intro-prepare-handoff', async (event, { preview = false } = {}) => {

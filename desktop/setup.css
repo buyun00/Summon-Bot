@@ -1,13 +1,16 @@
 :root {
-  --surface: rgba(255, 253, 248, 0.88);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --bg: #f8f6f1;
+  --surface: rgba(255, 253, 248, 0.9);
   --ink: #1f1e1b;
   --ink-2: #57534a;
-  --line: rgba(34, 32, 28, 0.12);
+  --line: rgba(34, 32, 28, 0.11);
   --hover: rgba(34, 32, 28, 0.06);
-  --glow-1: rgba(125, 130, 75, 0.34);
-  --glow-2: rgba(108, 160, 194, 0.28);
+  --aura-1: rgba(125, 130, 75, 0.3);
+  --aura-2: rgba(108, 160, 194, 0.26);
+  --aura-3: rgba(214, 149, 100, 0.24);
   --err: #c24136;
-  --err-soft: rgba(194, 65, 54, 0.12);
+  --err-soft: rgba(194, 65, 54, 0.11);
   font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   color: var(--ink);
   color-scheme: light dark;
@@ -15,13 +18,15 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --bg: #0b0c10;
     --surface: rgba(22, 25, 34, 0.86);
     --ink: #f3f4f8;
     --ink-2: #c4cad8;
-    --line: rgba(255, 255, 255, 0.14);
-    --hover: rgba(255, 255, 255, 0.09);
-    --glow-1: rgba(150, 158, 90, 0.42);
-    --glow-2: rgba(108, 160, 194, 0.34);
+    --line: rgba(255, 255, 255, 0.13);
+    --hover: rgba(255, 255, 255, 0.08);
+    --aura-1: rgba(150, 158, 90, 0.36);
+    --aura-2: rgba(108, 160, 194, 0.3);
+    --aura-3: rgba(154, 128, 198, 0.3);
     --err: #ff7b72;
     --err-soft: rgba(255, 123, 114, 0.14);
   }
@@ -44,14 +49,73 @@ body {
   place-items: center;
 }
 
-.boot-stage {
+/* Full-screen Arc/Dia radial expansion wave starting at t = 0 */
+.boot-portal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(66vw 66vw at 22% 18%, var(--aura-1), transparent 62%),
+    radial-gradient(60vw 60vw at 82% 24%, var(--aura-2), transparent 60%),
+    radial-gradient(64vw 64vw at 52% 86%, var(--aura-3), transparent 64%),
+    color-mix(in srgb, var(--bg) 86%, transparent);
+  clip-path: circle(0% at 50% 50%);
+  opacity: 0;
+  transition: clip-path 1550ms cubic-bezier(0.22, 1, 0.36, 1), opacity 680ms ease;
+}
+
+body.is-expanded .boot-portal-backdrop {
+  clip-path: circle(150% at 50% 50%);
+  opacity: 1;
+}
+
+body.is-settled .boot-portal-backdrop {
+  opacity: 0;
+  transition: opacity 650ms ease;
+}
+
+.boot-portal-ring {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 148px;
+  height: 148px;
+  margin: -74px 0 0 -74px;
+  border-radius: 50%;
+  border: 2px solid var(--aura-1);
+  box-shadow: 0 0 100px 26px var(--aura-2), inset 0 0 50px var(--aura-3);
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.28);
+}
+
+body.is-expanding .boot-portal-ring {
+  animation: boot-ring-expand 1800ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes boot-ring-expand {
+  0% { opacity: 0; transform: scale(0.25); }
+  20% { opacity: 0.95; transform: scale(1.15); }
+  75% { opacity: 0.45; transform: scale(13); }
+  100% { opacity: 0; transform: scale(20); }
+}
+
+.boot-intro-center {
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
-  gap: 16px;
-  padding: 24px;
+  gap: 18px;
+  pointer-events: none;
+  transition: opacity 520ms ease, transform 620ms var(--ease);
+}
+
+body.is-settled .boot-intro-center {
+  opacity: 0;
+  transform: translateY(-36px) scale(0.86);
 }
 
 .boot-orb-wrap {
@@ -62,74 +126,110 @@ body {
 
 .boot-orb-glow {
   position: absolute;
-  width: 168px;
-  height: 168px;
+  width: 176px;
+  height: 176px;
   border-radius: 50%;
-  background: radial-gradient(circle, var(--glow-1) 0%, var(--glow-2) 45%, transparent 72%);
-  filter: blur(18px);
-  animation: boot-glow-pulse 2s ease-in-out infinite;
-}
-
-@keyframes boot-glow-pulse {
-  0%, 100% { transform: scale(0.92); opacity: 0.72; }
-  50% { transform: scale(1.12); opacity: 1; }
+  background: radial-gradient(circle, var(--aura-1) 0%, var(--aura-2) 45%, transparent 72%);
+  filter: blur(20px);
 }
 
 .boot-orb {
   position: relative;
-  width: 96px;
-  height: 96px;
-  border-radius: 30px;
+  width: 104px;
+  height: 104px;
+  border-radius: 32px;
   display: grid;
   place-items: center;
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 26px 72px rgba(0, 0, 0, 0.24);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  animation: boot-orb-rise 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: boot-orb-rise 760ms var(--ease) both;
 }
 
 .boot-orb img {
-  width: 60px;
-  height: 60px;
-  border-radius: 16px;
+  width: 66px;
+  height: 66px;
+  border-radius: 18px;
+}
+
+.boot-wordmark {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  opacity: 0;
+  transform: translateY(10px);
+  animation: boot-fade-up 580ms var(--ease) 220ms forwards;
 }
 
 @keyframes boot-orb-rise {
-  from { opacity: 0; transform: scale(0.68) translateY(14px); }
+  from { opacity: 0; transform: scale(0.62) translateY(18px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-.boot-pill {
-  padding: 7px 16px;
-  border-radius: 999px;
+@keyframes boot-fade-up {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Floating non-fullscreen card (shown only while waiting the last moment or on error) */
+.boot-floating-card {
+  width: min(580px, calc(100vw - 24px));
+  padding: 36px 28px;
+  border-radius: 28px;
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  font-size: 13.5px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  animation: boot-card-in 480ms var(--ease) both;
+}
+
+.boot-floating-card[hidden] {
+  display: none;
+}
+
+@keyframes boot-card-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.boot-card-icon img {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+}
+
+.boot-card-title {
+  margin: 2px 0 0;
+  font-size: 22px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+}
+
+.boot-card-status {
+  margin: 0;
+  font-size: 14px;
   color: var(--ink-2);
 }
 
 .boot-error-box {
-  width: min(440px, 90vw);
-  padding: 20px;
-  border-radius: 22px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  width: 100%;
+  margin-top: 8px;
   display: grid;
   gap: 14px;
 }
 
 .boot-error-detail {
   margin: 0;
-  padding: 11px 13px;
-  border-radius: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
   background: var(--err-soft);
   color: var(--err);
   font-size: 13.5px;
@@ -161,10 +261,13 @@ button {
 }
 
 button:hover:not(:disabled) { background: var(--hover); }
-button.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); font-weight: 560; }
+button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 560; }
 button.primary:hover:not(:disabled) { opacity: 0.9; background: var(--ink); }
 button:disabled { opacity: 0.5; cursor: wait; }
 
 @media (prefers-reduced-motion: reduce) {
-  .boot-orb-glow, .boot-orb { animation: none; }
+  .boot-portal-backdrop, .boot-portal-ring, .boot-orb, .boot-wordmark, .boot-floating-card {
+    animation: none !important;
+    transition: none !important;
+  }
 }

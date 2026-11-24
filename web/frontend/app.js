@@ -4638,7 +4638,10 @@ renderTopbar();
   if (window.SummonDesktop?.isIntroWindow) {
     ui.loading = false;
     await handshake().catch(() => {});
-    window.SummonOnboarding?.startDesktopIntro?.({ preview: window.SummonDesktop.introMode === 'preview' });
+    window.SummonOnboarding?.startDesktopIntro?.({
+      preview: window.SummonDesktop.introMode === 'preview',
+      skipBloom: window.SummonDesktop.introMode === 'ready',
+    });
     return;
   }
   window.SummonDesktop?.onStartOnboardingFocus?.(detail => {
