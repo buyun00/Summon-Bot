@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import QuickLook
 
 enum ResourceSection: String, CaseIterable, Identifiable {
@@ -1103,6 +1104,7 @@ private func cleanSummaryLine(_ raw: String?, fallback: String = "") -> String {
     return trimmed.count > 100 ? String(trimmed.prefix(98)) + "…" : trimmed
 }
 
+@MainActor
 private func executionReadableSummary(_ item: SummonJSONValue) -> String {
     let status = item["status"].stringValue
     if status == "needs_input" || status == "awaiting_input" {
@@ -1163,9 +1165,13 @@ struct WorkspacePanelView: View {
 
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    var onOpenRoom: (String) -> Void = { _ in }
+    let onOpenRoom: (String) -> Void
     @State private var selectedTab: PanelTab = .overview
     @State private var showCreateBot = false
+
+    init(onOpenRoom: @escaping (String) -> Void = { _ in }) {
+        self.onOpenRoom = onOpenRoom
+    }
 
     var body: some View {
         NavigationStack {
@@ -1384,11 +1390,12 @@ private struct WorkspaceOverviewList: View {
                             Circle().fill(SummonTheme.ok).frame(width: 7, height: 7)
                         }
                     }
-                    let meta = [
+                    let metaParts: [String?] = [
                         "\(members.count) 位伙伴",
                         liveCount > 0 ? "\(liveCount) 进行中" : (roomExecs.isEmpty ? nil : "\(roomExecs.count) 条执行"),
                         roomFiles.isEmpty ? nil : "\(roomFiles.count) 份资料"
-                    ].compactMap { $0 }.joined(separator: " · ")
+                    ]
+                    let meta = metaParts.compactMap { $0 }.joined(separator: " · ")
                     Text(meta).summonFont(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -1497,11 +1504,12 @@ private struct WorkspaceOverviewList: View {
                             Circle().fill(SummonTheme.ok).frame(width: 6, height: 6)
                         }
                     }
-                    let summaryBits = [
+                    let summaryParts: [String?] = [
                         execs.isEmpty ? nil : "\(execs.count) 执行",
                         mems.isEmpty ? nil : "\(mems.count) 记忆",
                         bFiles.isEmpty ? nil : "\(bFiles.count) 资料"
-                    ].compactMap { $0 }.joined(separator: " · ")
+                    ]
+                    let summaryBits = summaryParts.compactMap { $0 }.joined(separator: " · ")
                     Text(summaryBits.isEmpty ? "空闲" : summaryBits)
                         .summonFont(.caption).foregroundStyle(.secondary)
                 }

@@ -1376,11 +1376,11 @@ private fun SettingsSheet(
             Spacer(Modifier.height(6.dp))
             Surface(shape = RoundedCornerShape(14.dp), color = palette.surface, border = BorderStroke(0.6.dp, palette.hairline)) {
                 Column {
-                    ActionOptionRow(Icons.Filled.Memory, "模型连接") { if (store.protocolReady) onOpenModels() }
+                    PreviewMenuItem(Icons.Filled.Memory, "模型连接") { if (store.protocolReady) onOpenModels() }
                     HorizontalDivider(color = palette.hairline)
-                    ActionOptionRow(Icons.Filled.Schedule, "订阅与提醒") { if (store.protocolReady) onOpenWakeups() }
+                    PreviewMenuItem(Icons.Filled.Schedule, "订阅与提醒") { if (store.protocolReady) onOpenWakeups() }
                     HorizontalDivider(color = palette.hairline)
-                    ActionOptionRow(Icons.Filled.Link, "执行连接与目录") { if (store.protocolReady) onOpenConnections() }
+                    PreviewMenuItem(Icons.Filled.Link, "执行连接与目录") { if (store.protocolReady) onOpenConnections() }
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
