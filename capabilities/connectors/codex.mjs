@@ -9,7 +9,7 @@ export const codex = {
   id: 'codex', name: 'Codex', command: 'codex', kind: 'codex',
   guide: new URL('./codex.md', import.meta.url), source: new URL('../codex/app-server.mjs', import.meta.url),
   documentation: 'https://raw.githubusercontent.com/openai/codex/main/codex-rs/app-server/README.md',
-  protocolOptions: ['--listen', '--stdio', '--print-startup-config', '--startup-sign-out', '--startup-client-info'],
+  protocolOptions: ['--listen', '--stdio'],
   helpTopic: 'app-server',
   async candidates(roots) {
     if (process.platform !== 'win32') return [join(homedir(), '.local', 'bin', 'codex')];

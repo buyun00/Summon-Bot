@@ -45,7 +45,7 @@ export class Files {
       if (!size.isFile() || size.size > maximumFileBytes) rejectFileSize(size.size);
       const actual = await checkPath(name, { file: true });
       const verified = await lstat(actual);
-      if (!verified.isFile() || size.nlink !== 1 || verified.ino !== size.ino || verified.dev !== size.dev || !samePath(actual, checked)) {
+      if (!verified.isFile() || verified.ino !== size.ino || verified.dev !== size.dev || !samePath(actual, checked)) {
         reject('file_source_changed', 'The workspace file changed while it was opened', 409);
       }
       const bytes = Buffer.alloc(size.size);
@@ -125,7 +125,7 @@ export class Files {
     const relative = directory === '.' ? '.' : filePath(directory);
     const check = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories, accessPolicy: workspace.path_policy });
     const target = await check(relative, { directory: true, operations: ['read'] });
-    const names = (await readdir(target, { withFileTypes: true })).filter(entry => entry.isDirectory() || entry.isFile())
+    const names = (await readdir(target, { withFileTypes: true })).filter(entry => entry.isDirectory() || entry.isFile() || entry.isSymbolicLink())
       .map(entry => entry.name).filter(name => !query || name.toLowerCase().includes(query.trim().toLowerCase())).sort();
     const items = [];
     let more = false;
@@ -135,8 +135,8 @@ export class Files {
       try {
         filePath(path);
         const checked = await check(path, { operations: ['read'] });
-        const info = await lstat(checked);
-        if (!samePath(checked, join(target, name)) || !info.isDirectory() && !(info.isFile() && info.nlink === 1)) continue;
+        const info = await stat(checked);
+        if (!info.isDirectory() && !info.isFile()) continue;
         if (items.length === limit) { more = true; break; }
         items.push({ name, path, kind: info.isDirectory() ? 'directory' : 'file', read: info.isDirectory() ? { ref, directory: path } : { ref, path } });
       } catch (error) {
@@ -166,7 +166,7 @@ export class Files {
       if (!samePath(realpathSync(parent), parent) || !samePath(join(workspace.root, path), target))
         reject('workspace_changed', 'Project file location has changed', 409);
       const before = lstatSync(target, { throwIfNoEntry: false });
-      if (before && (!before.isFile() || before.nlink !== 1)) reject('file_write_forbidden', 'Select a regular project file', 403);
+      if (before && !before.isFile()) reject('file_write_forbidden', 'Select a regular project file', 403);
       if (args.revision !== undefined) assertRevision(before ? Math.round(before.mtimeMs * 1000) : null, args.revision);
       const temporary = join(parent, '.summon-' + randomUUID() + '.tmp');
       const fd = openSync(temporary, 'wx', before?.mode ?? 0o600);

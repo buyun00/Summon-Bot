@@ -75,7 +75,7 @@ const model = { anyOf: [
   { type: 'null' },
 ] };
 const sessionEngine = { ...text, description: 'The connection id returned by find with kind connection. Use pi to open a Pi Session.' };
-const sessionWorkspace = { ...text, description: 'The id from find with kind workspace, or an authorized absolute project directory path. Use the value itself as text.' };
+const sessionWorkspace = { ...text, description: 'A workspace id from find(kind=workspace) or any absolute host directory path (e.g. D:\\Worktrees\\project). Use the value itself as text.' };
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: { anyOf: [flag, object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers'])] },
   resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
@@ -88,14 +88,14 @@ const definitions = [
     'Use connection_usage for call counts by date, connection, method and outcome. Filter by room, connection or session with scope. ' +
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
-  ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, use directory "." or a subdirectory to list entries, or add a relative path to read a project text file. Read a File ref to inspect its text or image (on vision-capable models); pass an optional revision to inspect a historical snapshot from platform-file-revisions. ' +
+  ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace or any local host directory (pass {kind:"workspace",id:"D:\\\\..."} directly, including a drive root), use directory "." or a subdirectory to list entries, or add a relative path to read a text file. Read a File ref to inspect its text or image (on vision-capable models); pass an optional revision to inspect a historical snapshot from platform-file-revisions. ' +
     'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, or awaiting_reply. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome (repaired, blocked, or non-terminal need_info to request missing parameters without closing).',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
-  ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File. To write project text or copy a shared attachment for a tool, set space to the workspace ref and path to a relative file name. Use the revision from read to detect concurrent edits.',
+  ['save_file', 'Save text, a permitted File source, or a relative file from any local host directory. Supply the current revision to replace an existing File. To write text or copy a shared attachment into a local directory, set space to {kind:"workspace",id:"<workspace-id-or-absolute-path>"} and path to a relative file name. Use the revision from read to detect concurrent edits.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
       object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path'])] },
@@ -116,13 +116,13 @@ const definitions = [
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator. A group can bind one writable project workspace shared by current members.',
     object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId }, ['members'])],
-  ['configure_room', 'Update the title, membership, pins or project workspace in one Room revision. The host can bind a writable project directory or set workspace:null to unbind.',
+  ['configure_room', 'Update the title, membership, pins or project workspace in one Room revision. Any member can bind a workspace id or absolute host directory path (auto-registered as a workspace) or set workspace:null to unbind.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
   ['open_session', 'Open a Pi or external execution. For a private Session from a Room conversation, omit space and sharing. ' +
     'For engine, use the id string returned by find with kind connection, including pi for a Pi Session. ' +
-    'For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair matching task difficulty unless the user specifies otherwise. ' +
-    'Pi and native executions default to their originating group’s bound workspace. For workspace, pass its id from find or an authorized absolute project directory path. ' +
+    'For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair matching task difficulty unless the user specifies otherwise. Codex defaults to sandbox:"danger-full-access" and approval_policy:"never"; pass sandbox or approval_policy in input when the user asks for another policy. ' +
+    'Pi and native executions default to their originating group’s bound workspace, or you can pass any registered workspace id or absolute host directory path directly as workspace. ' +
     'A private initialization can omit workspace to use its selected directory for a native CLI Session. ' +
     'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +

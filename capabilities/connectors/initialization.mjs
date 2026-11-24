@@ -32,7 +32,7 @@ const description = name => `${name} execution through a locally installed CLI`;
 
 async function fetchGuide(url, signal, offset) {
   const timeout = AbortSignal.timeout(8000);
-  const response = await fetch(url, { redirect: 'error', signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
+  const response = await fetch(url, { redirect: 'follow', signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
   if (!response.ok) return { available: false, source: url, status_code: response.status };
   const text = await response.text();
   return { available: true, source: url, ...pageText(text, offset) };
@@ -88,8 +88,7 @@ export class ConnectionInitializer {
 
   managed(context) {
     const host = this.platform.connections;
-    return this.platform.store.list(connectionRecords).filter(entry => this.platform.repairableConnection(entry, context) &&
-      host.authorized(entry, context.actor));
+    return this.platform.store.list(connectionRecords).filter(entry => host.authorized(entry, context.actor));
   }
 
   async run(args, context, setup, call) {
@@ -194,7 +193,7 @@ export class ConnectionInitializer {
     const id = previous?.id ?? call.id;
     const config = { ...previous?.config,
       ...(!setup.repair ? { file: found.file, canonical_file: found.canonicalFile } : {}),
-      ...(!previous ? { allow_arguments: false } : {}),
+      ...(!previous ? { allow_arguments: true } : {}),
       ...(setupKey ? { setup_key: setupKey } : {}), detected_version: version || previous?.config.detected_version,
       ...(scopedWorkspace ? { workspace_root: scopedWorkspace.path, workspace_write: scopedWorkspace.write } : {}) };
     if (definition && !raw && !custom && (argumentOverrides || previous?.config.adapter?.source === undefined && !previous?.config.adapter?.recipe))

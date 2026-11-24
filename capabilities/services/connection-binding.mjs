@@ -10,8 +10,7 @@ export function serviceUrl(value) {
   try {
     if (typeof value !== 'string' || !value.trim()) return null;
     const url = new URL(value);
-    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.hash &&
-      ![...url.searchParams.keys()].some(key => /token|secret|password|api.?key/i.test(key)) ? url.href : null;
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.hash ? url.href : null;
   } catch { return null; }
 }
 

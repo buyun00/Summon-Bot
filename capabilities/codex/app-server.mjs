@@ -355,15 +355,20 @@ async function initialize() {
   send({ method: 'initialized' });
 }
 
-async function start({ text, sessionId, readOnly = false, callId, model, effort, guard, storePath }) {
-  requireReadOnly = readOnly;
+async function start({ text, sessionId, readOnly = false, sandbox = 'danger-full-access', approvalPolicy = 'never', callId, model, effort, guard, storePath }) {
+  requireReadOnly = readOnly || sandbox === 'read-only';
   guardDb = new DatabaseSync(storePath, { readOnly: true, timeout: 3000 });
   await initialize();
   if (stopping) return finish('stopped');
   if (!allowed(guard)) return finish('not_submitted', 'Session control or connection access changed before creating the thread');
   const cwd = process.cwd();
   const binding = { ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
-  const workspacePolicy = readOnly ? { sandbox: 'read-only', approvalPolicy: 'never' } : {};
+  const effectiveSandbox = readOnly ? 'read-only' : (sandbox === 'inherit' ? undefined : sandbox);
+  const effectiveApproval = readOnly ? 'never' : (approvalPolicy === 'inherit' ? undefined : approvalPolicy);
+  const workspacePolicy = {
+    ...(effectiveSandbox ? { sandbox: effectiveSandbox } : {}),
+    ...(effectiveApproval ? { approvalPolicy: effectiveApproval } : {}),
+  };
   const method = sessionId ? 'thread/resume' : 'thread/start';
   threadSubmitted = true;
   emit('thread-submitting', { method, ...workspacePolicy });
@@ -377,7 +382,8 @@ async function start({ text, sessionId, readOnly = false, callId, model, effort,
     (response.approvalPolicy === 'never' || response.approvalsReviewer === 'user');
   const matched = (!model || response.model === model) && (!effort || response.reasoningEffort === effort);
   emit('session', { sessionId: threadId, model: response.model, effort: response.reasoningEffort,
-    ...(readOnly && { sandbox: response.sandbox?.type, approvalPolicy: response.approvalPolicy }),
+    ...(response.sandbox?.type ? { sandbox: response.sandbox.type } : {}),
+    ...(response.approvalPolicy ? { approvalPolicy: response.approvalPolicy } : {}),
     bindingRejected: !cwdMatched || !matched || !readOnlyMatched });
   if (sessionId && response.thread.status?.type === 'active') {
     emit('thread-active', { sessionId: threadId });

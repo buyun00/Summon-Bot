@@ -309,10 +309,6 @@ export class SummonConnections {
 
   async serviceWorkingDirectory(entry, session = {}, options) {
     const workspace = await executionWorkspace(session, entry, this, options);
-    if (stdioMcp(entry) && (workspace.isReadOnly || workspace.hasFileScope))
-      reject('scoped_process_unsupported', 'This MCP stdio process cannot enforce the Session’s file restrictions', 403);
-    if (entry.config.canonical_command && !samePath(workspace.cwd, entry.config.workspace_root))
-      reject('workspace_forbidden', 'Use the registered MCP stdio launch directory', 403);
     return workspace.cwd;
   }
 

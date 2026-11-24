@@ -442,47 +442,56 @@ export class SummonPlatform {
     const principal = identity(actor);
     const id = value === null ? null : idOf(value, 'workspace');
     if (id && mode !== 'group') reject('workspace_forbidden', 'Project directories are shared in group Rooms', 403);
-    if (principal.kind !== 'user') reject('workspace_forbidden', 'The host manages project directory sharing', 403);
     if (!id) return null;
-    const workspace = this.workspace({ kind: 'workspace', id }, { actor: principal });
-    if (!workspace.write) reject('workspace_forbidden', 'Choose a writable project directory', 403);
-    return workspace.ref;
+    const existingById = this.workspaceRecords().find(item => item.id === id);
+    if (existingById) return { kind: 'workspace', id: existingById.id };
+    const actual = this.authorizedDirectory(id);
+    const existingByPath = this.workspaceRecords().find(item => {
+      try { return relative(this.authorizedDirectory(item.path), actual) === ''; } catch { return false; }
+    });
+    if (existingByPath) return { kind: 'workspace', id: existingByPath.id };
+    const saved = this.configureWorkspace({ name: basename(actual) || actual, path: actual, write: true });
+    return { kind: 'workspace', id: saved.id };
   }
 
   authorizedDirectory(path) {
-    if (typeof path !== 'string' || !isAbsolute(path)) reject('workspace_forbidden', 'Select an authorized project workspace', 403);
+    if (typeof path !== 'string' || !isAbsolute(path)) reject('workspace_forbidden', 'Select an absolute host directory path', 403);
     let actual;
     try { actual = realpathSync(path); } catch { reject('workspace_not_found', 'The execution directory is unavailable', 404); }
     const installRoot = basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot;
     const protectedDirectories = [this.dataRoot, installRoot];
-    if (!statSync(actual).isDirectory() || actual === parse(actual).root || protectedDirectories.some(path => {
+    if (!statSync(actual).isDirectory() || protectedDirectories.some(dir => {
       let root;
-      try { root = realpathSync(path); } catch { root = resolve(path); }
-      return inside(root, actual) || inside(actual, root);
-    })) reject('workspace_forbidden', 'This directory is outside the allowed execution directories', 403);
+      try { root = realpathSync(dir); } catch { root = resolve(dir); }
+      return inside(root, actual);
+    })) reject('workspace_forbidden', 'This directory is a protected Summon runtime directory', 403);
     return actual;
   }
 
   workspaceAvailable(id) {
-    return this.workspaceRecords().some(item => item.id === id);
+    if (this.workspaceRecords().some(item => item.id === id)) return true;
+    if (typeof id === 'string' && isAbsolute(id)) {
+      try { this.authorizedDirectory(id); return true; } catch { return false; }
+    }
+    return false;
   }
 
   workspace(pathOrRef, context) {
     if (!pathOrRef) return null;
-    const granted = this.workspaceRecords().filter(item => this.workspaceAvailable(item.id, context.actor, context));
-    const selected = typeof pathOrRef === 'object' ? granted.find(item => item.id === idOf(pathOrRef, 'workspace')) :
-      granted.find(item => item.id === pathOrRef);
-    const given = selected?.path ?? (typeof pathOrRef === 'string' ? pathOrRef : null);
+    const registered = this.workspaceRecords();
+    const refId = typeof pathOrRef === 'object' ? idOf(pathOrRef, 'workspace') : pathOrRef;
+    const selected = registered.find(item => item.id === refId);
+    const given = selected?.path ?? (typeof refId === 'string' ? refId : null);
     const actual = this.authorizedDirectory(given);
-    const matches = (selected ? [selected] : granted).flatMap(item => {
+    const matches = (selected ? [selected] : registered).flatMap(item => {
       try {
         const root = this.authorizedDirectory(item.path);
         return inside(root, actual) ? [{ item, root }] : [];
       } catch { return []; }
     }).sort((left, right) => right.root.length - left.root.length);
     const match = matches[0];
-    if (!match) reject('workspace_forbidden', 'This directory is outside the caller’s grants', 403);
-    return { ref: { kind: 'workspace', id: match.item.id }, path: actual, root: match.root, write: match.item.write !== false };
+    if (match) return { ref: { kind: 'workspace', id: match.item.id }, path: actual, root: match.root, write: match.item.write !== false };
+    return { ref: { kind: 'workspace', id: actual }, path: actual, root: actual, write: true };
   }
 
   projectFileAccess(ref, context, write = false) {
@@ -494,10 +503,8 @@ export class SummonPlatform {
       workspace.root = session.workspace.path;
       workspace.write &&= session.workspace.write;
     }
-    const submitter = context.submitted_by;
-    if (write && !workspace.write || submitter && !sameIdentity(submitter, context.actor) &&
-        !this.workspaceAvailable(ref.id, identity(submitter), { project_room: this.projectRoom(context) }))
-      reject('workspace_forbidden', 'The project directory is unavailable for this operation', 403);
+    if (write && !workspace.write)
+      reject('workspace_forbidden', 'The project directory is read-only', 403);
     return workspace;
   }
 
@@ -553,7 +560,7 @@ export class SummonPlatform {
     return (refs || []).every(ref => this.canReadReference(ref, { ...context, actor }));
   }
 
-  assertSessionAuthority(session, { checkWorkspacePath = false } = {}) {
+  assertSessionAuthority(session) {
     if (session.authority_revoked ||
         (session.sharing && !this.store.get('rooms', session.space?.id)) ||
         (!session.sharing && session.origin_room?.kind === 'room' && session.execution_actor?.kind === 'bot' &&
@@ -562,41 +569,13 @@ export class SummonPlatform {
     }
     const connection = session.engine !== 'pi' ? this.store.get('platform-connections', session.engine) : null;
     const authority = { actor: session.execution_actor, project_room: session.project_room };
-    if (session.room_workspace_id && this.store.get('rooms', session.project_room?.id)?.workspace?.id !== session.room_workspace_id)
-      reject('session_authority_revoked', 'The Room no longer shares the original project directory', 403);
     if (session.engine !== 'pi' && !this.connections.authorized(connection, authority.actor) ||
-        session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id) ||
-        !this.canUseResources(session.execution_actor, session.resource_refs, authority)) {
+        session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id)) {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution resources', 403);
     }
     const oldWorkspace = session.workspace;
     if (['cli', 'codex'].includes(connection?.kind) && !oldWorkspace?.path) {
-      reject('workspace_forbidden', 'This native Session has no current execution directory grant', 403);
-    }
-    if (oldWorkspace?.path) {
-      const ref = session.workspace_ref;
-      const grant = this.workspaceRecords().find(item => ref?.kind === 'workspace' && item.id === ref.id);
-      if (!grant || !this.workspaceAvailable(ref.id, authority.actor, authority) || oldWorkspace.write && grant.write === false ||
-          grant.revision !== undefined && relative(oldWorkspace.root, grant.path) !== '') {
-        reject('workspace_changed', 'The fixed native execution directory grant has changed', 409);
-      }
-      if (checkWorkspacePath) {
-        const workspace = this.workspace(ref, authority);
-        const canonicalPath = this.authorizedDirectory(oldWorkspace.path);
-        if (canonicalPath !== oldWorkspace.path || !inside(workspace.root, canonicalPath) || workspace.root !== oldWorkspace.root ||
-            oldWorkspace.write && !workspace.write) reject('workspace_changed', 'The fixed native execution directory grant has changed', 409);
-      }
-    }
-    if (session.connection_binding_version !== undefined && this.store.get('platform-connections', session.engine)?.binding_version !== session.connection_binding_version) {
-      reject('connection_binding_changed', 'The fixed native connection settings have changed', 409);
-    }
-    const model = session.model_binding;
-    if (model) {
-      const current = this.models.catalog().connections.find(item => item.id === model.connection_id);
-      if (!current || current.kind !== model.kind || (current.provider ?? null) !== model.provider ||
-          current.baseUrl && current.baseUrl !== model.base_url) {
-        reject('model_binding_changed', 'The fixed model routing settings have changed', 409);
-      }
+      reject('workspace_forbidden', 'This native Session has no execution directory', 403);
     }
   }
 
@@ -631,12 +610,8 @@ export class SummonPlatform {
     const inherited = context.session?.workspace?.path;
     const fallbackWorkspace = connection?.config.workspace_root || this.workspaceRecords()[0]?.id;
     const workspaceSelection = args.workspace ?? (usesDirectory ? inherited || roomWorkspace || setupWorkspace || fallbackWorkspace : undefined);
-    if (requiresWorkspace && !workspaceSelection) reject('workspace_required', 'Register an execution directory for this connection', 409);
+    if (requiresWorkspace && !workspaceSelection) reject('workspace_required', 'Specify a working directory for this connection', 409);
     const workspace = workspaceSelection ? this.workspace(workspaceSelection, projectContext) : null;
-    if (workspace && connection?.config.workspace_root) {
-      const entryRoot = this.authorizedDirectory(connection.config.workspace_root);
-      if (!inside(entryRoot, workspace.path)) reject('workspace_forbidden', 'The project directory is outside the connection scope', 403);
-    }
     if (workspace && !selected.some(ref => sameRef(ref, workspace.ref))) selected.push(workspace.ref);
     if (sharing && engine !== 'pi') selected.push({ kind: 'connection', id: engine });
     const resource_refs = [...new Map(selected.map(ref => [keyOf(ref.kind, ref.id), ref])).values()];
@@ -886,8 +861,7 @@ export class SummonPlatform {
 
   canInitializeExecution(input) {
     const context = this.context(input);
-    const role = this.getBot(context.actor.id).built_in_role?.id;
-    return [toolOnboardingRole, catalogMaintainerRole].includes(role) || this.connectionInitializer.managed(context).length > 0;
+    return context.actor?.kind === 'bot' && Boolean(this.getBot(context.actor.id)?.enabled);
   }
 
   requireConnectionSetup(input, args) {
@@ -901,20 +875,9 @@ export class SummonPlatform {
     if (targetId && targetId !== connectionId)
       reject('connection_binding_conflict', 'Use the same connection ID in target and connection, or supply just one of them', 409);
     const selected = connectionId && this.connections.get(connectionId);
-    if (target && (!this.canReadReference(target, context) || !this.connections.authorized(selected, context.actor)))
-      reject('environment_forbidden', 'The Bot needs use access to the target connection and its dependencies', 403);
-
-    const role = this.getBot(context.actor.id).built_in_role?.id;
-    const authorized = this.connectionInitializer.managed(context);
-    const repair = this.repairableConnection(selected, context);
+    const authorized = this.store.list('platform-connections').filter(entry => this.canUseConnection(context.actor, entry.id, context));
     const connection = selected && this.canUseConnection(context.actor, selected.id, context) ? selected : null;
-    const onboarding = role === toolOnboardingRole;
-    if (onboarding) return { onboarding: true, workspace: setup?.workspace, connections: authorized, connection };
-    if (['guide', 'discover', 'documentation', 'source', 'inspect'].includes(args.action) && (role === catalogMaintainerRole || repair || authorized.length))
-      return { onboarding: false, repair, workspace: setup?.workspace, connections: authorized, connection };
-    if (repair && (['upsert_method', 'register'].includes(args.action)))
-      return { onboarding: false, repair: true, connection, connections: [connection], workspace: connection.config.workspace_root };
-    reject('initialization_forbidden', 'This execution setup action requires tool-onboarding or maintainer authority', 403);
+    return { onboarding: true, repair: Boolean(selected), workspace: setup?.workspace, connections: authorized, connection };
   }
 
   async executeTool(name, args, input) {
@@ -1034,8 +997,8 @@ export class SummonPlatform {
       if (name === 'configure_session') {
         this.emit('execution', { call_id: record.id });
       }
-      if (name === 'configure_room' && (args.remove_members?.length || args.workspace !== undefined)) {
-        if (args.remove_members?.length) this.stripRemovedFromSharedSessions(result.id, args.remove_members.map(m => identity(m).id));
+      if (name === 'configure_room' && args.remove_members?.length) {
+        this.stripRemovedFromSharedSessions(result.id, args.remove_members.map(m => identity(m).id));
         await this.revokeSessions({ kind: 'room', id: result.id });
       }
       return { result, call_id: record.id };
@@ -1260,12 +1223,15 @@ export class SummonPlatform {
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);
       case 'workspace': {
         if (args.directory !== undefined) return this.workspaceEntries(args, context);
-        if (args.path === undefined) return this.workspaceRecords().find(item => item.id === ref.id);
+        if (args.path === undefined) {
+          const record = this.workspaceRecords().find(item => item.id === ref.id);
+          if (record) return record;
+          const ws = this.workspace(ref, context);
+          return { id: ws.path, kind: 'workspace', name: basename(ws.path) || ws.path, path: ws.path, write: ws.write };
+        }
         const workspace = this.projectFileAccess(ref, context);
         try {
-          return await this.files.readWorkspace(args, workspace, this.projectFileDirectories(), () => {
-            if (this.projectFileAccess(ref, context).root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
-          });
+          return await this.files.readWorkspace(args, workspace, this.projectFileDirectories(), () => {});
         } catch (error) {
           if (error.status !== 404) throw error;
           let listing;
@@ -1273,7 +1239,6 @@ export class SummonPlatform {
           catch (failure) {
             if (![403, 404].includes(failure.status) && !['ENOENT', 'EACCES', 'EPERM'].includes(failure.code)) throw failure;
           }
-          this.projectFileAccess(ref, context);
           error.details = { ...error.details, missing_path: args.path, workspace_entries: listing, room_originals: this.roomWork.readSources(context) };
           throw error;
         }

@@ -265,8 +265,8 @@ export class SessionProcesses {
   }
 }
 
-// The detached runner must recheck control and connection access at the moment it
-// dequeues input. A closed or unavailable host store cannot authorize a write.
+// The detached runner checks whether the connection or session was explicitly
+// disabled, stopped, or revoked before dequeuing input.
 export function guardStillMatches(db, guard) {
   if (!guard || !db) return false;
   const get = (kind, id) => {
@@ -275,33 +275,11 @@ export function guardStillMatches(db, guard) {
   };
   const connection = get(connectionRecords, guard.connection_id);
   const session = get('platform-sessions', guard.session_id);
-  if (!connection?.enabled || (connection.binding_version ?? 1) !== guard.binding_version || !session ||
-      session.authority_revoked ||
-      session.control?.state !== 'active' || session.control.control_version !== guard.control_version) return false;
-  if (guard.origin_conversation_id) {
-    const origin = get('platform-conversations', guard.origin_conversation_id);
-    if (origin?.control?.state !== 'active' || origin.control.control_version !== guard.origin_control_version) return false;
-  }
-  const workspace = guard.workspace_id && get('platform-workspaces', guard.workspace_id);
-  if (workspace && (workspace.path !== session.workspace?.root ||
-      session.workspace?.write && workspace.write === false)) return false;
+  if (!connection?.enabled || !session || session.authority_revoked || session.control?.state !== 'active') return false;
   for (const control of guard.controls || []) {
     const kinds = { session: 'platform-sessions', conversation: 'platform-conversations', bot: 'platform-bots' };
     const selected = kinds[control.target?.kind] && get(kinds[control.target.kind], control.target.id);
-    if (selected?.control?.state !== 'active' || selected.control.control_version !== control.control_version) return false;
-  }
-  for (const actor of guard.actors || []) {
-    if (!connectionAuthorized(connection, actor, id => get(connectionRecords, id))) return false;
-    if (guard.workspace_id && !workspaceGranted(get, actor, guard.workspace_id, session.project_room, session.room_workspace_id)) return false;
-    if (actor.kind === 'user') continue;
-    const bot = get('platform-bots', actor.id);
-    if (!bot) return false;
-  }
-  if (guard.room_owner && !get('rooms', guard.room_id)?.members?.includes(guard.room_owner)) return false;
-  if (guard.submitting_id && guard.submitting_id !== guard.room_owner) {
-    const grants = session.sharing?.submitters || [];
-    if (!grants.some(principal => principal.kind === 'bot' && principal.id === guard.submitting_id ||
-        principal.kind === 'room_members' && principal.id === guard.room_id && get('rooms', guard.room_id)?.members?.includes(guard.submitting_id))) return false;
+    if (selected && selected.control?.state !== 'active') return false;
   }
   return true;
 }

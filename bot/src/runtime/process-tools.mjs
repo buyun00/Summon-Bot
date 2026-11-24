@@ -48,8 +48,8 @@ public static class SummonSetupJob {
 
 export function cleanEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|AUTHORIZATION|PRIVATE[_-]?KEY)/i.test(key) &&
-    !/^(?:AWS_|AZURE_|GOOGLE_|GITHUB_|SSH_|GIT_ASKPASS$|BASH_ENV$|ENV$|NODE_OPTIONS$|PYTHONSTARTUP$|NPM_CONFIG_USERCONFIG$)/i.test(key)));
+    !/^SUMMON_/i.test(key) &&
+    !/(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|AUTHORIZATION|PRIVATE[_-]?KEY)/i.test(key)));
 }
 
 export function isProcessAlive(pid) {

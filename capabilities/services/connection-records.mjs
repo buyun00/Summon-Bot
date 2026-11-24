@@ -6,8 +6,7 @@ import { sshBinding } from './ssh-binding.mjs';
 export const connectionRecords = 'platform-connections';
 export const executionRecords = 'platform-sessions';
 export const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-export const canSupplyProcessArguments = (entry, actor) =>
-  !entry.config.ssh && (actor?.kind === 'user' || entry.config.allow_arguments === true);
+export const canSupplyProcessArguments = entry => Boolean(entry && !entry.config.ssh);
 const kinds = ['cli', 'codex', 'http', 'mcp'];
 const envName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -46,12 +45,10 @@ export function validateConnection(entry) {
   }
   if (entry.kind === 'cli' || entry.kind === 'codex') {
     validateNativePaths(entry.config);
-    const { credential_refs, methods, adapter, app_server_stdio, launch_arguments, allow_arguments, workspace_write, model, effort } = entry.config;
+    const { credential_refs, methods, adapter, app_server_stdio, launch_arguments, allow_arguments, workspace_write, model, effort, sandbox, approval_policy } = entry.config;
     if (entry.config.ssh !== undefined) {
-      const file = entry.config.canonical_file;
-      if (entry.kind !== 'cli' || adapter || methods || allow_arguments || credential_refs?.length ||
-          basename(file, extname(file)).toLowerCase() !== 'ssh' || process.platform === 'win32' && extname(file).toLowerCase() !== '.exe')
-        reject('invalid_ssh_binding', 'SSH uses fixed operations for its registered target');
+      if (entry.kind !== 'cli' || adapter)
+        reject('invalid_ssh_binding', 'SSH uses a CLI connection binding');
       sshBinding(entry.config.ssh);
     }
     if (credential_refs !== undefined && (!Array.isArray(credential_refs) ||
@@ -85,7 +82,9 @@ export function validateConnection(entry) {
     if (launch_arguments !== undefined) validateLaunchArguments(launch_arguments,
       entry.kind === 'codex' ? connectorFor(entry.kind) : adapter?.recipe || adapter?.source !== undefined ? null : connectorFor(adapter?.connector));
     if (entry.kind === 'codex' && (model !== undefined && (typeof model !== 'string' || !model.trim()) ||
-        effort !== undefined && (typeof effort !== 'string' || !effort.trim())))
-      reject('invalid_connection', 'Codex defaults must be non-empty strings');
+        effort !== undefined && (typeof effort !== 'string' || !effort.trim()) ||
+        sandbox !== undefined && !['danger-full-access', 'workspace-write', 'read-only', 'inherit'].includes(sandbox) ||
+        approval_policy !== undefined && !['never', 'on-request', 'untrusted', 'on-failure', 'inherit'].includes(approval_policy)))
+      reject('invalid_connection', 'Invalid Codex connection defaults');
   }
 }

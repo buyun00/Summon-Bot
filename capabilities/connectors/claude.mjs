@@ -6,9 +6,7 @@ export const claude = {
   id: 'claude-code', name: 'Claude Code', command: 'claude', kind: 'cli',
   guide: new URL('./claude.md', import.meta.url), source: new URL(import.meta.url),
   documentation: 'https://code.claude.com/docs/en/headless.md',
-  protocolOptions: ['--print', '--input-format', '--output-format', '--json-schema', '--verbose', '--resume', '--continue', '--session-id',
-    '--fork-session', '--no-session-persistence', '--from-pr', '--add-dir', '--worktree', '--background', '--bg', '--cloud', '--teleport',
-    '--permission-prompts', '--ide', '--chrome', '--remote-control', '--tmux'],
+  protocolOptions: ['--print', '--input-format', '--output-format', '--resume'],
   candidates: roots => process.platform === 'win32' ? [
     join(homedir(), '.local', 'bin', 'claude.exe'),
     ...roots.map(root => join(root, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')),

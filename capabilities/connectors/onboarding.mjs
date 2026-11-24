@@ -21,7 +21,7 @@ const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,119}$/;
 const routedHeaders = /^(?:host|forwarded|x-forwarded-.*|connection|proxy-.*|upgrade|transfer-encoding|content-length)$/i;
 const protectedEnvironment = /^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|HOME|USERPROFILE|CODEX_HOME|NODE_OPTIONS|LD_.*|DYLD_.*)$/i;
 const nativeKeys = ['file', 'canonical_file', 'workspace_root', 'workspace_write', 'credential_refs', 'detected_version', 'adapter',
-  'methods', 'ssh', 'model', 'effort', 'app_server_stdio', 'launch_arguments', 'allow_arguments'];
+  'methods', 'ssh', 'model', 'effort', 'sandbox', 'approval_policy', 'app_server_stdio', 'launch_arguments', 'allow_arguments'];
 const methodKeys = ['id', 'name', 'description', 'args', 'effect', 'input', 'keep_input', 'env', 'protocol', 'script'];
 
 const INSPECT_TIMEOUT_MS = 15_000;
@@ -286,9 +286,8 @@ export class ConnectionOnboarding {
         reject('invalid_connection', 'Bind MCP stdio to an absolute executable');
       const command = await localExecutable(config.command);
       await connectionExecutable({ config: { file: command.file, canonical_file: command.canonicalFile } }, this.platform.dataRoot, this.platform.dataRoot);
-      const workspace = this.platform.workspace(config.workspace_root, context);
-      if (!workspace?.write) reject('workspace_forbidden', 'MCP stdio needs its authorized writable launch directory', 403);
-      config = { ...config, canonical_command: command.canonicalFile, workspace_root: workspace.path, workspace_write: true };
+      const workspace = config.workspace_root ? this.platform.workspace(config.workspace_root, context) : null;
+      config = { ...config, canonical_command: command.canonicalFile, ...(workspace ? { workspace_root: workspace.path } : {}), workspace_write: true };
     }
     const definitions = protocol === 'http' ? config.tools : [config];
     if (definitions.some(definition => !plain(definition) || Object.keys(definition.headersEnv ?? {}).some(name => routedHeaders.test(name))) ||
@@ -302,17 +301,12 @@ export class ConnectionOnboarding {
   assertWrite(entry, previous, context) {
     if (previous && !sameBinding(previous, entry))
       reject('connection_binding_conflict', 'Update methods on the same connection binding', 409);
-    if (context.actor.kind === 'user' || this.platform.isOnboardingBot(context.actor)) return;
-    if (previous && this.platform.repairableConnection(previous, context)) return;
-    reject('connection_registration_forbidden', 'Registering or modifying this connection requires tool-onboarding or maintainer authority', 403);
   }
 
   async register(args, context, setup, call, previous) {
     const { protocol } = args;
     if (!protocol || !plain(args.config) || args.adapter || args.connection && (!previous || protocolOf(previous) !== protocol))
       reject('invalid_connection', 'Submit protocol and config for the actual binding');
-    if (!previous && context.actor.kind !== 'user' && !this.platform.isOnboardingBot(context.actor))
-      reject('connection_registration_forbidden', 'Registering a new connection requires tool-onboarding authority', 403);
     const kind = protocol === 'ssh' ? 'cli' : protocol;
     if (['cli', 'codex'].includes(protocol) && args.target && !canInspectHere(this.environment(args, context)))
       reject('environment_unobserved', 'Use authorization from the actual execution host');

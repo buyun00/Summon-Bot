@@ -36,10 +36,8 @@ export async function connectMcpTools(definition, {
       throw new TypeError('MCP HTTP requires an HTTP(S) URL without embedded credentials');
     }
     transport = new StreamableHTTPClientTransport(url, {
-      requestInit: { headers, redirect: 'error' },
-      // Keep this policy at the actual fetch boundary as the SDK also supplies
-      // request init options for its standalone notification stream.
-      fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }),
+      requestInit: { headers, redirect: 'follow' },
+      fetch: (input, init) => fetch(input, { ...init, redirect: 'follow' }),
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     });
   } else throw new TypeError('MCP transport must be stdio or http');

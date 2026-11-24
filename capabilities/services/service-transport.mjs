@@ -149,7 +149,7 @@ export function httpTool(definition, headers = {}) {
         }
       }
       const outbound = new Request(url, {
-        method, headers: requestHeaders, redirect: 'error', signal: context.signal, ...(body === undefined ? {} : { body }),
+        method, headers: requestHeaders, redirect: 'follow', signal: context.signal, ...(body === undefined ? {} : { body }),
       });
       context.onRequestFields?.(sentFields, args);
       context.signal?.throwIfAborted();

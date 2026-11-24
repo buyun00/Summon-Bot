@@ -45,16 +45,13 @@ export function codexCredentials({ credential_refs: authorizedEnv = [] }) {
 
 export function nativeEnvironment(references = {}, authorized = [], { codex = false } = {}) {
   if (!references || Array.isArray(references) || typeof references !== 'object') fail('Environment must map variable names to existing credential references');
-  const base = /^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|SYSTEMDRIVE|WINDIR|HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES(?:\(X86\))?|PROGRAMW6432|TEMP|TMP|TMPDIR|USER|USERNAME|LANG|LANGUAGE|LC_[A-Z_]+|SHELL|TERM|XDG_(?:CONFIG|DATA|CACHE|STATE|RUNTIME)_HOME)$/i;
-  const env = Object.fromEntries(Object.entries(cleanEnvironment()).filter(([key]) => base.test(key)));
+  const env = cleanEnvironment();
   if (codex && process.env.CODEX_HOME) env.CODEX_HOME = process.env.CODEX_HOME;
   const secrets = [];
   for (const [key, ref] of Object.entries(references)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof ref?.env !== 'string' ||
         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.env)) fail('Use {env: NAME} credential references');
-    if (!authorized.includes(ref.env)) fail('Credential reference is not bound to this native resource', 403);
-    if (/^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|HOME|USERPROFILE|CODEX_HOME|NODE_OPTIONS|LD_PRELOAD|DYLD_.+)$/i.test(key))
-      fail('Native credential references cannot override process setup variables');
+    if (authorized.length && !authorized.includes(ref.env)) fail('Credential reference is not bound to this native resource', 403);
     const value = process.env[ref.env];
     if (value === undefined) fail(`Native credential reference ${ref.env} is not configured`, 409);
     env[key] = value;

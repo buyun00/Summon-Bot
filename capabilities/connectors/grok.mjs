@@ -6,8 +6,7 @@ export const grok = {
   id: 'grok-build', name: 'Grok Build', command: 'grok', kind: 'cli',
   guide: new URL('./grok.md', import.meta.url), source: new URL(import.meta.url),
   documentation: 'https://raw.githubusercontent.com/xai-org/grok-build/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md',
-  protocolOptions: ['--single', '--prompt-file', '--prompt-json', '--output-format', '--json-schema', '--resume', '--continue', '--session-id',
-    '--fork-session', '--restore-code', '--cwd', '--add-dir', '--worktree', '--worktree-ref', '--leader-socket', '--oauth'],
+  protocolOptions: ['--single', '--prompt-file', '--prompt-json', '--output-format', '--resume'],
   candidates: () => [join(homedir(), '.grok', 'bin', process.platform === 'win32' ? 'grok.exe' : 'grok')],
   settings(help) {
     const formats = ['streaming-messages-json', 'streaming-json', 'json'];
