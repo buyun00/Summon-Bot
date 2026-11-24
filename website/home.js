@@ -7,6 +7,7 @@
   const viewport = preview ? page : window;
   const scrollY = () => preview ? page.scrollTop : window.scrollY;
   const viewportTop = () => preview ? page.getBoundingClientRect().top : 0;
+  const viewportHeight = () => preview ? page.clientHeight : window.innerHeight;
   const clamp = (value, low = 0, high = 1) => Math.max(low, Math.min(high, value));
   const ease = value => value * value * (3 - 2 * value);
   const hero = find('.opening');
@@ -15,6 +16,8 @@
   const dock = find('.dock');
   const reel = find('.reel');
   const roomBar = find('.room-bar');
+  const roomBarInset = () => parseFloat(getComputedStyle(roomBar).top) || 0;
+  const progressFill = find('.reel-progress i');
   const binding = find('.folio-binding');
   const sheet = find('.turning-sheet');
   const rooms = all('.room-story');
@@ -94,15 +97,15 @@
     const source = mount.getBoundingClientRect();
     const destination = dock.getBoundingClientRect();
     const room = reel.getBoundingClientRect();
-    const navHeight = find('.mast').offsetHeight;
     const roomBarHeight = roomBar.offsetHeight;
-    reel.style.setProperty('--room-bar-height', roomBarHeight + 'px');
-    const height = preview ? page.clientHeight : window.innerHeight;
+    if (geometry?.roomBarHeight !== roomBarHeight) {
+      reel.style.setProperty('--room-bar-height', roomBarHeight + 'px');
+    }
     geometry = {
       sceneTop: scene.top + offset,
       roomTop: room.top + offset,
       roomHeight: room.height,
-      height, navHeight, roomBarHeight,
+      width: page.clientWidth, height: viewportHeight(), inset: roomBarInset(), roomBarHeight,
       sourceX: source.left + source.width / 2,
       sourceY: source.top + offset + source.height / 2,
       dockX: destination.left + destination.width / 2,
@@ -121,8 +124,8 @@
     const y = scrollY();
     const g = geometry;
     heroVisible = y < g.roomTop && y + g.height > g.sceneTop;
-    const start = g.sceneTop - g.navHeight + Math.min(26, g.height * .035);
-    progress = clamp((y - start) / Math.max(1, g.roomTop - g.navHeight - start));
+    const start = g.sceneTop - g.inset + Math.min(26, g.height * .035);
+    progress = clamp((y - start) / Math.max(1, g.roomTop - g.inset - start));
     const flying = motion && progress > 0;
     const p = ease(progress);
     hero.classList.toggle('is-flying', flying);
@@ -134,7 +137,7 @@
       flight.style.setProperty('--fly-y', ((g.dockY - g.sourceY) * travel).toFixed(2) + 'px');
       flight.style.setProperty('--fly-s', (1 + (g.dockScale - 1) * travel).toFixed(5));
     }
-    const readingLine = y + g.navHeight + g.roomBarHeight + Math.min(g.height * .19, 145);
+    const readingLine = y + g.inset + g.roomBarHeight + Math.min(g.height * .19, 145);
     const visibleBottom = y + g.height - Math.min(48, g.height * .08);
     for (const { reply, record, status, top } of g.replies) {
       if (top <= visibleBottom && !record.classList.contains('is-resolved')) {
@@ -152,8 +155,8 @@
         else link.removeAttribute('aria-current');
       });
     }
-    const read = clamp((y - g.roomTop + g.navHeight) / Math.max(1, g.roomHeight - g.height + g.navHeight));
-    reel.style.setProperty('--read', read.toFixed(4));
+    const read = clamp((y - g.roomTop + g.inset) / Math.max(1, g.roomHeight - g.height + g.inset));
+    progressFill.style.transform = 'scaleX(' + read.toFixed(4) + ')';
     scrollDirty = false;
     paintDirty = true;
   }
@@ -225,20 +228,23 @@
   }, { passive: true });
   hero.addEventListener('pointerleave', () => { pointer.aimX = pointer.aimY = 0; });
   viewport.addEventListener('scroll', () => { scrollDirty = true; requestFrame(); }, { passive: true });
-  window.addEventListener('resize', requestLayout, { passive: true });
+  window.addEventListener('resize', () => {
+    if (!geometry || page.clientWidth !== geometry.width || !('ResizeObserver' in window)) {
+      requestLayout();
+      return;
+    }
+    // Mobile browser controls change the viewport height while the page is scrolling.
+    // The observer below handles any actual change in the hero, bar or transcript size.
+    geometry.height = viewportHeight();
+    scrollDirty = true;
+    requestFrame();
+  }, { passive: true });
   window.addEventListener('pageshow', requestLayout);
   if ('ResizeObserver' in window) {
     const observer = new ResizeObserver(requestLayout);
-    [hero, reel, mount, find('.room-bar')].forEach(element => observer.observe(element));
+    [hero, reel, mount, roomBar].forEach(element => observer.observe(element));
   }
   document.fonts?.ready.then(requestLayout);
-  const compactNotes = matchMedia('(max-width: 760px)');
-  const notes = all('.margin-note');
-  function setNoteLayout() {
-    for (const note of notes) note.open = !compactNotes.matches;
-  }
-  setNoteLayout();
-  compactNotes.addEventListener('change', setNoteLayout);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { cancelAnimationFrame(frame); frame = 0; }
     else { lastPaint = 0; requestLayout(); }
@@ -250,7 +256,7 @@
         entry.target.classList.toggle('ahead', !entry.isIntersecting && entry.boundingClientRect.top >= limit);
       }
     }, { root: preview ? page : null, rootMargin: '0px 0px -6% 0px' });
-    for (const element of all('.msg, .note, .end-copy')) {
+    for (const element of all('.msg, .end-copy')) {
       element.classList.add('reveal');
       observer.observe(element);
     }
@@ -331,7 +337,7 @@
     if (saved) {
       const offset = Math.min(saved.offset, Math.max(0, saved.row.offsetHeight - 1));
       const top = scrollY() + saved.row.getBoundingClientRect().top - viewportTop()
-        - find('.mast').offsetHeight - roomBar.offsetHeight - 12 + offset;
+        - roomBarInset() - roomBar.offsetHeight - 12 + offset;
       viewport.scrollTo({ top, behavior: 'instant' });
     } else if (!visit.keepViewport) {
       follow(target, !switching && visit.rememberUrl);
@@ -349,13 +355,13 @@
     cancelTurn();
     const { room } = visit;
     if (visit.resume && room === activeRoom) return;
-    const windowHeight = preview ? page.clientHeight : window.innerHeight;
+    const windowHeight = viewportHeight();
     const barRect = roomBar.getBoundingClientRect();
     const barBottom = barRect.bottom - viewportTop();
     // The first folders can be reached while the cover is still partly visible.
     // Opening a fresh folder here leaves the rack where the reader clicked it.
     visit.keepViewport = visit.resume && room !== activeRoom && !bookmarks.has(room) &&
-      barRect.top - viewportTop() > find('.mast').offsetHeight + 2 && barBottom < windowHeight - 80;
+      barRect.top - viewportTop() > roomBarInset() + 2 && barBottom < windowHeight - 80;
     if (!room || room === activeRoom || !motion || !visit.animate || !sheet.animate ||
         barBottom >= windowHeight || barBottom <= 0) {
       openTarget(visit);
@@ -383,7 +389,7 @@
       await visit.animation.finished;
       if (paperTurn !== visit) return;
       openTarget(visit);
-      const visibleHeight = (preview ? page.clientHeight : window.innerHeight) - roomBar.getBoundingClientRect().bottom + viewportTop();
+      const visibleHeight = viewportHeight() - roomBar.getBoundingClientRect().bottom + viewportTop();
       binding.style.setProperty('--folio-height', Math.max(0, visibleHeight) + 'px');
       visit.animation.cancel();
       visit.animation = sheet.animate([
