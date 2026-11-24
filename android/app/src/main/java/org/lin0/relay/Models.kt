@@ -291,6 +291,32 @@ data class SummonMessageSummary(val botId: String, val summary: String, val upda
     }
 }
 
+data class SummonRoomActivity(
+    val botId: String,
+    val phase: String? = null,
+    val text: String,
+    val workSummary: String? = null,
+    val executionRef: SummonReference? = null,
+    val startedAt: String? = null,
+    val updatedAt: String? = null,
+) {
+    companion object {
+        fun list(json: SummonJson): List<SummonRoomActivity> = json.array.orEmpty().mapNotNull {
+            val id = it["bot_id"].string ?: return@mapNotNull null
+            val text = it["text"].string?.takeIf { value -> value.isNotBlank() } ?: return@mapNotNull null
+            SummonRoomActivity(
+                botId = id,
+                phase = it["phase"].string,
+                text = text,
+                workSummary = it["work_summary"].string,
+                executionRef = SummonReference.parse(it["execution_ref"]),
+                startedAt = it["started_at"].string,
+                updatedAt = it["updated_at"].string,
+            )
+        }
+    }
+}
+
 data class SummonReceipt(val message: SummonMessage, val deliveries: List<SummonDelivery>) {
     companion object {
         fun parse(json: SummonJson): SummonReceipt = SummonReceipt(SummonMessage.parse(json["message"]), SummonDelivery.list(json["deliveries"]))

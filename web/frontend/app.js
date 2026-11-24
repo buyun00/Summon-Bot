@@ -184,7 +184,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
-  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomActivities:[], roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -657,6 +657,7 @@ function render() {
     resizeComposer($('#message-input')); hydrateMotion(main, motion);
     const panel = $('.detail-panel'); if (panel && panel.dataset.section === saved.panelSection) panel.scrollTop = saved.panelTop || 0;
   }
+  syncBotActivityDock();
   restoreFocus(saved); restoreConversation(); markCurrentRoomRead();
   window.SummonMotion?.finishNavigation(navigation);
 }
@@ -828,7 +829,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, deliveries, summaries = {}, suspendedRuns = [], messageStates = {}, chainState = null, staleWaits = [], room, cursor } = synced.snapshot;
+  const { messages, deliveries, summaries = {}, activities = [], suspendedRuns = [], messageStates = {}, chainState = null, staleWaits = [], room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -838,6 +839,7 @@ async function loadCurrent() {
   ui.messagesRoomId = id; ui.messages = cached.messages; ui.historyCursor = cached.historyCursor;
   ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries || {})]);
   ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(summaries || {})]);
+  ui.roomActivities = Array.isArray(activities) ? activities : [];
   ui.roomSuspendedRuns = Array.isArray(suspendedRuns) ? suspendedRuns : [];
   ui.roomMessageStates = messageStates || {};
   ui.roomChainState = chainState || null;
@@ -898,6 +900,7 @@ async function restoreRoomMessages(id) {
   ui.messages = cached?.messages || []; ui.historyCursor = cached?.historyCursor; ui.messagesRoomId = cached ? id : null;
   ui.roomDeliveries = new Map(Object.entries(cached?.snapshot.deliveries || {}));
   ui.roomSummaries = new Map(Object.entries(cached?.snapshot.summaries || {}));
+  ui.roomActivities = Array.isArray(cached?.snapshot.activities) ? cached.snapshot.activities : [];
   ui.roomExecutions = []; ui.roomWakeups = []; ui.roomFiles = [];
 }
 
@@ -907,7 +910,7 @@ async function acceptHistoryEpoch(response, generation) {
   if (epoch === ui.historyEpoch) return true;
   if (generation !== ui.historyGeneration || ui.retiredHistoryEpochs.has(epoch)) { scheduleRefresh(); return false; }
   ui.retiredHistoryEpochs.add(ui.historyEpoch); ui.historyEpoch = epoch; ui.historyGeneration++;
-  ui.messages = []; ui.roomDeliveries.clear(); ui.roomSummaries.clear(); ui.messagesRoomId = null;
+  ui.messages = []; ui.roomDeliveries.clear(); ui.roomSummaries.clear(); ui.roomActivities = []; ui.messagesRoomId = null;
   ui.messageCache.clear(); ui.stateSnapshot = null; ui.stateCursor = null;
   await globalThis.SummonCache?.resetHistory(epoch, clientSessionSnapshot());
   return true;
@@ -1066,7 +1069,8 @@ async function selectRoom(id) {
   if (!id) return;
   ui.navigationSeq++; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
-  ui.roomMessageStates = {}; ui.roomChainState = null; ui.roomStaleWaits = []; ui.roomSuspendedRuns = [];
+  ui.roomMessageStates = {}; ui.roomChainState = null; ui.roomStaleWaits = []; ui.roomSuspendedRuns = []; ui.roomActivities = [];
+  ui.openRoomExecution = null; ui.activityTickerIndex = 0;
   location.hash = 'chat';
   await restoreRoomMessages(id);
   render();
@@ -1928,6 +1932,15 @@ async function act(action, element) {
     return updateAvatarPicker(element.dataset.mode || 'edit');
   }
   if (action === 'open-execution') return openReference(ref);
+  if (action === 'toggle-room-executions') {
+    if (!ui.roomId) return;
+    ui.openRoomExecution = ui.openRoomExecution === ui.roomId ? null : ui.roomId;
+    return render();
+  }
+  if (action === 'close-room-executions') {
+    ui.openRoomExecution = null;
+    return render();
+  }
   if (action === 'new-execution') return openExecutionForm();
   if (action === 'stop-execution') return controlExecution();
   if (action === 'more-execution-output') {
@@ -1980,10 +1993,14 @@ async function act(action, element) {
       if (qDraft.selected.length) qDraft.custom = '';
     }
     draft[qid] = qDraft;
+    ui.activePromptMsgId = msgId;
     return render();
   }
   if (action === 'prompt-submit') {
     return submitPromptCard(element.dataset.msgId);
+  }
+  if (action === 'prompt-skip') {
+    return skipPromptCard(element.dataset.msgId);
   }
   if (action === 'exec-prompt-select') {
     const key = element.dataset.execKey, choiceId = element.dataset.choiceId;
@@ -1993,6 +2010,9 @@ async function act(action, element) {
   }
   if (action === 'exec-prompt-submit') {
     return submitExecPromptCard(element.dataset.execKey);
+  }
+  if (action === 'exec-prompt-skip') {
+    return skipExecPromptCard(element.dataset.execKey);
   }
   if (action === 'manual-fallback') {
     if (!ui.roomId || !id) return;
@@ -2166,6 +2186,7 @@ document.addEventListener('input', event => {
       }
     }
     draft[qid] = qDraft;
+    ui.activePromptMsgId = msgId;
     syncPromptSubmitButton(msgId, event.target.closest('.prompt-card'));
   }
   if (event.target.matches('.exec-prompt-input')) {
@@ -2184,7 +2205,55 @@ document.addEventListener('input', event => {
     persistClientSession();
   }
 });
-document.addEventListener('keydown', event => { if (event.target.id === 'message-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); const button = $('#message-form button[type=submit]'); if (!button?.disabled) $('#message-form')?.requestSubmit(); } });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  const target = event.target;
+  if (target.id === 'message-input') {
+    event.preventDefault();
+    const button = $('#message-form button[type=submit]');
+    if (!button?.disabled) $('#message-form')?.requestSubmit();
+    return;
+  }
+  if (target.matches?.('.exec-prompt-input')) {
+    event.preventDefault();
+    void submitExecPromptCard(target.dataset.execKey).catch(error => toast(error.message, true));
+    return;
+  }
+  if (target.matches?.('.prompt-custom-input')) {
+    event.preventDefault();
+    void submitPromptCard(target.dataset.msgId).catch(error => toast(error.message, true));
+    return;
+  }
+  const execCard = target.closest?.('.exec-pending-card');
+  if (execCard && !target.matches?.('[data-action="exec-prompt-skip"]')) {
+    const key = execCard.dataset.execKey;
+    if (key && String(ui.execPromptDrafts.get(key) ?? '').trim()) {
+      event.preventDefault();
+      void submitExecPromptCard(key).catch(error => toast(error.message, true));
+      return;
+    }
+  }
+  const promptCard = target.closest?.('.prompt-card[data-prompt-msg]:not(.is-answered)');
+  if (promptCard && !target.matches?.('[data-action="prompt-skip"]')) {
+    const msgId = promptCard.dataset.promptMsg;
+    const msg = mergedRoomMessages(ui.roomId, ui.messages).find(item => item.id === msgId);
+    if (msg?.prompt && isPromptReady(msg.prompt, ui.promptDrafts.get(msgId))) {
+      event.preventDefault();
+      void submitPromptCard(msgId).catch(error => toast(error.message, true));
+      return;
+    }
+  }
+  if (ui.activePromptMsgId && ui.view === 'chat' && !$('#modal')?.open &&
+      (!target || target === document.body || target.matches?.('.messages, .message-bubble'))) {
+    const msgId = ui.activePromptMsgId;
+    const timeline = mergedRoomMessages(ui.roomId, ui.messages);
+    const msg = timeline.find(item => item.id === msgId);
+    if (msg?.prompt && !findPromptAnswer(msg, timeline) && isPromptReady(msg.prompt, ui.promptDrafts.get(msgId))) {
+      event.preventDefault();
+      void submitPromptCard(msgId).catch(error => toast(error.message, true));
+    }
+  }
+});
 document.addEventListener('compositionstart', event => { if (event.target.id === 'message-input' || event.target.matches?.('.prompt-custom-input, .exec-prompt-input')) ui.composing = true; });
 document.addEventListener('compositionend', event => {
   if (event.target.id === 'message-input') { ui.composing = false; ui.drafts[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); if (ui.renderDeferred) render(); return; }
@@ -2714,24 +2783,6 @@ function renderBotMemorySection(bot) {
     ${rows || '<p class="panel-empty">已挂接索引文件，暂无条目</p>'}`;
 }
 
-function renderMessageSummaries(message) {
-  if (message._delivery) return '';
-  const items = ui.roomSummaries.get(message.id);
-  if (!items?.length) return '';
-  const open = ui.expandedSummaries?.has(message.id);
-  const mentioned = new Set(message.mentions || []);
-  const ordered = mentioned.size
-    ? [...items.filter(item => mentioned.has(item.bot_id)), ...items.filter(item => !mentioned.has(item.bot_id))]
-    : items;
-  const badge = ordered.length === 1 ? `快读摘要 · ${nameOf(ordered[0].bot_id)}` : `快读摘要 · ${ordered.length} 位伙伴`;
-  const preview = ordered[0]?.summary || '';
-  return `<details class="message-summaries" data-summary-id="${esc(message.id)}" ${open ? 'open' : ''}>
-    <summary><span class="summary-badge">${esc(badge)}</span>${preview ? `<span class="summary-preview">${esc(preview)}</span>` : ''}</summary>
-    <div class="message-summaries-list">${ordered.map(item =>
-      `<div class="message-summary-item"><strong>${esc(nameOf(item.bot_id))}</strong><span>${esc(item.summary)}</span></div>`).join('')}</div>
-  </details>`;
-}
-
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
   const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run => {
@@ -2790,10 +2841,11 @@ function syncPromptSubmitButton(msgId, cardEl) {
 }
 
 function findPromptAnswer(message, timeline) {
-  if (message.promptAnswer?.answers?.length) return message.promptAnswer;
+  if (message.promptAnswer && (message.promptAnswer.skipped || message.promptAnswer.answers?.length)) return message.promptAnswer;
   const reply = (timeline || []).find(item => item.promptResponse?.prompt_message_id === message.id);
-  if (reply?.promptResponse?.answers?.length) {
-    return { by: reply.senderId, messageId: reply.id, answeredAt: reply.createdAt, answers: reply.promptResponse.answers };
+  if (reply?.promptResponse && (reply.promptResponse.skipped || reply.promptResponse.answers?.length)) {
+    return { by: reply.senderId, messageId: reply.id, answeredAt: reply.createdAt,
+      ...(reply.promptResponse.skipped ? { skipped: true } : {}), answers: reply.promptResponse.answers || [] };
   }
   return null;
 }
@@ -2805,6 +2857,12 @@ function renderMessagePrompt(message, timeline) {
   const kindLabel = kind === 'permission' ? '权限确认' : kind === 'confirm' ? '操作确认' : '待你选择';
   const answered = findPromptAnswer(message, timeline);
   if (answered) {
+    if (answered.skipped) {
+      return `<div class="prompt-card is-${esc(kind)} is-answered is-skipped" data-prompt-msg="${esc(message.id)}">
+        <div class="prompt-card-head"><span class="prompt-kind-badge is-skipped">已跳过</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+        <div class="prompt-answer-row"><span class="prompt-answer-q">已跳过本次选择，由 Bot 自行处理</span></div>
+      </div>`;
+    }
     const doneLabel = kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
     const rows = answered.answers.map(ans => {
       const parts = [...(ans.selected_labels || [])];
@@ -2826,7 +2884,8 @@ function renderMessagePrompt(message, timeline) {
     const optionsHtml = q.mode !== 'text' ? `<div class="prompt-options">${(q.options || []).map(opt => {
       const selected = qDraft.selected.includes(opt.id);
       const toneClass = opt.tone === 'primary' ? 'tone-primary' : opt.tone === 'danger' ? 'tone-danger' : '';
-      return `<button type="button" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
+      const optElId = `prompt-opt-${message.id}-${q.id}-${opt.id}`;
+      return `<button type="button" id="${esc(optElId)}" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
         data-action="prompt-toggle" data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" data-opt-id="${esc(opt.id)}" data-mode="${esc(q.mode)}"
         aria-pressed="${selected}" ${busy ? 'disabled' : ''}>
         <span class="prompt-option-indicator ${q.mode === 'multi' ? 'is-checkbox' : 'is-radio'}" aria-hidden="true">${selected ? icon('check', 12) : ''}</span>
@@ -2837,7 +2896,7 @@ function renderMessagePrompt(message, timeline) {
       </button>`;
     }).join('')}</div>` : '';
     const inputId = `prompt-input-${message.id}-${q.id}`;
-    const placeholder = q.custom_placeholder || (q.mode === 'text' ? '请输入回答…' : q.mode === 'multi' ? '补充说明或自填其他选项（选填）' : '或自定义填写其他想法…');
+    const placeholder = q.custom_placeholder || (q.mode === 'text' ? '请输入回答，按 Enter 提交…' : q.mode === 'multi' ? '补充说明或自填其他选项（选填，Enter 提交）' : '或自定义填写其他想法（Enter 提交）…');
     const customHtml = (q.mode === 'text' || q.allow_custom)
       ? `<div class="prompt-custom-wrap"><input type="text" id="${esc(inputId)}" class="prompt-custom-input"
           data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" data-mode="${esc(q.mode)}"
@@ -2855,6 +2914,8 @@ function renderMessagePrompt(message, timeline) {
     <div class="prompt-card-head"><span class="prompt-kind-badge">${esc(kindLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
     <div class="prompt-questions">${questionsHtml}</div>
     <div class="prompt-card-foot">
+      <span class="prompt-enter-hint">Enter 提交</span>
+      <button type="button" class="secondary-button prompt-skip-btn" data-action="prompt-skip" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>跳过</button>
       <button type="button" class="primary-button prompt-submit-btn" data-action="prompt-submit" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy || !ready ? 'disabled' : ''}>${busy ? '提交中…' : esc(submitLabel)}</button>
     </div>
   </div>`;
@@ -2907,6 +2968,36 @@ async function submitPromptCard(msgId) {
     const entry = queueLocalMessage(room.id, payload, []);
     await sendLocalMessage(entry, true);
     ui.promptDrafts.delete(msgId);
+    if (ui.activePromptMsgId === msgId) ui.activePromptMsgId = null;
+  } finally {
+    ui.promptSubmitting.delete(msgId);
+    render();
+  }
+}
+
+async function skipPromptCard(msgId) {
+  const room = roomById(ui.roomId);
+  if (!room || !msgId || ui.promptSubmitting.has(msgId) || !ui.protocolReady) return;
+  const timeline = mergedRoomMessages(room.id, ui.messages);
+  const message = timeline.find(item => item.id === msgId);
+  const prompt = message?.prompt;
+  if (!prompt?.questions?.length) return;
+  const mentions = message.senderId && message.senderId !== 'user' && message.senderId !== 'system' && room.members.includes(message.senderId)
+    ? [message.senderId] : [];
+  const kind = prompt.kind || 'question';
+  const payload = {
+    text: kind === 'permission' ? '已跳过权限确认' : '已跳过选择，由你自行处理',
+    mentions,
+    reply_to: messageRef(message.id),
+    prompt_response: { prompt_message_id: message.id, skipped: true, answers: [] },
+  };
+  ui.promptSubmitting.add(msgId);
+  render();
+  try {
+    const entry = queueLocalMessage(room.id, payload, []);
+    await sendLocalMessage(entry, true);
+    ui.promptDrafts.delete(msgId);
+    if (ui.activePromptMsgId === msgId) ui.activePromptMsgId = null;
   } finally {
     ui.promptSubmitting.delete(msgId);
     render();
@@ -2925,6 +3016,10 @@ function activeRoomPendingRequests() {
   return items;
 }
 
+function execSkipChoiceId(choices = []) {
+  return choices.find(c => ['cancel', 'decline', 'deny'].includes(c.id))?.id || null;
+}
+
 function renderRoomPendingPrompts() {
   const items = activeRoomPendingRequests();
   if (!items.length) return '';
@@ -2933,21 +3028,23 @@ function renderRoomPendingPrompts() {
     const busy = ui.execPromptBusy.has(key);
     const currentVal = ui.execPromptDrafts.get(key) ?? '';
     const choices = req.choices || [];
+    const skipId = execSkipChoiceId(choices);
     const actorLabel = nameOf(exec.execution_actor?.id || exec.bot_id);
-    const inputId = 'exec-prompt-' + key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+    const keySlug = key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+    const inputId = 'exec-prompt-' + keySlug;
     const body = choices.length
       ? `<div class="prompt-options">${choices.map(choice => {
           const cid = choice.id;
           const selected = currentVal === cid;
           const toneClass = cid === 'accept' ? 'tone-primary' : ['deny', 'decline', 'cancel'].includes(cid) ? 'tone-danger' : '';
-          return `<button type="button" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
+          return `<button type="button" id="${esc('exec-opt-' + keySlug + '-' + cid)}" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
             data-action="exec-prompt-select" data-exec-key="${esc(key)}" data-choice-id="${esc(cid)}" aria-pressed="${selected}" ${busy ? 'disabled' : ''}>
             <span class="prompt-option-indicator is-radio" aria-hidden="true">${selected ? icon('check', 12) : ''}</span>
             <span class="prompt-option-copy"><span class="prompt-option-label">${esc(choice.label || cid)}</span></span>
           </button>`;
         }).join('')}</div>`
       : `<div class="prompt-custom-wrap"><input type="text" id="${esc(inputId)}" class="exec-prompt-input prompt-custom-input"
-          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="输入回答…" ${busy ? 'disabled' : ''}></div>`;
+          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="输入回答，按 Enter 提交…" ${busy ? 'disabled' : ''}></div>`;
     return `<div class="prompt-card exec-pending-card ${isApproval ? 'is-permission' : 'is-question'}" data-exec-key="${esc(key)}">
       <div class="prompt-card-head">
         <span class="prompt-kind-badge">${isApproval ? '执行权限审批' : '执行会话提问'}</span>
@@ -2956,16 +3053,18 @@ function renderRoomPendingPrompts() {
       ${req.question ? `<p class="exec-pending-question">${esc(req.question)}</p>` : ''}
       ${body}
       <div class="prompt-card-foot">
+        <span class="prompt-enter-hint">Enter 提交</span>
+        ${skipId ? `<button type="button" class="secondary-button prompt-skip-btn" data-action="exec-prompt-skip" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>跳过</button>` : ''}
         <button type="button" class="primary-button prompt-submit-btn" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isApproval ? '确认审批' : '提交回答'}</button>
       </div>
     </div>`;
   }).join('')}</div>`;
 }
 
-async function submitExecPromptCard(key) {
+async function submitExecPromptCard(key, overrideValue = null) {
   const item = activeRoomPendingRequests().find(entry => entry.key === key);
   if (!item || ui.execPromptBusy.has(key) || !ui.protocolReady) return;
-  const val = String(ui.execPromptDrafts.get(key) ?? '').trim();
+  const val = String(overrideValue ?? ui.execPromptDrafts.get(key) ?? '').trim();
   if (!val) return;
   ui.execPromptBusy.add(key);
   render();
@@ -2978,12 +3077,20 @@ async function submitExecPromptCard(key) {
       input: val,
     }, { clientId: newClientId() });
     ui.execPromptDrafts.delete(key);
-    toast(item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
+    toast(overrideValue ? '已跳过该执行请求' : item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
     await refresh();
   } finally {
     ui.execPromptBusy.delete(key);
     render();
   }
+}
+
+async function skipExecPromptCard(key) {
+  const item = activeRoomPendingRequests().find(entry => entry.key === key);
+  if (!item) return;
+  const skipId = execSkipChoiceId(item.req.choices || []);
+  if (!skipId) return;
+  return submitExecPromptCard(key, skipId);
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {
@@ -3016,7 +3123,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
       ${renderMessageAttachments(message.attachments)}
       ${message.references?.length ? `<div class="reference-list">${message.references.map(ref => renderReference(ref)).join('')}</div>` : ''}
       ${ownTime}
-    </div>${renderMessageSummaries(message)}${renderDelivery(message)}${actions}</div></article>`;
+    </div>${renderDelivery(message)}${actions}</div></article>`;
 }
 
 function renderChat() {
@@ -3041,16 +3148,13 @@ function renderChat() {
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
     <div class="chat-header-actions">${room ? '<button type="button" class="text-button" data-action="stop-room" title="一键打断本群全部在途工作">打断在途</button>' : ''}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
-  const executions = ui.roomExecutions || [];
-  const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程（${executions.length}）</summary>
-    ${executions.map(renderExecutionRow).join('')}</details>` : '';
   const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
         <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
     : '';
   const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
-      ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}${active}</div>
+      ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}</div>
       ${renderRoomPendingPrompts()}
       ${renderChatComposer(room, members)}` : `<div class="conversation-empty">${modelBanner}<p>${ui.protocolNotice || '选择一位伙伴或创建会话'}</p>
         ${ui.protocolReady ? '<button class="secondary-button" data-action="new-room">创建会话</button>' : ''}</div>`;
@@ -3063,32 +3167,193 @@ function selectedMentions(room) {
   return (Array.isArray(value) ? value : value ? [value] : []).filter(id => room.members.includes(id));
 }
 
-function renderFloatingBotActivity(room, members) {
-  const liveStatuses = new Set(['running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+const LIVE_EXEC_STATUSES = new Set(['opening', 'running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+
+function formatLiveStatusText(raw) {
+  const cleaned = String(raw || '').replace(/\s+/g, ' ').trim().replace(/[。！？!?,，；;…\.]+$/u, '');
+  if (!cleaned) return '正在处理中';
+  if (/^(正在|等待|准备|已)/.test(cleaned)) return cleaned;
+  const sep = /^[A-Za-z0-9]/.test(cleaned) ? ' ' : '';
+  return `正在${sep}${cleaned}`;
+}
+
+function collectRoomActivityItems(room, members) {
   const seen = new Set(), items = [];
+  for (const act of ui.roomActivities || []) {
+    const botId = act.bot_id;
+    if (!botId || !botById(botId) || seen.has(botId)) continue;
+    seen.add(botId);
+    items.push({
+      botId,
+      name: nameOf(botId),
+      text: act.text || '正在处理中',
+      phase: act.phase || 'thinking',
+      ref: act.execution_ref || null,
+    });
+  }
   for (const exec of ui.roomExecutions || []) {
-    if (!liveStatuses.has(exec.status)) continue;
+    if (!LIVE_EXEC_STATUSES.has(exec.status)) continue;
     const botId = exec.execution_actor?.id || exec.bot_id;
     if (!botId || !botById(botId) || seen.has(botId)) continue;
     seen.add(botId);
-    const statusText = ['needs_input', 'awaiting_input'].includes(exec.status) ? '等待输入' : '工作中';
-    items.push({ botId, label: `${nameOf(botId)} · ${statusText}`, ref: exec.execution_ref });
+    const needsInput = ['needs_input', 'awaiting_input'].includes(exec.status);
+    const text = needsInput
+      ? (exec.waiting_summary ? `等待输入：${exec.waiting_summary}` : '等待你的输入')
+      : formatLiveStatusText(exec.live_progress || exec.work_summary || '正在执行任务');
+    items.push({ botId, name: nameOf(botId), text, phase: needsInput ? 'waiting_input' : 'session', ref: exec.execution_ref });
   }
-  for (const member of members) {
-    if (seen.has(member.id)) continue;
-    const act = botActivity(member);
-    if (act.kind === 'running') {
-      seen.add(member.id);
-      items.push({ botId: member.id, label: `${member.name} · ${act.text}`, ref: null });
+  if (directRoom(room)) {
+    for (const member of members) {
+      if (seen.has(member.id)) continue;
+      const act = botActivity(member);
+      if (act.kind === 'running') {
+        seen.add(member.id);
+        items.push({ botId: member.id, name: member.name, text: act.text === '等待输入' ? '等待你的输入' : '正在处理中', phase: 'thinking', ref: null });
+      }
     }
   }
-  if (!items.length) return '';
-  return `<div class="bot-activity-dock" aria-live="polite">${items.map(item => {
-    const attrs = item.ref
-      ? `data-action="open-execution" data-kind="${esc(item.ref.kind)}" data-id="${esc(item.ref.id)}"`
-      : `data-action="open-bot-details" data-id="${esc(item.botId)}"`;
-    return `<div class="bot-activity-row"><button type="button" class="activity-trigger" ${attrs}>${face(botAvatar(item.botId), 30, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}<span class="shimmer-status">${esc(item.label)}</span></button></div>`;
-  }).join('')}</div>`;
+  return items;
+}
+
+function renderRoomExecutionDrawer(room, liveItems) {
+  if (ui.openRoomExecution !== room.id) return '';
+  const executions = [...(ui.roomExecutions || [])].sort((a, b) => {
+    const aLive = LIVE_EXEC_STATUSES.has(a.status) ? 0 : 1;
+    const bLive = LIVE_EXEC_STATUSES.has(b.status) ? 0 : 1;
+    if (aLive !== bLive) return aLive - bLive;
+    return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
+  });
+  const liveBotsInExec = new Set(executions.filter(e => LIVE_EXEC_STATUSES.has(e.status)).map(e => e.execution_actor?.id || e.bot_id));
+  const syntheticLiveRows = liveItems.filter(item => !liveBotsInExec.has(item.botId)).map(item => `
+    <div class="bot-execution-item is-live">
+      ${face(botAvatar(item.botId), 24, { key: `drawer-live:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
+      <div class="bot-execution-copy">
+        <div class="bot-execution-top"><strong>${esc(item.name)}</strong><span class="bot-execution-status live">进行中</span></div>
+        <div class="bot-execution-summary">${esc(item.text)}</div>
+      </div>
+    </div>`).join('');
+  const execRows = executions.map(item => {
+    const ref = item.execution_ref;
+    const botId = item.execution_actor?.id || item.bot_id;
+    const isLive = LIVE_EXEC_STATUSES.has(item.status);
+    const needsInput = ['needs_input', 'awaiting_input'].includes(item.status);
+    const statusLabel = needsInput ? '等待输入' : isLive ? '进行中' : (labels[item.status] || item.status || '未知');
+    const summary = needsInput
+      ? (item.waiting_summary || '等待确认或输入')
+      : (item.live_progress || item.work_summary || item.waiting_summary || item.last_output_summary || '');
+    const error = executionError(item);
+    return `<button type="button" class="bot-execution-item ${isLive ? 'is-live' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
+      ${botId && botById(botId) ? avatar(botId, 24, '') : `<span class="bot-execution-dot ${isLive ? 'live' : ''}"></span>`}
+      <div class="bot-execution-copy">
+        <div class="bot-execution-top">
+          <strong>${esc(botId ? nameOf(botId) : executionLabel(item))}</strong>
+          <span class="bot-execution-engine">${esc(executionLabel(item))}</span>
+          <span class="bot-execution-status ${needsInput ? 'warn' : isLive ? 'live' : item.status === 'failed' ? 'error' : ''}">${esc(statusLabel)}</span>
+        </div>
+        ${summary ? `<div class="bot-execution-summary">${esc(summary)}</div>` : ''}
+        ${error ? `<div class="bot-execution-error">${esc(error)}</div>` : ''}
+      </div>
+    </button>`;
+  }).join('');
+  const totalCount = executions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
+  return `<section class="bot-execution-drawer" role="region" aria-label="执行过程">
+    <div class="bot-execution-drawer-head">
+      <strong>执行过程${totalCount ? `（${totalCount}）` : ''}</strong>
+      <div class="bot-execution-drawer-actions">
+        <button type="button" class="text-button" data-action="navigate" data-view="executions">全部记录</button>
+        <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起执行过程">${icon('close', 15)}</button>
+      </div>
+    </div>
+    <div class="bot-execution-list">${syntheticLiveRows}${execRows || '<p class="bot-execution-empty">当前暂无执行记录</p>'}</div>
+  </section>`;
+}
+
+function renderFloatingBotActivity(room, members) {
+  const items = collectRoomActivityItems(room, members);
+  const drawerOpen = ui.openRoomExecution === room.id;
+  if (!items.length && !drawerOpen) return '';
+  const drawer = renderRoomExecutionDrawer(room, items);
+  if (!items.length) return `<div class="bot-activity-dock" aria-live="polite">${drawer}</div>`;
+  return `<div class="bot-activity-dock" aria-live="polite">${drawer}
+    <div class="bot-activity-bar ${drawerOpen ? 'drawer-open' : ''}" data-activity-bar data-count="${items.length}" data-layout="inline">
+      <div class="bot-activity-viewport" data-activity-viewport>
+        <div class="bot-activity-track" data-activity-track>
+          ${items.map((item, idx) => `<button type="button" class="activity-trigger" data-action="toggle-room-executions" data-activity-index="${idx}"
+              aria-expanded="${drawerOpen}" title="${esc(item.name + ' · ' + item.text)}（点击${drawerOpen ? '收起' : '展开'}执行过程）">
+            ${face(botAvatar(item.botId), 26, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
+            <span class="activity-bot-name">${esc(item.name)}</span>
+            <span class="activity-sep">·</span>
+            <span class="shimmer-status activity-summary">${esc(item.text)}</span>
+          </button>`).join('')}
+        </div>
+      </div>
+      <button type="button" class="activity-expand-pill" data-action="toggle-room-executions" aria-expanded="${drawerOpen}" title="${drawerOpen ? '收起执行过程' : '展开执行过程'}">
+        <span class="activity-ticker-badge" data-activity-badge hidden></span>
+        <span class="activity-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+      </button>
+    </div>
+  </div>`;
+}
+
+let activityTickerTimer = null;
+function stopBotActivityTicker() {
+  if (activityTickerTimer) { clearInterval(activityTickerTimer); activityTickerTimer = null; }
+}
+function applyBotActivityTickerPosition(bar, animate = true) {
+  const track = $('[data-activity-track]', bar);
+  const badge = $('[data-activity-badge]', bar);
+  const count = Number(bar?.dataset.count || 0);
+  if (!track || count <= 1) return;
+  const idx = ((ui.activityTickerIndex || 0) % count + count) % count;
+  ui.activityTickerIndex = idx;
+  const rowH = track.firstElementChild?.getBoundingClientRect().height || 34;
+  if (!animate) track.style.transition = 'none';
+  track.style.transform = `translateY(${-idx * rowH}px)`;
+  if (!animate) {
+    void track.offsetHeight;
+    track.style.transition = '';
+  }
+  if (badge) {
+    badge.textContent = `${idx + 1}/${count}`;
+    badge.hidden = false;
+  }
+}
+function syncBotActivityDock() {
+  stopBotActivityTicker();
+  const bar = $('[data-activity-bar]');
+  if (!bar) return;
+  const viewport = $('[data-activity-viewport]', bar);
+  const track = $('[data-activity-track]', bar);
+  const badge = $('[data-activity-badge]', bar);
+  const count = Number(bar.dataset.count || 0);
+  if (!viewport || !track || count <= 1) {
+    bar.dataset.layout = 'inline';
+    if (track) track.style.transform = '';
+    if (badge) badge.hidden = true;
+    ui.activityTickerIndex = 0;
+    return;
+  }
+  bar.dataset.layout = 'measure';
+  track.style.transition = 'none';
+  track.style.transform = '';
+  const fitsSingleLine = track.scrollWidth <= viewport.clientWidth - 2;
+  if (fitsSingleLine) {
+    bar.dataset.layout = 'inline';
+    track.style.transition = '';
+    if (badge) badge.hidden = true;
+    return;
+  }
+  bar.dataset.layout = 'ticker';
+  applyBotActivityTickerPosition(bar, false);
+  activityTickerTimer = setInterval(() => {
+    const liveBar = $('[data-activity-bar]');
+    if (!liveBar || liveBar.dataset.layout !== 'ticker') { stopBotActivityTicker(); return; }
+    if (liveBar.matches(':hover')) return;
+    const total = Number(liveBar.dataset.count || 0);
+    if (total <= 1) { stopBotActivityTicker(); return; }
+    ui.activityTickerIndex = ((ui.activityTickerIndex || 0) + 1) % total;
+    applyBotActivityTickerPosition(liveBar, true);
+  }, 3200);
 }
 
 function renderChatComposer(room, members) {
@@ -3185,10 +3450,12 @@ function renderExecutionRow(item) {
   const ref = item.execution_ref;
   const status = item.status || 'unknown';
   const error = executionError(item);
+  const progress = item.live_progress || item.work_summary || item.waiting_summary || '';
   const selected = sameRef(ui.executionRef, ref);
   return `<button class="profile-record record-button execution-row ${selected ? 'selected' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
     <strong>${esc(executionTitle(item))}</strong>
     <small>${esc([item.bot_id && nameOf(item.bot_id), labels[status] || status, item.control?.state === 'paused' && '控制已暂停'].filter(Boolean).join(' · '))}</small>
+    ${progress ? `<small class="subtle">${esc(progress)}</small>` : ''}
     ${error ? `<small class="execution-error">${esc(error)}</small>` : ''}</button>`;
 }
 
@@ -3567,7 +3834,7 @@ function queueViewportSync() {
 }
 window.visualViewport?.addEventListener('resize', queueViewportSync);
 window.visualViewport?.addEventListener('scroll', queueViewportSync);
-window.addEventListener('resize', () => { markWindowResizing(); queueViewportSync(); }, { passive: true });
+window.addEventListener('resize', () => { markWindowResizing(); queueViewportSync(); syncBotActivityDock(); }, { passive: true });
 window.addEventListener('scroll', queueViewportSync, { passive: true });
 window.addEventListener('pageshow', queueViewportSync);
 window.addEventListener('orientationchange', queueViewportSync);
@@ -3587,16 +3854,10 @@ document.addEventListener('toggle', event => { if(event.target.matches?.('.crew-
 document.addEventListener('toggle', event => {
   const detail = event.target;
   if (!detail.isConnected || detail.closest?.('[data-motion-ghost]')) return;
-  if (detail.matches?.('[data-execution-disclosure]')) ui.openRoomExecution = detail.open ? ui.roomId : null;
   if (detail.matches?.('[data-delivery-id]')) {
     const expanded = ui.expandedDeliveries ||= new Set();
     if (detail.open) expanded.add(detail.dataset.deliveryId);
     else expanded.delete(detail.dataset.deliveryId);
-  }
-  if (detail.matches?.('[data-summary-id]')) {
-    const expanded = ui.expandedSummaries ||= new Set();
-    if (detail.open) expanded.add(detail.dataset.summaryId);
-    else expanded.delete(detail.dataset.summaryId);
   }
 },true);
 

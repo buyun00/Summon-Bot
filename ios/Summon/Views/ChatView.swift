@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var showDetails = false
     @State private var activeExecutionRef: SummonReference?
     @State private var executionsExpanded = false
+    @State private var activityTickerIndex = 0
     @State private var localError: String?
     @State private var nearBottom = true
     @State private var userScrolling = false
@@ -46,9 +47,36 @@ struct ChatView: View {
     }
     private var title: String { room?.name ?? "聊天" }
     private var roomExecutions: [SummonJSONValue] { store.executionsForRoom(roomID) }
+    private static let liveExecutionStatuses: Set<String> = ["opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
+
+    private static func formatLiveText(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "正在处理中" }
+        if trimmed.hasPrefix("正在") || trimmed.hasPrefix("等待") || trimmed.hasPrefix("准备") || trimmed.hasPrefix("已") {
+            return trimmed
+        }
+        let firstScalar = trimmed.unicodeScalars.first
+        let sep = (firstScalar.map { CharacterSet.alphanumerics.contains($0) && $0.isASCII } ?? false) ? " " : ""
+        return "正在\(sep)\(trimmed)"
+    }
+
     private var activeBotItems: [ActiveBotItem] {
         var seen = Set<String>()
         var result: [ActiveBotItem] = []
+        for activity in store.activitiesForRoom(roomID) {
+            let botID = activity.bot_id
+            let bot = store.bot(id: botID)
+            if bot?.isPaused == true { continue }
+            guard seen.insert(botID).inserted else { continue }
+            let name = bot?.name ?? store.name(for: botID)
+            result.append(ActiveBotItem(
+                id: botID,
+                bot: bot,
+                name: name,
+                status: activity.text.isEmpty ? "正在处理中" : activity.text,
+                ref: activity.execution_ref
+            ))
+        }
         for exec in store.activeExecutionsForRoom(roomID) {
             let botID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string ?? ""
             let bot = botID.isEmpty ? nil : store.bot(id: botID)
@@ -57,14 +85,21 @@ struct ChatView: View {
             guard seen.insert(key).inserted else { continue }
             let name = bot?.name ?? (botID.isEmpty ? "执行会话" : store.name(for: botID))
             let rawStatus = exec["status"].stringValue
-            let status = ["needs_input", "awaiting_input"].contains(rawStatus) ? "等待输入" : "工作中"
+            let status: String
+            if ["needs_input", "awaiting_input"].contains(rawStatus) {
+                let waiting = exec["waiting_summary"].string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                status = waiting.isEmpty ? "等待你的输入" : "等待输入：\(waiting)"
+            } else {
+                let live = exec["live_progress"].string ?? exec["work_summary"].string
+                status = Self.formatLiveText(live)
+            }
             result.append(ActiveBotItem(id: key, bot: bot, name: name, status: status, ref: SummonReference(exec["execution_ref"])))
         }
-        for bot in roomBots where !bot.isPaused && seen.insert(bot.id).inserted {
-            if bot.resolvedActivity == "working" {
-                result.append(ActiveBotItem(id: bot.id, bot: bot, name: bot.name, status: "工作中", ref: nil))
-            } else if bot.resolvedActivity == "error" {
-                result.append(ActiveBotItem(id: bot.id, bot: bot, name: bot.name, status: "运行异常", ref: nil))
+        if let direct = directBot, !direct.isPaused, seen.insert(direct.id).inserted {
+            if direct.resolvedActivity == "working" {
+                result.append(ActiveBotItem(id: direct.id, bot: direct, name: direct.name, status: "正在处理中", ref: nil))
+            } else if direct.resolvedActivity == "error" {
+                result.append(ActiveBotItem(id: direct.id, bot: direct, name: direct.name, status: "运行异常", ref: nil))
             }
         }
         return result
@@ -99,9 +134,6 @@ struct ChatView: View {
                             composing = true
                         }.id(message.id)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .identity))
-                    }
-                    if !roomExecutions.isEmpty {
-                        executionDisclosure
                     }
                     Color.clear.frame(height: 18).id("conversation-bottom")
                 }
@@ -229,51 +261,122 @@ struct ChatView: View {
         }
     }
 
-    private var executionDisclosure: some View {
-        DisclosureGroup(isExpanded: $executionsExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(roomExecutions.enumerated()), id: \.offset) { _, exec in
-                    if let ref = SummonReference(exec["execution_ref"]) {
-                        let status = exec["status"].stringValue
-                        let actorID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string
-                        let actorName = actorID.map { store.name(for: $0) } ?? "执行会话"
-                        let engineName = exec["kind"].string == "conversation" ? "内部对话" : (exec["engine"].string ?? "执行")
-                        Button { activeExecutionRef = ref } label: {
-                            HStack(spacing: 10) {
-                                if let actorID, let bot = store.bot(id: actorID) {
-                                    MemberAvatar(bot: bot, size: 22, motion: ["running", "waiting", "queued"].contains(status) ? "work" : "idle")
-                                }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("\(engineName) · \(actorName)")
+    private var sortedRoomExecutions: [SummonJSONValue] {
+        roomExecutions.sorted { lhs, rhs in
+            let lLive = Self.liveExecutionStatuses.contains(lhs["status"].stringValue)
+            let rLive = Self.liveExecutionStatuses.contains(rhs["status"].stringValue)
+            if lLive != rLive { return lLive }
+            let lTime = lhs["updated_at"].string ?? lhs["created_at"].string ?? ""
+            let rTime = rhs["updated_at"].string ?? rhs["created_at"].string ?? ""
+            return lTime > rTime
+        }
+    }
+
+    private var executionDrawer: some View {
+        let sorted = sortedRoomExecutions
+        let activeExecBotIDs = Set(sorted.filter { Self.liveExecutionStatuses.contains($0["status"].stringValue) }
+            .compactMap { $0["execution_actor"]["id"].string ?? $0["bot_id"].string })
+        let syntheticLive = activeBotItems.filter { !activeExecBotIDs.contains($0.id) }
+        let totalCount = sorted.count + syntheticLive.count
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label("执行过程（\(totalCount)）", systemImage: "terminal")
+                    .summonFont(.caption, weight: .semibold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { executionsExpanded = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("收起执行过程")
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(syntheticLive) { item in
+                        HStack(spacing: 10) {
+                            if let bot = item.bot {
+                                MemberAvatar(bot: bot, size: 22, motion: "work")
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(item.name)
                                         .summonFont(.footnote, weight: .medium)
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
-                                    Text(SummonFormat.status(status))
-                                        .summonFont(.caption2)
-                                        .foregroundStyle(status == "completed" ? SummonTheme.ok : (status == "needs_input" || status == "awaiting_input") ? SummonTheme.warn : .secondary)
+                                    Text("进行中")
+                                        .summonFont(.caption2, weight: .medium)
+                                        .foregroundStyle(SummonTheme.ok)
                                 }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.tertiary)
+                                Text(item.status)
+                                    .summonFont(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
+                            Spacer()
                         }
-                        .buttonStyle(.plain)
+                        .padding(.vertical, 4)
+                    }
+                    ForEach(Array(sorted.enumerated()), id: \.offset) { _, exec in
+                        if let ref = SummonReference(exec["execution_ref"]) {
+                            let status = exec["status"].stringValue
+                            let isLive = Self.liveExecutionStatuses.contains(status)
+                            let actorID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string
+                            let actorName = actorID.map { store.name(for: $0) } ?? "执行会话"
+                            let engineName = exec["kind"].string == "conversation" ? "内部对话" : (exec["engine"].string ?? "执行")
+                            let progress = exec["live_progress"].string ?? exec["work_summary"].string ?? exec["waiting_summary"].string ?? ""
+                            Button { activeExecutionRef = ref } label: {
+                                HStack(spacing: 10) {
+                                    if let actorID, let bot = store.bot(id: actorID) {
+                                        MemberAvatar(bot: bot, size: 22, motion: isLive ? "work" : "idle")
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text("\(actorName) · \(engineName)")
+                                                .summonFont(.footnote, weight: .medium)
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text(isLive ? "进行中" : SummonFormat.status(status))
+                                                .summonFont(.caption2, weight: .medium)
+                                                .foregroundStyle(isLive || status == "completed" ? SummonTheme.ok : (status == "needs_input" || status == "awaiting_input") ? SummonTheme.warn : .secondary)
+                                        }
+                                        if !progress.isEmpty {
+                                            Text(progress)
+                                                .summonFont(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if totalCount == 0 {
+                        Text("当前暂无执行记录")
+                            .summonFont(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(.top, 6)
-        } label: {
-            Label("执行过程（\(roomExecutions.count)）", systemImage: "terminal")
-                .summonFont(.caption, weight: .medium)
-                .foregroundStyle(.secondary)
+            .frame(maxHeight: 200)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
         .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+        .padding(.horizontal, 14)
+        .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 8)))
     }
 
     private var composer: some View {
@@ -282,19 +385,57 @@ struct ChatView: View {
             if let notice = store.protocolNotice {
                 SummonProtocolNotice(notice: notice, needsUpdate: store.needsClientUpdate)
             }
+            if executionsExpanded {
+                executionDrawer
+            }
             if !activeBotItems.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(activeBotItems) { item in
-                        Button {
-                            if let ref = item.ref { activeExecutionRef = ref }
-                            else { showDetails = true }
-                        } label: {
-                            BotWorkingIndicator(bot: item.bot, name: item.name, status: item.status, motion: item.status == "运行异常" ? "failed" : "work")
+                let items = activeBotItems
+                let safeIndex = items.isEmpty ? 0 : (activityTickerIndex % items.count)
+                let current = items[safeIndex]
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        executionsExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        BotWorkingIndicator(
+                            bot: current.bot,
+                            name: current.name,
+                            status: current.status,
+                            motion: current.status == "运行异常" ? "failed" : "work"
+                        )
+                        .id(current.id)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .move(edge: .top).combined(with: .opacity)
+                        ))
+                        if items.count > 1 {
+                            Text("\(safeIndex + 1)/\(items.count)")
+                                .summonFont(.caption2, weight: .medium)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
                         }
-                        .buttonStyle(.plain)
+                        Image(systemName: executionsExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .clipped()
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: safeIndex)
+                .task(id: items.map(\.id)) {
+                    if activityTickerIndex >= items.count { activityTickerIndex = 0 }
+                    guard items.count > 1 else { return }
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .milliseconds(3200)) } catch { break }
+                        guard !Task.isCancelled else { break }
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                            activityTickerIndex = (activityTickerIndex + 1) % max(1, items.count)
+                        }
                     }
                 }
-                .padding(.horizontal, 18)
                 .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
             }
             if let pendingExec = pendingInputExecution, let ref = SummonReference(pendingExec["execution_ref"]) {
@@ -502,7 +643,6 @@ private struct MessageRow: View {
     private var pending: SummonPendingMessage? { store.pendingMessage(for: message) }
     @State private var reference: SummonReference?
     @State private var failure: String?
-    @State private var showSummaries = false
     @State private var showModels = false
 
     var body: some View {
@@ -579,54 +719,6 @@ private struct MessageRow: View {
                             .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
                     }
                     .buttonStyle(.plain)
-                }
-                let summaries = store.summaryFacts(message.id)
-                if (pending == nil || pending?.status == "sent"), !summaries.isEmpty {
-                    VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 6) {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.18)) { showSummaries.toggle() }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(summaries.count == 1 ? "快读摘要 · \(store.name(for: summaries[0].bot_id))" : "快读摘要 · \(summaries.count) 位伙伴")
-                                    .summonFont(.caption2, weight: .semibold)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize()
-                                if !showSummaries, let preview = summaries.first?.summary, !preview.isEmpty {
-                                    Text(preview)
-                                        .summonFont(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Image(systemName: showSummaries ? "chevron.up" : "chevron.down")
-                                    .summonFont(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(SummonTheme.surface, in: Capsule())
-                            .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
-                        }
-                        .buttonStyle(.plain)
-                        if showSummaries {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(summaries, id: \.bot_id) { item in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(store.name(for: item.bot_id))
-                                            .summonFont(.caption2, weight: .semibold)
-                                            .foregroundStyle(.primary)
-                                        Text(item.summary)
-                                            .summonFont(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 8)
-                            .background(SummonTheme.botBubble, in: RoundedRectangle(cornerRadius: 12))
-                            .overlay { RoundedRectangle(cornerRadius: 12).stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
-                        }
-                    }
                 }
                 if let pending, pending.status != "sent" {
                     if pending.status == "sending" {
@@ -938,7 +1030,14 @@ private struct MessagePromptCardView: View {
     private var kind: String { prompt["kind"].string ?? "question" }
     private var questions: [SummonJSONValue] { prompt["questions"].array ?? [] }
 
+    private var isSkipped: Bool {
+        if message.promptAnswer?["skipped"].bool == true { return true }
+        return store.messagesForRoom(roomID).first(where: { $0.promptResponse?["prompt_message_id"].string == message.id })?
+            .promptResponse?["skipped"].bool == true
+    }
+
     private var answeredItems: [SummonJSONValue]? {
+        if isSkipped { return [] }
         if let items = message.promptAnswer?["answers"].array, !items.isEmpty { return items }
         if let reply = store.messagesForRoom(roomID).first(where: { $0.promptResponse?["prompt_message_id"].string == message.id }),
            let items = reply.promptResponse?["answers"].array, !items.isEmpty {
@@ -963,9 +1062,17 @@ private struct MessagePromptCardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 if answeredItems != nil {
-                    Label(kind == "permission" ? "已确认权限" : kind == "confirm" ? "已确认" : "已提交选择", systemImage: "checkmark.circle.fill")
-                        .summonFont(.caption2, weight: .semibold)
-                        .foregroundStyle(SummonTheme.ok)
+                    if isSkipped {
+                        Text("已跳过")
+                            .summonFont(.caption2, weight: .semibold)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Color.secondary.opacity(0.14), in: Capsule())
+                    } else {
+                        Label(kind == "permission" ? "已确认权限" : kind == "confirm" ? "已确认" : "已提交选择", systemImage: "checkmark.circle.fill")
+                            .summonFont(.caption2, weight: .semibold)
+                            .foregroundStyle(SummonTheme.ok)
+                    }
                 } else {
                     Text(kind == "permission" ? "权限确认" : kind == "confirm" ? "操作确认" : "待你选择")
                         .summonFont(.caption2, weight: .semibold)
@@ -979,16 +1086,20 @@ private struct MessagePromptCardView: View {
             }
 
             if let answeredItems {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(answeredItems.enumerated()), id: \.offset) { _, ans in
-                        let labels = (ans["selected_labels"].array ?? []).compactMap(\.string)
-                        let custom = ans["custom_text"].string ?? ""
-                        let summary = (labels + (custom.isEmpty ? [] : [custom])).joined(separator: " · ")
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(ans["label"].string ?? ans["question_id"].stringValue)
-                                .summonFont(.caption).foregroundStyle(.secondary)
-                            Text(summary.isEmpty ? "—" : summary)
-                                .summonFont(.caption, weight: .medium).foregroundStyle(.primary)
+                if isSkipped {
+                    Text("已跳过本次选择，由 Bot 自行处理").summonFont(.caption).foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(answeredItems.enumerated()), id: \.offset) { _, ans in
+                            let labels = (ans["selected_labels"].array ?? []).compactMap(\.string)
+                            let custom = ans["custom_text"].string ?? ""
+                            let summary = (labels + (custom.isEmpty ? [] : [custom])).joined(separator: " · ")
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(ans["label"].string ?? ans["question_id"].stringValue)
+                                    .summonFont(.caption).foregroundStyle(.secondary)
+                                Text(summary.isEmpty ? "—" : summary)
+                                    .summonFont(.caption, weight: .medium).foregroundStyle(.primary)
+                            }
                         }
                     }
                 }
@@ -1067,12 +1178,20 @@ private struct MessagePromptCardView: View {
                             .padding(.horizontal, 10).padding(.vertical, 8)
                             .background(SummonTheme.background, in: RoundedRectangle(cornerRadius: 10))
                             .overlay { RoundedRectangle(cornerRadius: 10).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                            .submitLabel(.send)
+                            .onSubmit { if isReady { Task { await submit() } } }
                             .disabled(submitting)
                         }
                     }
                 }
-                HStack {
+                HStack(spacing: 8) {
                     Spacer()
+                    Button("跳过") {
+                        Task { await skip() }
+                    }
+                    .summonFont(.footnote, weight: .medium)
+                    .buttonStyle(.bordered)
+                    .disabled(submitting || !store.protocolReady)
                     Button {
                         Task { await submit() }
                     } label: {
@@ -1135,6 +1254,14 @@ private struct MessagePromptCardView: View {
         guard !answers.isEmpty else { return }
         await store.sendPromptResponse(roomID: roomID, message: message, answers: answers, summaryText: lines.joined(separator: "\n"))
     }
+
+    private func skip() async {
+        guard !submitting else { return }
+        submitting = true
+        defer { submitting = false }
+        let text = kind == "permission" ? "已跳过权限确认" : "已跳过选择，由你自行处理"
+        await store.sendPromptResponse(roomID: roomID, message: message, answers: [], summaryText: text, skipped: true)
+    }
 }
 
 private struct ExecutionPendingPromptCard: View {
@@ -1192,10 +1319,20 @@ private struct ExecutionPendingPromptCard: View {
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(SummonTheme.background, in: RoundedRectangle(cornerRadius: 10))
                     .overlay { RoundedRectangle(cornerRadius: 10).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                    .submitLabel(.send)
+                    .onSubmit { if !currentValue.isEmpty { Task { await submit() } } }
                     .disabled(busy)
             }
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
+                if let skipId = choices.first(where: { ["cancel", "decline", "deny"].contains($0["id"].stringValue) })?["id"].string {
+                    Button("跳过") {
+                        Task { await submitValue(skipId) }
+                    }
+                    .summonFont(.footnote, weight: .medium)
+                    .buttonStyle(.bordered)
+                    .disabled(busy || !store.protocolReady)
+                }
                 Button {
                     Task { await submit() }
                 } label: {
@@ -1212,7 +1349,11 @@ private struct ExecutionPendingPromptCard: View {
     }
 
     private func submit() async {
-        guard !busy, !currentValue.isEmpty else { return }
+        await submitValue(currentValue)
+    }
+
+    private func submitValue(_ value: String) async {
+        guard !busy, !value.isEmpty else { return }
         busy = true
         defer { busy = false }
         do {
@@ -1220,7 +1361,7 @@ private struct ExecutionPendingPromptCard: View {
                 target: exec["execution_ref"],
                 controlVersion: exec["control_version"].int ?? 1,
                 inputTarget: request["input_target"],
-                input: currentValue
+                input: value
             )
             selectedChoice = ""
             freeText = ""

@@ -239,6 +239,17 @@ struct SummonMessageSummary: Codable, Equatable, Sendable {
     var updated_at: String?
 }
 
+struct SummonRoomActivity: Codable, Equatable, Sendable, Identifiable {
+    var bot_id: String
+    var phase: String?
+    var text: String
+    var work_summary: String?
+    var execution_ref: SummonReference?
+    var started_at: String?
+    var updated_at: String?
+    var id: String { bot_id }
+}
+
 struct SummonReceipt: Decodable, Sendable {
     var message: SummonMessage
     var deliveries: [SummonDelivery]
@@ -257,6 +268,7 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var messages: [SummonMessage]
     var deliveries: [String: [SummonDelivery]]?
     var summaries: [String: [SummonMessageSummary]]?
+    var activities: [SummonRoomActivity]?
     var suspendedRuns: [SummonJSONValue]?
     var messageStates: [String: SummonJSONValue]?
     var cursor: String?

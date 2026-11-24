@@ -112,6 +112,13 @@ function normalizePromptResponse(raw, room, lookupMessage) {
   if (!promptMsg || promptMsg.roomId !== room.id || !promptMsg.prompt) {
     fail('目标选择框不存在或不属于当前会话', 404);
   }
+  const skipped = raw.skipped === true;
+  if (skipped) {
+    return {
+      promptMsg,
+      value: { prompt_message_id, skipped: true, answers: [] },
+    };
+  }
   if (!Array.isArray(raw.answers) || !raw.answers.length || raw.answers.length > 12) {
     fail('请至少填写一项选择结果');
   }
@@ -710,6 +717,7 @@ export class ChatroomService {
             by: actor,
             messageId: eventId,
             answeredAt: new Date().toISOString(),
+            ...(promptRes.value.skipped ? { skipped: true } : {}),
             answers: promptRes.value.answers,
           },
         });

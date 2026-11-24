@@ -170,12 +170,13 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'GET') {
         const result = await read(ref, params);
         const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.hostMessageDeliveries(item.id)]));
-        const summaries = room.messageSummaries(ref.id, result.messages.map(item => item.id));
+        const summaries = {};
+        const activities = platform.runtime?.roomActivities?.(ref.id) || [];
         const suspendedRuns = platform.runtime.suspendedRunsForRoom(ref.id);
         const messageStates = platform.roomMessageStates(ref.id, result.messages);
         const chainState = platform.deliveries.roomChainState(ref.id);
         const staleWaits = platform.runtime.staleWaitsForRoom(ref.id);
-        const value = { ...result, deliveries, summaries, suspendedRuns, messageStates, chainState, staleWaits, historyEpoch };
+        const value = { ...result, deliveries, summaries, activities, suspendedRuns, messageStates, chainState, staleWaits, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);

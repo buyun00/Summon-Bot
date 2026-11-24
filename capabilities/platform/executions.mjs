@@ -265,7 +265,7 @@ export class Executions {
   list(context, scope) {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
-        scope.kind === 'bot' && record.bot_id === scope.id) &&
+        sameRef(record.origin_room, scope) || scope.kind === 'bot' && record.bot_id === scope.id) &&
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
 
@@ -276,6 +276,9 @@ export class Executions {
     const facts = conversation ? observation ?? this.platform.runtime.conversationSummary(record.id) : observation;
     const status = facts?.status || (conversation ? 'unknown' : record.status ?? 'idle');
     const error = conversation ? facts?.last_error : (facts?.last_error || record.last_error || null);
+    const liveProgress = conversation
+      ? (this.platform.runtime?.conversationLiveProgress?.(record.id) || null)
+      : (record.live_progress || null);
     const sessionMeta = !conversation ? {
       ...(record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context) ? { origin_room: record.origin_room } : {}),
       ...(record.origin_message_id ? { origin_message_id: record.origin_message_id } : {}),
@@ -307,7 +310,8 @@ export class Executions {
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
-      status, ...(error?.message || error?.code ? { last_error: { code: error.code || 'execution_failed', message: error.message || '', ...(error.exit_code != null ? { exit_code: error.exit_code } : {}) } } : {}), ...sessionMeta,
+      status, ...(liveProgress ? { live_progress: liveProgress } : {}),
+      ...(error?.message || error?.code ? { last_error: { code: error.code || 'execution_failed', message: error.message || '', ...(error.exit_code != null ? { exit_code: error.exit_code } : {}) } } : {}), ...sessionMeta,
       ...(pendingRequests.length ? { pending_requests: pendingRequests } : {}),
       control, control_version: control.control_version, input_revision: record.input_revision,
       can_stop: controlled, can_submit: canSubmit };
@@ -791,6 +795,7 @@ export class Executions {
       native: facts.native ? { ...session.native, ...facts.native } : session.native, input_targets: facts.input_targets ?? session.input_targets,
       pending_input: pendingInput,
       waiting_summary: waitingSummary,
+      ...(ended ? { live_progress: null } : {}),
       ...(preview && !facts.input_status ? { last_output_summary: preview } : {}),
       ...(nextError ? { last_error: nextError } : clearError ? { last_error: null } : {}),
       safe_to_disconnect: facts.safe_to_disconnect,

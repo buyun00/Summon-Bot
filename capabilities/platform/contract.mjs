@@ -51,6 +51,7 @@ const promptAnswerItem = object({
 }, ['question_id']);
 const messagePromptResponse = object({
   prompt_message_id: text,
+  skipped: flag,
   answers: array(promptAnswerItem),
 }, ['prompt_message_id', 'answers']);
 const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
@@ -161,9 +162,9 @@ const definitions = [
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
-    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question). ' +
+    'Pass a concise Chinese work_summary (6–24 chars describing the live action, e.g. "fetch 比对远程分支差异", shown directly in the live status dock above the composer) and optionally origin_message_id (defaults to the current Room question). ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
-    'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
+    'When the result registers a wait_ref, end the current turn silently without sending a separate "working on it" chat message—the UI status dock already shows your live progress; send your concise conclusion once the receipt arrives.',
     openSessionInput],
   ['configure_session', 'Update work_summary or waiting_summary on a Session. Sessions settle naturally upon terminal receipts without manual closure ceremonies.',
     configureSessionInput],

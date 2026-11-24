@@ -61,6 +61,110 @@ const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', 
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
   text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo });
 
+const liveSessionStatuses = new Set(['opening', 'running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+
+function compactActivityText(value, maxLen = 44) {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/\s+/g, ' ').trim().replace(/[。！？!?,，；;…\.]+$/u, '');
+  if (!text) return null;
+  return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text;
+}
+
+function ensureDoingText(value, maxLen = 44) {
+  const cleaned = compactActivityText(value, maxLen);
+  if (!cleaned) return null;
+  if (/^(正在|等待|准备|已)/.test(cleaned)) return cleaned;
+  const sep = /^[A-Za-z0-9]/.test(cleaned) ? ' ' : '';
+  const prefixed = `正在${sep}${cleaned}`;
+  return prefixed.length > maxLen ? `${prefixed.slice(0, maxLen - 1)}…` : prefixed;
+}
+
+function shortPathLabel(value) {
+  if (typeof value !== 'string') return '';
+  const cleaned = value.trim().replace(/[\\/]+$/, '');
+  if (!cleaned) return '';
+  const parts = cleaned.split(/[\\/]/).filter(Boolean);
+  return compactActivityText(parts.at(-1) || cleaned, 22) || '';
+}
+
+function describeToolActivity(name, args = {}, platform = null) {
+  switch (name) {
+    case 'configure_room': {
+      if (args.workspace !== undefined) {
+        if (args.workspace === null) return '正在解绑工作区';
+        const rawWs = typeof args.workspace === 'string' ? args.workspace : args.workspace?.id;
+        const wsRecord = rawWs && platform?.store?.get('platform-workspaces', rawWs);
+        const label = compactActivityText(wsRecord?.name || shortPathLabel(wsRecord?.path || rawWs || ''), 20);
+        return label ? `正在绑定工作区 ${label}` : '正在绑定工作区';
+      }
+      if (args.add_members?.length || args.remove_members?.length) return '正在调整群成员';
+      if (args.title) return '正在更新群名称';
+      if (args.pin_add?.length || args.pin_remove?.length) return '正在更新群置顶';
+      return '正在更新群配置';
+    }
+    case 'open_session': {
+      if (args.work_summary) return ensureDoingText(args.work_summary, 44);
+      const engine = typeof args.engine === 'string' ? args.engine : '';
+      return engine && engine !== 'pi' ? `正在启动 ${engine} 执行任务` : '正在启动执行任务';
+    }
+    case 'configure_session':
+      return args.work_summary ? ensureDoingText(args.work_summary, 44) : '正在更新任务状态';
+    case 'send_input':
+      return args.kind === 'reply' ? '正在回应执行请求' : '正在向执行会话发送指令';
+    case 'stop_session':
+      return '正在停止执行任务';
+    case 'find': {
+      const kind = args.kind;
+      if (kind === 'workspace') return '正在查找工作区';
+      if (kind === 'file') return args.query ? `正在搜索资料 ${compactActivityText(args.query, 18)}` : '正在查找资料';
+      if (kind === 'bot') return '正在查看成员列表';
+      if (kind === 'connection') return '正在查看可用工具';
+      if (kind === 'execution') return '正在查看执行状态';
+      if (kind === 'event') return '正在检索群记录';
+      if (kind === 'wakeup') return '正在查看提醒规则';
+      return '正在检索信息';
+    }
+    case 'read': {
+      const refKind = args.ref?.kind;
+      if (refKind === 'workspace') {
+        if (args.path) return `正在读取 ${shortPathLabel(args.path)}`;
+        if (args.directory) return `正在查看目录 ${shortPathLabel(args.directory)}`;
+        return '正在查看工作区目录';
+      }
+      if (refKind === 'file') return '正在读取资料';
+      if (refKind === 'session' || refKind === 'conversation') return '正在查看执行输出';
+      if (refKind === 'connection') return '正在检查工具连接';
+      if (refKind === 'event') return '正在查看消息详情';
+      if (refKind === 'bot') return '正在查看成员配置';
+      if (refKind === 'room') return '正在读取群信息';
+      return '正在读取内容';
+    }
+    case 'save_file': {
+      const target = shortPathLabel(args.path || args.name || '');
+      return target ? `正在写入 ${target}` : '正在保存资料';
+    }
+    case 'create_bot':
+      return args.name ? `正在创建成员 ${compactActivityText(args.name, 16)}` : '正在创建成员';
+    case 'configure_bot':
+      return '正在更新成员配置';
+    case 'create_room':
+      return '正在创建会话';
+    case 'set_wakeup':
+      return '正在设置提醒与订阅';
+    case 'initialize_execution': {
+      if (args.action === 'inspect') return '正在探测工具环境';
+      if (args.action === 'discover') return '正在查找本地工具';
+      if (args.action === 'register' || args.action === 'upsert_method') return '正在配置工具连接';
+      if (args.action === 'guide') return '正在阅读接入手册';
+      return '正在接入外部工具';
+    }
+    case 'send':
+      return args.prompt ? '正在发送确认卡片' : '正在整理并回复';
+    default:
+      return '正在处理任务';
+  }
+}
+
 export class BotRuntime {
   constructor({ dataRoot, model = { connectionStore: connectionPath(dataRoot) }, platform, emit = () => {}, releaseRoot }) {
     this.dataRoot = resolve(dataRoot);
@@ -71,6 +175,8 @@ export class BotRuntime {
     this.clean = createRedactor({ model });
     this.inboxes = new Map();
     this.active = new Map();
+    this.liveActivities = new Map();
+    this.conversationActivities = new Map();
     this.starting = new Map();
     this.opening = new Map();
     this.recoveringInputs = new Map();
@@ -852,6 +958,8 @@ export class BotRuntime {
         this.emit('engine.interrupted', { ...refs, ...diagnostic });
       } finally {
         this.active.delete(conversation.id);
+        const roomId = this.roomIdForConversation(conversation);
+        this.clearLiveActivity(bot.id, roomId, ['thinking', 'tool', 'planned'], conversation.id);
         try {
           for (const target of [conversationRef(conversation.id), ...(conversation.session_id ? [sessionRef(conversation.session_id)] : [])]) {
             const latest = this.platform.executions.record(target);
@@ -906,10 +1014,47 @@ export class BotRuntime {
         throw runtimeFailure('execution_paused', 'The Session control version changed', 409);
       this.platform.assertRunAllowed?.(context());
     };
+    const roomId = this.roomIdForConversation(conversation);
+    const executionRef = conversation.session_id ? sessionRef(conversation.session_id) : target;
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
       seenRoomSequence: null,
       ownRunSendCallIds: new Set(),
+      toolCallCount: 0,
+      lastToolName: null,
       canRetainAuthorizationView,
+      onModelStep: ({ toolCount, lastTool, hasReceipt }) => {
+        let text;
+        if (toolCount === 0) {
+          if (hasReceipt) {
+            text = '正在查看结果并整理结论';
+          } else {
+            const existing = roomId && this.liveActivities.get(recordKey(roomId, bot.id));
+            text = existing?.phase === 'planned' && existing.text ? existing.text : '正在分析需求';
+          }
+        } else if (lastTool === 'open_session') {
+          const existing = roomId && this.liveActivities.get(recordKey(roomId, bot.id));
+          text = existing?.text || '正在推进执行任务';
+        } else if (lastTool === 'send') {
+          text = '正在收尾';
+        } else {
+          text = '正在分析结果，整理结论';
+        }
+        this.setLiveActivity(bot.id, roomId, {
+          phase: 'thinking',
+          text,
+          execution_ref: executionRef,
+          conversation_id: conversation.id,
+        });
+      },
+      onToolActivity: (name, args) => {
+        const text = describeToolActivity(name, args, this.platform);
+        this.setLiveActivity(bot.id, roomId, {
+          phase: 'tool',
+          text,
+          execution_ref: executionRef,
+          conversation_id: conversation.id,
+        });
+      },
       view: () => {
         const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id));
         inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
@@ -1593,6 +1738,161 @@ export class BotRuntime {
       });
     }
     return results;
+  }
+
+  roomIdForConversation(conversation) {
+    if (!conversation) return null;
+    if (conversation.space?.kind === 'room') return conversation.space.id;
+    if (conversation.session_id) {
+      const session = this.platform.executions.record(sessionRef(conversation.session_id));
+      if (session?.origin_room?.id) return session.origin_room.id;
+      if (session?.source_space?.kind === 'room') return session.source_space.id;
+      if (session?.space?.kind === 'room') return session.space.id;
+    }
+    return null;
+  }
+
+  setLiveActivity(botId, roomId, { phase = 'thinking', text, execution_ref = null, conversation_id = null } = {}) {
+    const cleaned = ensureDoingText(text, 44);
+    if (!cleaned) return;
+    const timestamp = now();
+    let changed = false;
+    if (conversation_id) {
+      const prevConv = this.conversationActivities.get(conversation_id);
+      if (!prevConv || prevConv.text !== cleaned || prevConv.phase !== phase) {
+        this.conversationActivities.set(conversation_id, { text: cleaned, phase, updated_at: timestamp });
+        changed = true;
+      }
+    }
+    if (roomId && botId) {
+      const key = recordKey(roomId, botId);
+      const prev = this.liveActivities.get(key);
+      if (!prev || prev.text !== cleaned || prev.phase !== phase || prev.execution_ref?.id !== execution_ref?.id) {
+        this.liveActivities.set(key, {
+          bot_id: botId,
+          room_id: roomId,
+          phase,
+          text: cleaned,
+          execution_ref: execution_ref || prev?.execution_ref || null,
+          started_at: prev?.started_at || timestamp,
+          updated_at: timestamp,
+        });
+        changed = true;
+      }
+    }
+    if (changed) this.emit('execution');
+  }
+
+  clearLiveActivity(botId, roomId, phases = null, conversation_id = null) {
+    let changed = false;
+    if (conversation_id && this.conversationActivities.has(conversation_id)) {
+      const entry = this.conversationActivities.get(conversation_id);
+      if (!phases || phases.includes(entry.phase)) {
+        this.conversationActivities.delete(conversation_id);
+        changed = true;
+      }
+    }
+    if (roomId && botId) {
+      const key = recordKey(roomId, botId);
+      const entry = this.liveActivities.get(key);
+      if (entry && (!phases || phases.includes(entry.phase))) {
+        this.liveActivities.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) this.emit('execution');
+  }
+
+  conversationLiveProgress(conversationId) {
+    return this.conversationActivities.get(conversationId)?.text || null;
+  }
+
+  roomActivities(roomId) {
+    if (!roomId) return [];
+    const byBot = new Map();
+    const nowMs = Date.now();
+
+    const activeJobsByBot = new Map();
+    for (const job of this.active.values()) {
+      const jobRoomId = this.roomIdForConversation(job.conversation);
+      if (jobRoomId !== roomId) continue;
+      const botId = job.inbox?.botId || job.conversation?.bot_id;
+      if (!botId) continue;
+      activeJobsByBot.set(botId, job);
+    }
+
+    // 1. Live active sessions in this room (Codex, CLI, MCP, Pi)
+    for (const session of this.platform.store.list(sessionRecords)) {
+      if (session.authority_revoked || session.control?.state !== 'active') continue;
+      if (!liveSessionStatuses.has(session.status)) continue;
+      const matchRoom = session.origin_room?.id === roomId
+        || (session.source_space?.kind === 'room' && session.source_space.id === roomId)
+        || (session.space?.kind === 'room' && session.space.id === roomId);
+      if (!matchRoom) continue;
+      const botId = session.execution_actor?.id || session.bot_id || session.owner?.id;
+      if (!botId) continue;
+      const needsInput = ['needs_input', 'awaiting_input'].includes(session.status);
+      const piLive = session.engine === 'pi' ? this.conversationLiveProgress(session.conversation_id || session.id) : null;
+      const text = needsInput
+        ? (session.waiting_summary ? `等待输入：${compactActivityText(session.waiting_summary, 30)}` : '等待你的输入')
+        : (piLive || ensureDoingText(session.live_progress || session.work_summary, 44) || '正在执行任务');
+      const existing = byBot.get(botId);
+      const updatedAt = session.updated_at || session.created_at || now();
+      if (!existing || (needsInput && existing.phase !== 'waiting_input') || updatedAt > existing.updated_at) {
+        byBot.set(botId, {
+          bot_id: botId,
+          phase: needsInput ? 'waiting_input' : 'session',
+          text,
+          work_summary: session.work_summary || null,
+          execution_ref: sessionRef(session.id),
+          started_at: session.created_at || updatedAt,
+          updated_at: updatedAt,
+        });
+      }
+    }
+
+    // 2. Active conversation runs & fast-read / planned handoffs
+    for (const [botId, job] of activeJobsByBot.entries()) {
+      const live = this.liveActivities.get(recordKey(roomId, botId));
+      const convLive = this.conversationActivities.get(job.conversation.id);
+      const executionRef = job.conversation.session_id ? sessionRef(job.conversation.session_id) : conversationRef(job.conversation.id);
+      const existing = byBot.get(botId);
+      if (existing?.phase === 'waiting_input') continue;
+      byBot.set(botId, {
+        bot_id: botId,
+        phase: live?.phase || convLive?.phase || 'thinking',
+        text: live?.text || convLive?.text || '正在处理中',
+        work_summary: existing?.work_summary || null,
+        execution_ref: live?.execution_ref || executionRef,
+        started_at: live?.started_at || existing?.started_at || now(),
+        updated_at: live?.updated_at || convLive?.updated_at || now(),
+      });
+    }
+
+    for (const [key, entry] of this.liveActivities.entries()) {
+      if (entry.room_id !== roomId) continue;
+      if (entry.phase === 'planned') {
+        const ageMs = nowMs - Date.parse(entry.updated_at || 0);
+        if (ageMs > 30000 && !activeJobsByBot.has(entry.bot_id)) {
+          this.liveActivities.delete(key);
+          continue;
+        }
+      }
+      if (byBot.has(entry.bot_id)) continue;
+      byBot.set(entry.bot_id, {
+        bot_id: entry.bot_id,
+        phase: entry.phase,
+        text: entry.text,
+        work_summary: null,
+        execution_ref: entry.execution_ref || null,
+        started_at: entry.started_at || entry.updated_at,
+        updated_at: entry.updated_at,
+      });
+    }
+
+    return [...byBot.values()].sort((a, b) =>
+      String(a.started_at || '').localeCompare(String(b.started_at || '')) || a.bot_id.localeCompare(b.bot_id)
+    );
   }
 
   botActivityState(bot) {

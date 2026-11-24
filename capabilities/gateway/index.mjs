@@ -187,6 +187,7 @@ export async function startGateway(options = {}) {
     connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
       assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),
       onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
+      onProgressChange: () => emit('execution'),
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, connections });

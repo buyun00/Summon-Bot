@@ -25,6 +25,7 @@ final class SummonStore {
     private(set) var lastSyncAt: Date?
     private(set) var modelSummary: SummonJSONValue = .null
     private(set) var roomExecutions: [String: [SummonJSONValue]] = [:]
+    private(set) var roomActivities: [String: [SummonRoomActivity]] = [:]
     private(set) var roomSuspendedRuns: [String: [SummonJSONValue]] = [:]
     private(set) var roomMessageStates: [String: [String: SummonJSONValue]] = [:]
     var errorMessage: String?
@@ -185,6 +186,7 @@ final class SummonStore {
                 messageHistory = [:]
                 deliveries = [:]
                 messageSummaries = [:]
+                roomActivities = [:]
                 cursors = [:]
                 roomSuspendedRuns = [:]
                 roomMessageStates = [:]
@@ -282,9 +284,10 @@ final class SummonStore {
 
     func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
     func summaryFacts(_ id: String) -> [SummonMessageSummary] { messageSummaries[id] ?? [] }
+    func activitiesForRoom(_ id: String) -> [SummonRoomActivity] { roomActivities[id] ?? [] }
     func executionsForRoom(_ id: String) -> [SummonJSONValue] { roomExecutions[id] ?? [] }
     func activeExecutionsForRoom(_ id: String) -> [SummonJSONValue] {
-        let live: Set<String> = ["running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
+        let live: Set<String> = ["opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
         return (roomExecutions[id] ?? []).filter { live.contains($0["status"].stringValue) }
     }
     func suspendedRunsForMessage(roomID: String, messageID: String) -> [SummonJSONValue] {
@@ -364,6 +367,7 @@ final class SummonStore {
                 roomMessageStates[id] = [:]
             }
             if !older {
+                roomActivities[id] = snapshot.activities ?? []
                 roomSuspendedRuns[id] = snapshot.suspendedRuns ?? []
             }
             let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
@@ -505,15 +509,17 @@ final class SummonStore {
         await deliver(id, queryFirst: false)
     }
 
-    func sendPromptResponse(roomID: String, message: SummonMessage, answers: [SummonJSONValue], summaryText: String) async {
-        guard protocolReady, !sendingRoomIDs.contains(roomID), !answers.isEmpty else { return }
+    func sendPromptResponse(roomID: String, message: SummonMessage, answers: [SummonJSONValue], summaryText: String, skipped: Bool = false) async {
+        guard protocolReady, !sendingRoomIDs.contains(roomID), skipped || !answers.isEmpty else { return }
         let room = rooms.first(where: { $0.id == roomID })
         let mentions = (message.senderId != "user" && message.senderId != "system" && room?.members.contains(message.senderId) == true)
             ? [message.senderId] : []
-        let promptResponse: SummonJSONValue = .object([
+        var responseObj: [String: SummonJSONValue] = [
             "prompt_message_id": .string(message.id),
             "answers": .array(answers)
-        ])
+        ]
+        if skipped { responseObj["skipped"] = .bool(true) }
+        let promptResponse: SummonJSONValue = .object(responseObj)
         let id = Self.newID()
         let outgoing = SummonMessage(
             id: "local-\(id)", roomId: roomID, senderId: "user", content: summaryText,
@@ -792,7 +798,7 @@ final class SummonStore {
 
     private func clearServerState() {
         bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
-        roomSuspendedRuns = [:]; roomMessageStates = [:]
+        roomActivities = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }

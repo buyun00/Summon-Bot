@@ -39,9 +39,9 @@ function bindingConfig(entry) {
 }
 
 export class SummonConnections {
-  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent, onWorkEvent }) {
+  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent, onWorkEvent, onProgressChange }) {
     if (!store || !dataRoot) throw new Error('Connection storage and data root are required');
-    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent, onWorkEvent });
+    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent, onWorkEvent, onProgressChange });
     this.processes = new SessionProcesses({ store, dataRoot, clean: value => this.clean(value) });
     this.services = new ServiceConnections(this);
     this.active = new Map();
@@ -343,13 +343,21 @@ export class SummonConnections {
         const position = (current?.progress_position || 0) + 1;
         const id = keyOf(operation.id, position);
         try {
+          const progressText = typeof progress === 'string'
+            ? progress
+            : (progress?.message || progress?.text || (progress?.total ? `${progress.progress ?? 0}/${progress.total}` : ''));
+          const cleanedProgress = typeof progressText === 'string' ? this.clean(progressText).replace(/\s+/g, ' ').trim().slice(0, 80) : '';
           this.store.transaction(() => {
             this.store.save('session-service-events', { id, operation_id: operation.id, position, progress });
             this.saveOperation(operation, { progress_position: position });
+            if (cleanedProgress) {
+              this.store.save(executionRecords, { id: session.id, live_progress: cleanedProgress, updated_at: new Date().toISOString() });
+            }
             if (session.group_work && started) this.onWorkEvent?.(session.id, operation.id, ['progress', position], {
               phase: 'progress', method: input.method, cwd, progress,
             });
           });
+          if (cleanedProgress) this.onProgressChange?.(session.id);
         } catch (error) { console.error('Could not persist MCP progress', this.clean(error.message)); }
       } });
       const saved = this.saveOperation(operation, this.services.facts(entry, result));
@@ -848,6 +856,51 @@ export class SummonConnections {
         work_done: settled(status) && operation.runtime_ended && !more });
   }
 
+  formatCommandProgress(rawCommand) {
+    if (typeof rawCommand !== 'string') return '';
+    let cmd = rawCommand.replace(/\s+/g, ' ').trim();
+    cmd = cmd.replace(/^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-\w+\s+)*-Command\s+/i, '');
+    cmd = cmd.replace(/^(?:cmd(?:\.exe)?)\s+\/c\s+/i, '');
+    cmd = cmd.replace(/^(?:\/bin\/)?(?:bash|sh|zsh)\s+-[a-z]*c\s+/i, '');
+    cmd = cmd.replace(/^["']|["']$/g, '').trim();
+    return this.clean(cmd).slice(0, 44);
+  }
+
+  async publishLiveProgress(operation, session) {
+    if (!operation?.instance_id || operation.revoked_at || operation.status === 'prepared') return;
+    if (settled(operation.status) && operation.runtime_ended) return;
+    let offset = operation.live_progress_offset ?? 0;
+    let latestText = null;
+    try {
+      const page = await this.processes.output(operation, { stream: 'events', offset, limit: 65_536 });
+      const cut = page.text.lastIndexOf('\n');
+      if (cut < 0) return;
+      for (const line of page.text.slice(0, cut + 1).split('\n').slice(0, -1)) {
+        offset += Buffer.byteLength(line) + 1;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        if (event.type === 'progress' && typeof event.text === 'string' && event.text.trim()) {
+          latestText = this.clean(event.text).replace(/\s+/g, ' ').trim().slice(0, 60);
+        } else if (event.type === 'item' && event.itemType === 'commandExecution' && event.command) {
+          const cmd = this.formatCommandProgress(event.command);
+          if (cmd) latestText = `正在执行 ${cmd}`;
+        } else if (event.type === 'item' && event.itemType === 'mcpToolCall' && event.tool) {
+          latestText = `正在调用 ${this.clean(String(event.tool)).slice(0, 36)}`;
+        } else if (event.type === 'tool' && (event.command || event.tool)) {
+          const cmd = this.formatCommandProgress(event.command || event.tool);
+          if (cmd) latestText = `正在执行 ${cmd}`;
+        }
+      }
+      if (offset !== (operation.live_progress_offset ?? 0)) {
+        this.saveOperation(operation, { live_progress_offset: offset });
+      }
+      if (latestText && latestText !== session.live_progress) {
+        this.store.save(executionRecords, { id: session.id, live_progress: latestText, updated_at: new Date().toISOString() });
+        this.onProgressChange?.(session.id);
+      }
+    } catch {}
+  }
+
   async publishInputs(operation, session, inputs = []) {
     for (const record of inputs) {
       let next = record;
@@ -922,6 +975,7 @@ export class SummonConnections {
       await this.publish(current, session);
       await this.publishInputs(current, session, inputs.get(current.id));
       await this.publishWork(current, session);
+      await this.publishLiveProgress(current, session);
     });
     const results = await Promise.allSettled(checks);
     const failure = results.find(result => result.status === 'rejected');
