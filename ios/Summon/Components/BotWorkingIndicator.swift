@@ -26,10 +26,10 @@ struct BotWorkingIndicator: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             ZStack {
                 if let bot {
-                    MemberAvatar(bot: bot, size: 28, motion: motion ?? "work")
+                    MemberAvatar(bot: bot, size: 24, motion: motion ?? "work")
                         .id(bot.id)
                         .transition(.scale(scale: 0.75).combined(with: .opacity))
                 } else {
@@ -37,7 +37,7 @@ struct BotWorkingIndicator: View {
                         .transition(.opacity)
                 }
             }
-            .frame(width: 28, height: 28)
+            .frame(width: 36, height: 36)
             .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: bot?.id)
 
             ZStack(alignment: .leading) {

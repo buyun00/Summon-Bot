@@ -165,14 +165,16 @@ fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String, motion: 
     )
     Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 3.dp),
+        modifier = Modifier.padding(vertical = 2.dp),
     ) {
-        if (bot != null) {
-            MemberAvatar(bot, 28.dp, motion = motion ?: "work")
-        } else {
-            androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.ok)
+        Box(Modifier.size(36.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+            if (bot != null) {
+                MemberAvatar(bot, 24.dp, motion = motion ?: "work")
+            } else {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.ok)
+            }
         }
-        Spacer(Modifier.size(10.dp))
+        Spacer(Modifier.size(8.dp))
         androidx.compose.material3.Text(
             text = label,
             maxLines = 1,

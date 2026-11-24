@@ -162,6 +162,7 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
     var promptAnswer: SummonJSONValue?
 
     var isOwn: Bool { senderId == "user" }
+    var stableListID: String { isOwn ? (clientId ?? id) : id }
 
     init(id: String, roomId: String, senderId: String, content: String, attachments: [SummonAttachment] = [],
          references: [SummonReference] = [], mentions: [String] = [], replyTo: String? = nil,
@@ -255,6 +256,12 @@ struct SummonRoomActivity: Codable, Equatable, Sendable, Identifiable {
     var started_at: String?
     var updated_at: String?
     var id: String { bot_id }
+}
+
+struct SummonOptimisticWork: Equatable, Sendable {
+    var botID: String
+    var sentMessageID: String
+    var startedAt: Date
 }
 
 struct SummonReceipt: Decodable, Sendable {

@@ -95,6 +95,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -167,7 +168,8 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
     val messages = store.messagesForRoom(roomID)
     val roomExecutions = store.executionsForRoom(roomID)
     val roomActivities = store.activitiesForRoom(roomID)
-    val activeBotItems = remember(roomActivities, roomExecutions, store.bots, room?.members) {
+    val optimisticWork = store.optimisticWorkForRoom(roomID)
+    val activeBotItems = remember(roomActivities, roomExecutions, store.bots, room?.members, optimisticWork) {
         val seen = mutableSetOf<String>()
         val items = mutableListOf<ActiveBotStatus>()
         for (activity in roomActivities) {
@@ -199,6 +201,11 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                 "working" -> items += ActiveBotStatus(directBot.id, directBot, directBot.name, "正在处理中", null)
                 "error" -> items += ActiveBotStatus(directBot.id, directBot, directBot.name, "运行异常", null)
             }
+        }
+        if (items.isEmpty() && optimisticWork != null) {
+            val bot = store.bot(optimisticWork.botId)
+            val name = bot?.name ?: store.name(optimisticWork.botId)
+            items += ActiveBotStatus(optimisticWork.botId, bot, name, "正在工作", null)
         }
         items
     }
@@ -256,7 +263,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
     DisposableEffect(roomID) {
         onDispose { store.deactivateRoom(roomID) }
     }
-    LaunchedEffect(messages.lastOrNull()?.id, sentRevision) {
+    LaunchedEffect(messages.lastOrNull()?.stableListID, sentRevision) {
         val last = listState.layoutInfo.totalItemsCount - 1
         if (nearBottom && last >= 0) listState.animateScrollToItem(last)
     }
@@ -337,7 +344,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                     }
                 }
             }
-            itemsIndexed(messages, key = { _, it -> it.id }) { index, message ->
+            itemsIndexed(messages, key = { _, it -> it.stableListID }) { index, message ->
                 val previous = if (index > 0) messages[index - 1] else null
                 val currentInstant = parseSummonDate(message.createdAt)
                 val prevInstant = parseSummonDate(previous?.createdAt)
@@ -1221,8 +1228,16 @@ private fun MessageRow(
                     }
                 }
                 if (pending != null && pending.status != "sent") {
-                    if (pending.status == "sending") {
-                        Text("正在发送…", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                    if (pending.status == "sending" || pending.status == "queued") {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .width(76.dp)
+                                .height(3.dp)
+                                .clip(CircleShape),
+                            color = palette.textSecondary.copy(alpha = 0.72f),
+                            trackColor = palette.textSecondary.copy(alpha = 0.18f),
+                        )
                     } else {
                         Text(pending.error ?: "保存状态待确认", color = palette.warn, style = MaterialTheme.typography.labelSmall)
                         if (pending.status == "rejected") {

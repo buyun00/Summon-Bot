@@ -11,7 +11,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -70,6 +72,8 @@ class SummonStore(private val app: Context) {
         private set
     var roomActivities by mutableStateOf<Map<String, List<SummonRoomActivity>>>(emptyMap())
         private set
+    var optimisticRoomWork by mutableStateOf<Map<String, SummonOptimisticWork>>(emptyMap())
+        private set
     var roomSuspendedRuns by mutableStateOf<Map<String, List<SummonJson>>>(emptyMap())
         private set
     var roomMessageStates by mutableStateOf<Map<String, Map<String, SummonJson>>>(emptyMap())
@@ -85,9 +89,11 @@ class SummonStore(private val app: Context) {
     private var client: SummonApiClient? = null
     private var streamJob: Job? = null
     private var refreshJob: Job? = null
+    private var activeRoomRefreshJob: Job? = null
     private var recoveryJob: Job? = null
     private var persistenceJob: Job? = null
     private val roomReads = mutableSetOf<String>()
+    private val latestReadsWaiting = mutableSetOf<String>()
     private val olderReadsWaiting = mutableSetOf<String>()
     private var connectionGeneration = 0
     private var historyEpoch: String? = null
@@ -148,9 +154,12 @@ class SummonStore(private val app: Context) {
         foreground = false
         streamJob?.cancel(); streamJob = null
         refreshJob?.cancel(); refreshJob = null
+        activeRoomRefreshJob?.cancel(); activeRoomRefreshJob = null
         recoveryJob?.cancel(); recoveryJob = null
         roomReads.clear()
+        latestReadsWaiting.clear()
         olderReadsWaiting.clear()
+        optimisticRoomWork = emptyMap()
         isConnected = false; protocolReady = false; isLoading = false; isRefreshing = false; refreshAgain = false
         pendingMessages = pendingMessages.map { if (it.status == "sending") it.copy(status = "failed", error = "保存状态待确认。") else it }
         sendingRoomIDs = emptySet()
@@ -223,7 +232,7 @@ class SummonStore(private val app: Context) {
         client = api.forNode(nodeID)
         historyEpoch = null
         messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap()
-        roomActivities = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
+        roomActivities = emptyMap(); optimisticRoomWork = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         remoteNodeRooms[nodeID]?.let { rooms = it }
         remoteNodeBots[nodeID]?.let { bots = it }
         protocolReady = false
@@ -307,19 +316,27 @@ class SummonStore(private val app: Context) {
             val nextRemoteRooms = remoteNodeRooms.toMutableMap()
             val nextRemoteBots = remoteNodeBots.toMutableMap()
             activeNodeID?.let { aid -> nextRemoteRooms[aid] = rooms; nextRemoteBots[aid] = bots }
-            for (other in online) {
-                if (other.id == activeNodeID) continue
-                runCatching {
-                    val otherState = withContext(Dispatchers.IO) { activeApi.forNode(other.id).requestJson("/api/state") }
-                    nextRemoteRooms[other.id] = otherState["rooms"].array.orEmpty().map { SummonRoom.parse(it) }
-                    nextRemoteBots[other.id] = otherState["bots"].array.orEmpty().map(SummonBot::parse)
-                }
-            }
             remoteNodeRooms = nextRemoteRooms
             remoteNodeBots = nextRemoteBots
             errorMessage = null
             lastSyncAt = System.currentTimeMillis()
             activeRoomID?.takeIf { room(it) != null }?.let { loadRoom(it) }
+            if (connection != connectionGeneration) return
+            var updatedRemotes = false
+            for (other in online) {
+                if (other.id == activeNodeID) continue
+                runCatching {
+                    val otherState = withContext(Dispatchers.IO) { activeApi.forNode(other.id).requestJson("/api/state") }
+                    if (connection != connectionGeneration) return
+                    nextRemoteRooms[other.id] = otherState["rooms"].array.orEmpty().map { SummonRoom.parse(it) }
+                    nextRemoteBots[other.id] = otherState["bots"].array.orEmpty().map(SummonBot::parse)
+                    updatedRemotes = true
+                }
+            }
+            if (updatedRemotes && connection == connectionGeneration) {
+                remoteNodeRooms = nextRemoteRooms.toMap()
+                remoteNodeBots = nextRemoteBots.toMap()
+            }
             if (connection == connectionGeneration) schedulePersistence()
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) {
@@ -399,6 +416,11 @@ class SummonStore(private val app: Context) {
     fun deliveryFacts(id: String): List<SummonDelivery> = deliveries[id].orEmpty()
     fun summaryFacts(id: String): List<SummonMessageSummary> = messageSummaries[id].orEmpty()
     fun activitiesForRoom(id: String): List<SummonRoomActivity> = roomActivities[id].orEmpty()
+    fun optimisticWorkForRoom(id: String): SummonOptimisticWork? {
+        val work = optimisticRoomWork[id] ?: return null
+        if (System.currentTimeMillis() - work.startedAtMs > 12_000L) return null
+        return work
+    }
     fun executionsForRoom(id: String): List<SummonJson> = roomExecutions[id].orEmpty()
     fun activeExecutionsForRoom(id: String): List<SummonJson> {
         val live = setOf("opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input")
@@ -415,7 +437,9 @@ class SummonStore(private val app: Context) {
         scheduleRefresh()
     }
     suspend fun stopRoom(roomId: String) {
+        optimisticRoomWork = optimisticRoomWork - roomId
         request(roomPath(roomId) + "/stop", "POST", SummonJson.obj())
+        scheduleActiveRoomRefresh(roomId, 80L)
         scheduleRefresh()
     }
     fun pendingMessage(message: SummonMessage): SummonPendingMessage? =
@@ -427,14 +451,18 @@ class SummonStore(private val app: Context) {
         val api = client ?: return
         if (!protocolReady) return
         if (!roomReads.add(id)) {
-            if (older) olderReadsWaiting.add(id)
+            if (older) olderReadsWaiting.add(id) else latestReadsWaiting.add(id)
             return
         }
         val connection = connectionGeneration
         try {
             val cursor = if (older) cursors[id] ?: return else null
             val suffix = cursor?.let { "?cursor=" + SummonApiClient.component(it) }.orEmpty()
-            val snapshot = withContext(Dispatchers.IO) { api.requestJson(roomPath(id) + "/messages" + suffix) }
+            val (snapshot, execs) = coroutineScope {
+                val snapJob = async(Dispatchers.IO) { api.requestJson(roomPath(id) + "/messages" + suffix) }
+                val execJob = if (!older) async { runCatching { list("/api/executions?room=" + SummonApiClient.component(id)) }.getOrNull() } else null
+                snapJob.await() to execJob?.await()
+            }
             if (connection != connectionGeneration) return
             if (snapshot["historyEpoch"].string != historyEpoch) { scheduleRefresh(); return }
             upsertRoom(SummonRoom.parse(snapshot["room"]))
@@ -457,8 +485,12 @@ class SummonStore(private val app: Context) {
             val baseStates = if (retainCache) roomMessageStates[id].orEmpty() else emptyMap()
             roomMessageStates = roomMessageStates + (id to (baseStates + pageStates))
             if (!older) {
-                roomActivities = roomActivities + (id to SummonRoomActivity.list(snapshot["activities"]))
-                roomSuspendedRuns = roomSuspendedRuns + (id to snapshot["suspendedRuns"].array.orEmpty())
+                val nextActivities = SummonRoomActivity.list(snapshot["activities"])
+                val nextSuspended = snapshot["suspendedRuns"].array.orEmpty()
+                roomActivities = roomActivities + (id to nextActivities)
+                roomSuspendedRuns = roomSuspendedRuns + (id to nextSuspended)
+                if (execs != null) roomExecutions = roomExecutions + (id to execs)
+                reconcileOptimisticWork(id, all, nextActivities, nextSuspended)
             }
             val confirmed = page.filter(SummonMessage::isOwn).mapNotNull(SummonMessage::clientId).toSet()
             val staged = pendingMessages.filter { it.roomID == id && it.clientID in confirmed }.flatMap { it.message.attachments }
@@ -466,20 +498,62 @@ class SummonStore(private val app: Context) {
             if (staged.isNotEmpty() && persistComposer()) staged.forEach(::discardStagedAttachment)
             schedulePersistence()
             lastSyncAt = System.currentTimeMillis()
-            if (!older) {
-                runCatching { list("/api/executions?room=" + SummonApiClient.component(id)) }.getOrNull()?.let { execs ->
-                    if (connection == connectionGeneration) roomExecutions = roomExecutions + (id to execs)
-                }
-            }
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) { if (connection == connectionGeneration && id == activeRoomID) handle(error) }
         finally {
             if (connection == connectionGeneration) {
                 roomReads.remove(id)
-                if (olderReadsWaiting.remove(id) && activeRoomID == id) scope.launch {
+                if (latestReadsWaiting.remove(id) && activeRoomID == id) scope.launch {
+                    if (connection == connectionGeneration && activeRoomID == id) loadRoom(id, older = false)
+                } else if (olderReadsWaiting.remove(id) && activeRoomID == id) scope.launch {
                     if (connection == connectionGeneration && activeRoomID == id) loadRoom(id, older = true)
                 }
             }
+        }
+    }
+
+    private fun preferredWorkingBotId(roomId: String, deliveries: List<SummonDelivery>, mentions: List<String>): String? {
+        for (delivery in deliveries) {
+            val bot = bot(delivery.botId)
+            if (bot != null && !bot.isPaused) return bot.id
+        }
+        val room = room(roomId) ?: return null
+        for (mention in mentions) {
+            if (mention in room.members) {
+                val bot = bot(mention)
+                if (bot != null && !bot.isPaused) return bot.id
+            }
+        }
+        room.leadBotId?.let { leadId ->
+            val lead = bot(leadId)
+            if (lead != null && !lead.isPaused) return lead.id
+        }
+        val memberBots = room.members.mapNotNull { bot(it) }.filterNot { it.isPaused }
+        memberBots.firstOrNull { it.roleId !in listOf("eggbot", "tool-onboarding") }?.let { return it.id }
+        return memberBots.firstOrNull()?.id
+    }
+
+    private fun reconcileOptimisticWork(
+        roomId: String,
+        messages: List<SummonMessage>,
+        activities: List<SummonRoomActivity>,
+        suspendedRuns: List<SummonJson>,
+    ) {
+        val work = optimisticRoomWork[roomId] ?: return
+        if (activities.isNotEmpty() || activeExecutionsForRoom(roomId).isNotEmpty() || suspendedRuns.isNotEmpty()) {
+            optimisticRoomWork = optimisticRoomWork - roomId
+            return
+        }
+        val sentIdx = messages.indexOfFirst { it.id == work.sentMessageId }
+        if (sentIdx >= 0) {
+            val hasReplyAfter = messages.drop(sentIdx + 1).any { !it.isOwn && it.senderId != "system" && it.senderId != "platform" }
+            if (hasReplyAfter) {
+                optimisticRoomWork = optimisticRoomWork - roomId
+                return
+            }
+        }
+        if (System.currentTimeMillis() - work.startedAtMs >= 3000L) {
+            optimisticRoomWork = optimisticRoomWork - roomId
         }
     }
 
@@ -731,8 +805,22 @@ class SummonStore(private val app: Context) {
             deliveries = deliveries + (message.id to confirmed.deliveries)
             updatePending(id) { it.copy(message = message, status = "sent", error = null) }
             rooms = rooms.map { if (it.id == item.roomID) it.copy(lastMessage = message) else it }
+            preferredWorkingBotId(item.roomID, confirmed.deliveries, message.mentions)?.let { targetBotId ->
+                optimisticRoomWork = optimisticRoomWork + (item.roomID to SummonOptimisticWork(targetBotId, message.id, System.currentTimeMillis()))
+            }
             if (persistComposer()) item.message.attachments.forEach(::discardStagedAttachment)
             schedulePersistence()
+            scheduleActiveRoomRefresh(item.roomID, 120L)
+            scope.launch {
+                delay(1600)
+                if (foreground && connection == connectionGeneration && optimisticRoomWork[item.roomID]?.sentMessageId == message.id) {
+                    loadRoom(item.roomID)
+                }
+                delay(1800)
+                if (foreground && connection == connectionGeneration && optimisticRoomWork[item.roomID]?.sentMessageId == message.id) {
+                    loadRoom(item.roomID)
+                }
+            }
             scheduleRefresh()
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) {
@@ -872,7 +960,12 @@ class SummonStore(private val app: Context) {
                             withContext(Dispatchers.Main.immediate) {
                                 if (connection == connectionGeneration && foreground) {
                                     isConnected = true
-                                    if (event !is SummonStreamEvent.KeepAlive) scheduleRefresh()
+                                    if (event !is SummonStreamEvent.KeepAlive) {
+                                        if (event is SummonStreamEvent.Change && protocolReady) {
+                                            activeRoomID?.let { scheduleActiveRoomRefresh(it, 120L) }
+                                        }
+                                        scheduleRefresh()
+                                    }
                                 }
                             }
                         }
@@ -904,10 +997,21 @@ class SummonStore(private val app: Context) {
         }
     }
 
+    private fun scheduleActiveRoomRefresh(roomId: String, delayMs: Long = 120L) {
+        if (!foreground || !protocolReady) return
+        activeRoomRefreshJob?.cancel()
+        val connection = connectionGeneration
+        activeRoomRefreshJob = scope.launch {
+            if (delayMs > 0) delay(delayMs)
+            activeRoomRefreshJob = null
+            if (foreground && connection == connectionGeneration) loadRoom(roomId)
+        }
+    }
+
     private fun scheduleRefresh() {
         if (!foreground || refreshJob != null) return
         refreshJob = scope.launch {
-            delay(850)
+            delay(180)
             refreshJob = null
             refresh()
         }
@@ -931,7 +1035,7 @@ class SummonStore(private val app: Context) {
 
     private fun clearServerState() {
         bots = emptyList(); rooms = emptyList(); archivedRooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
-        roomActivities = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
+        roomActivities = emptyMap(); optimisticRoomWork = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
         modelSummary = SummonJson.Null

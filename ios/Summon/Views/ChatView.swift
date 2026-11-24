@@ -103,6 +103,11 @@ struct ChatView: View {
                 result.append(ActiveBotItem(id: direct.id, bot: direct, name: direct.name, status: "运行异常", ref: nil))
             }
         }
+        if result.isEmpty, let optimistic = store.optimisticWorkForRoom(roomID) {
+            let bot = store.bot(id: optimistic.botID)
+            let name = bot?.name ?? store.name(for: optimistic.botID)
+            result.append(ActiveBotItem(id: optimistic.botID, bot: bot, name: name, status: "正在工作", ref: nil))
+        }
         return result
     }
     private var pendingInputExecution: SummonJSONValue? {
@@ -120,7 +125,7 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     if messages.isEmpty && !store.isLoading {
                         ContentUnavailableView("开始聊天", systemImage: "bubble.left.and.text.bubble.right", description: Text("发一条消息给 \(title)。"))
                             .padding(.top, 70)
@@ -130,7 +135,7 @@ struct ChatView: View {
                             .buttonStyle(.bordered).disabled(!store.protocolReady)
                             .padding(.bottom, 12)
                     }
-                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                    ForEach(Array(messages.enumerated()), id: \.element.stableListID) { index, message in
                         let previous = index > 0 ? messages[index - 1] : nil
                         let currentDate = SummonDate.parse(message.createdAt)
                         let prevDate = SummonDate.parse(previous?.createdAt)
@@ -155,13 +160,11 @@ struct ChatView: View {
                             }
                             .padding(.top, showTimeDivider ? 0 : (grouped ? 6 : 16))
                         }
-                        .id(message.id)
-                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .identity))
+                        .id(message.stableListID)
                     }
                     Color.clear.frame(height: 18).id("conversation-bottom")
                 }
                 .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 8)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: messages.last?.id)
             }
             .scrollDismissesKeyboard(.interactively)
             .scrollEdgeEffectStyle(.soft, for: .all)
@@ -175,23 +178,24 @@ struct ChatView: View {
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentSize.height - geometry.visibleRect.maxY < 80
             } action: { _, atBottom in
-                // A newly appended reply can move the end marker offscreen without a user scroll.
                 if userScrolling || atBottom { nearBottom = atBottom }
             }
-            .onScrollGeometryChange(for: CGSize.self) { geometry in
-                CGSize(width: geometry.containerSize.height, height: geometry.contentSize.height + geometry.contentInsets.bottom)
-            } action: { _, _ in
-                // The keyboard, composer, images and streaming text can all resize independently.
-                if nearBottom && !userScrolling { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
-            }
             .onChange(of: sentRevision) { _, _ in
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                Task { @MainActor in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                }
             }
             .onChange(of: composing) { _, _ in
-                if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+                guard nearBottom else { return }
+                Task { @MainActor in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                }
             }
-            .onChange(of: messages.last?.id) { _, _ in
-                if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+            .onChange(of: messages.last?.stableListID) { _, _ in
+                guard nearBottom && !userScrolling else { return }
+                Task { @MainActor in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                }
             }
             .overlay(alignment: .top) {
                 LinearGradient(
@@ -483,8 +487,7 @@ struct ChatView: View {
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 16)
-                .clipped()
+                .padding(.horizontal, 14)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: safeIndex)
                 .task(id: items.map(\.id)) {
                     if activityTickerIndex >= items.count { activityTickerIndex = 0 }
@@ -808,6 +811,7 @@ private struct MessageRow: View {
                         topTrailingRadius: 20
                     )
                     MessageContentView(text: message.content, isOwn: message.isOwn)
+                        .equatable()
                         .padding(.horizontal, 14)
                         .padding(.vertical, 11)
                         .background(message.isOwn ? SummonTheme.userBubble : SummonTheme.botBubble, in: bubbleShape)
@@ -833,8 +837,8 @@ private struct MessageRow: View {
                     .buttonStyle(.plain)
                 }
                 if let pending, pending.status != "sent" {
-                    if pending.status == "sending" {
-                        Label("正在发送…", systemImage: "clock").summonFont(.caption2).foregroundStyle(.secondary)
+                    if pending.status == "sending" || pending.status == "queued" {
+                        SendingProgressBar()
                     } else {
                         VStack(alignment: .trailing, spacing: 6) {
                             Text(pending.error ?? "保存状态待确认").summonFont(.caption2).foregroundStyle(SummonTheme.warn)
@@ -935,12 +939,73 @@ private enum MessageSegment: Identifiable {
     }
 }
 
-private struct MessageContentView: View {
+@MainActor
+private enum MessageContentCache {
+    private static var segmentCache: [String: [MessageSegment]] = [:]
+    private static var markdownCache: [String: AttributedString] = [:]
+
+    static func segments(for text: String) -> [MessageSegment] {
+        if let cached = segmentCache[text] { return cached }
+        let parsed = MessageSegment.parse(text)
+        if segmentCache.count > 240 { segmentCache.removeAll(keepingCapacity: true) }
+        segmentCache[text] = parsed
+        return parsed
+    }
+
+    static func markdown(for value: String) -> AttributedString? {
+        if let cached = markdownCache[value] { return cached }
+        guard let parsed = try? AttributedString(
+            markdown: value,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) else { return nil }
+        if markdownCache.count > 240 { markdownCache.removeAll(keepingCapacity: true) }
+        markdownCache[value] = parsed
+        return parsed
+    }
+}
+
+private struct SendingProgressBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let trackWidth: CGFloat = 76
+    private let indicatorWidth: CGFloat = 28
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.secondary.opacity(0.18))
+            if reduceMotion {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.65))
+                    .frame(width: trackWidth * 0.45)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                    let raw = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.15) / 1.15
+                    let eased = raw < 0.5 ? 2 * raw * raw : 1 - pow(-2 * raw + 2, 2) / 2
+                    let travel = trackWidth + indicatorWidth
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.72))
+                        .frame(width: indicatorWidth)
+                        .offset(x: -indicatorWidth + travel * CGFloat(eased))
+                }
+            }
+        }
+        .frame(width: trackWidth, height: 3)
+        .clipShape(Capsule())
+        .padding(.top, 2)
+        .accessibilityLabel("正在发送")
+    }
+}
+
+private struct MessageContentView: View, Equatable {
     let text: String
     let isOwn: Bool
 
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.text == rhs.text && lhs.isOwn == rhs.isOwn
+    }
+
     var body: some View {
-        let segments = MessageSegment.parse(text)
+        let segments = MessageContentCache.segments(for: text)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(segments) { segment in
                 switch segment {
@@ -957,10 +1022,7 @@ private struct MessageContentView: View {
 
     @ViewBuilder
     private func markdownText(_ value: String) -> some View {
-        if let attributed = try? AttributedString(
-            markdown: value,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
+        if let attributed = MessageContentCache.markdown(for: value) {
             Text(attributed)
         } else {
             Text(value)

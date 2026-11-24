@@ -193,6 +193,7 @@ data class SummonMessage(
     val promptAnswer: SummonJson? = null,
 ) {
     val isOwn: Boolean get() = senderId == "user"
+    val stableListID: String get() = if (isOwn) (clientId ?: id) else id
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "roomId" to SummonJson.Str(roomId), "senderId" to SummonJson.Str(senderId),
@@ -300,6 +301,12 @@ data class SummonMessageSummary(val botId: String, val summary: String, val upda
         }
     }
 }
+
+data class SummonOptimisticWork(
+    val botId: String,
+    val sentMessageId: String,
+    val startedAtMs: Long,
+)
 
 data class SummonRoomActivity(
     val botId: String,

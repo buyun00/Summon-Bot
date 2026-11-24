@@ -32,6 +32,7 @@ final class SummonStore {
     private(set) var modelSummary: SummonJSONValue = .null
     private(set) var roomExecutions: [String: [SummonJSONValue]] = [:]
     private(set) var roomActivities: [String: [SummonRoomActivity]] = [:]
+    private(set) var optimisticRoomWork: [String: SummonOptimisticWork] = [:]
     private(set) var roomSuspendedRuns: [String: [SummonJSONValue]] = [:]
     private(set) var roomMessageStates: [String: [String: SummonJSONValue]] = [:]
     var errorMessage: String?
@@ -44,9 +45,11 @@ final class SummonStore {
     @ObservationIgnored private var client: SummonAPIClient?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var activeRoomRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var recoveryTask: Task<Void, Never>?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
     @ObservationIgnored private var roomReads: Set<String> = []
+    @ObservationIgnored private var latestReadsWaiting: Set<String> = []
     @ObservationIgnored private var olderReadsWaiting: Set<String> = []
     @ObservationIgnored private var connectionGeneration = 0
     @ObservationIgnored private var pushGeneration: Int?
@@ -130,9 +133,12 @@ final class SummonStore {
         foreground = false
         streamTask?.cancel(); streamTask = nil
         refreshTask?.cancel(); refreshTask = nil
+        activeRoomRefreshTask?.cancel(); activeRoomRefreshTask = nil
         recoveryTask?.cancel(); recoveryTask = nil
         roomReads.removeAll()
+        latestReadsWaiting.removeAll()
         olderReadsWaiting.removeAll()
+        optimisticRoomWork.removeAll()
         isConnected = false
         protocolReady = false
         isLoading = false
@@ -222,6 +228,7 @@ final class SummonStore {
         deliveries = [:]
         messageSummaries = [:]
         roomActivities = [:]
+        optimisticRoomWork = [:]
         cursors = [:]
         roomSuspendedRuns = [:]
         roomMessageStates = [:]
@@ -348,17 +355,19 @@ final class SummonStore {
                 remoteNodeRooms[aid] = state.rooms
                 remoteNodeBots[aid] = state.bots
             }
-            // Fetch lightweight room summaries for all other online PCs so the home list mixes them flat
+            errorMessage = nil
+            lastSyncAt = Date()
+            if let id = activeRoomID, room(id: id) != nil { await loadRoom(id) }
+            guard connection == connectionGeneration, !Task.isCancelled else { return }
+            // Fetch lightweight room summaries for all other online PCs after the active room is already up to date.
             for other in online where other.id != activeNodeID {
                 let otherClient = activeClient.forNode(other.id)
                 if let otherState = try? await otherClient.request(SummonState.self, path: "/api/state") {
+                    guard connection == connectionGeneration, !Task.isCancelled else { return }
                     remoteNodeRooms[other.id] = otherState.rooms
                     remoteNodeBots[other.id] = otherState.bots
                 }
             }
-            errorMessage = nil
-            lastSyncAt = Date()
-            if let id = activeRoomID, room(id: id) != nil { await loadRoom(id) }
             guard connection == connectionGeneration else { return }
             schedulePersistence()
         } catch {
@@ -447,6 +456,11 @@ final class SummonStore {
     func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
     func summaryFacts(_ id: String) -> [SummonMessageSummary] { messageSummaries[id] ?? [] }
     func activitiesForRoom(_ id: String) -> [SummonRoomActivity] { roomActivities[id] ?? [] }
+    func optimisticWorkForRoom(_ id: String) -> SummonOptimisticWork? {
+        guard let work = optimisticRoomWork[id] else { return nil }
+        if Date().timeIntervalSince(work.startedAt) > 12 { return nil }
+        return work
+    }
     func executionsForRoom(_ id: String) -> [SummonJSONValue] { roomExecutions[id] ?? [] }
     func activeExecutionsForRoom(_ id: String) -> [SummonJSONValue] {
         let live: Set<String> = ["opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
@@ -464,7 +478,9 @@ final class SummonStore {
         scheduleRefresh()
     }
     func stopRoom(_ roomID: String) async throws {
+        optimisticRoomWork.removeValue(forKey: roomID)
         _ = try await request(path: Self.roomPath(roomID) + "/stop", method: "POST", body: .object([:]))
+        scheduleActiveRoomRefresh(roomID, delayMs: 80)
         scheduleRefresh()
     }
     func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {
@@ -477,13 +493,18 @@ final class SummonStore {
         guard protocolReady, let client else { return }
         guard roomReads.insert(id).inserted else {
             if older { olderReadsWaiting.insert(id) }
+            else { latestReadsWaiting.insert(id) }
             return
         }
         let connection = connectionGeneration
         defer {
             if connection == connectionGeneration {
                 roomReads.remove(id)
-                if olderReadsWaiting.remove(id) != nil, activeRoomID == id {
+                if latestReadsWaiting.remove(id) != nil, activeRoomID == id {
+                    Task {
+                        if connection == connectionGeneration, activeRoomID == id { await loadRoom(id, older: false) }
+                    }
+                } else if olderReadsWaiting.remove(id) != nil, activeRoomID == id {
                     Task {
                         if connection == connectionGeneration, activeRoomID == id { await loadRoom(id, older: true) }
                     }
@@ -494,7 +515,10 @@ final class SummonStore {
         if older && cursor == nil { return }
         let suffix = cursor.map { "?cursor=\(SummonAPIClient.component($0))" } ?? ""
         do {
-            let snapshot = try await client.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "/messages" + suffix)
+            async let snapshotRequest = client.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "/messages" + suffix)
+            async let execsRequest: [SummonJSONValue]? = older ? nil : (try? await list("/api/executions?room=" + SummonAPIClient.component(id)))
+            let snapshot = try await snapshotRequest
+            let execs = await execsRequest
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             guard snapshot.historyEpoch == historyEpoch else { scheduleRefresh(); return }
             upsertRoom(snapshot.room)
@@ -504,8 +528,9 @@ final class SummonStore {
             var byID: [String: SummonMessage] = [:]
             if retainCache { for message in cached { byID[message.id] = message } }
             for message in snapshot.messages { byID[message.id] = message }
-            messageHistory[id] = byID.values.sorted(by: Self.messageOrder)
-            let oldest = messageHistory[id]?.first?.id
+            let sortedMessages = byID.values.sorted(by: Self.messageOrder)
+            messageHistory[id] = sortedMessages
+            let oldest = sortedMessages.first?.id
             if older || oldest == snapshot.messages.first?.id { cursors[id] = snapshot.cursor }
             else if cursors[id] == nil { cursors[id] = oldest }
             deliveries.merge(snapshot.deliveries ?? [:]) { _, new in new }
@@ -518,8 +543,12 @@ final class SummonStore {
                 roomMessageStates[id] = [:]
             }
             if !older {
-                roomActivities[id] = snapshot.activities ?? []
-                roomSuspendedRuns[id] = snapshot.suspendedRuns ?? []
+                let nextActivities = snapshot.activities ?? []
+                let nextSuspended = snapshot.suspendedRuns ?? []
+                roomActivities[id] = nextActivities
+                roomSuspendedRuns[id] = nextSuspended
+                if let execs { roomExecutions[id] = execs }
+                reconcileOptimisticWork(roomID: id, messages: sortedMessages, activities: nextActivities, suspendedRuns: nextSuspended)
             }
             let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
             let staged = pendingMessages.filter { $0.roomID == id && confirmed.contains($0.clientID) }.flatMap(\.attachments)
@@ -527,14 +556,42 @@ final class SummonStore {
             if !staged.isEmpty, persistComposer() { staged.forEach(discardStagedAttachment) }
             schedulePersistence()
             lastSyncAt = Date()
-            if !older {
-                if let execs = try? await list("/api/executions?room=" + SummonAPIClient.component(id)),
-                   connection == connectionGeneration, !Task.isCancelled {
-                    roomExecutions[id] = execs
-                }
-            }
         } catch {
             if connection == connectionGeneration, id == activeRoomID, !Task.isCancelled { handle(error) }
+        }
+    }
+
+    private func preferredWorkingBotID(in roomID: String, deliveries: [SummonDelivery], mentions: [String]) -> String? {
+        for delivery in deliveries {
+            if let bot = bot(id: delivery.bot_id), !bot.isPaused { return bot.id }
+        }
+        guard let room = room(id: roomID) else { return nil }
+        for mention in mentions where room.members.contains(mention) {
+            if let bot = bot(id: mention), !bot.isPaused { return bot.id }
+        }
+        if let leadID = room.lead_bot_id, let lead = bot(id: leadID), !lead.isPaused { return lead.id }
+        let memberBots = room.members.compactMap { bot(id: $0) }.filter { !$0.isPaused }
+        if let primary = memberBots.first(where: { !["eggbot", "tool-onboarding"].contains($0.role_id ?? "") }) {
+            return primary.id
+        }
+        return memberBots.first?.id
+    }
+
+    private func reconcileOptimisticWork(roomID: String, messages: [SummonMessage], activities: [SummonRoomActivity], suspendedRuns: [SummonJSONValue]) {
+        guard let work = optimisticRoomWork[roomID] else { return }
+        if !activities.isEmpty || !activeExecutionsForRoom(roomID).isEmpty || !suspendedRuns.isEmpty {
+            optimisticRoomWork.removeValue(forKey: roomID)
+            return
+        }
+        if let sentIdx = messages.firstIndex(where: { $0.id == work.sentMessageID }) {
+            let hasReplyAfter = messages[(sentIdx + 1)...].contains { !$0.isOwn && $0.senderId != "system" && $0.senderId != "platform" }
+            if hasReplyAfter {
+                optimisticRoomWork.removeValue(forKey: roomID)
+                return
+            }
+        }
+        if Date().timeIntervalSince(work.startedAt) >= 3.0 {
+            optimisticRoomWork.removeValue(forKey: roomID)
         }
     }
 
@@ -826,8 +883,22 @@ final class SummonStore {
             deliveries[receipt.message.id] = receipt.deliveries
             updatePending(id) { $0.message = receipt.message; $0.status = "sent"; $0.error = nil }
             if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = receipt.message }
+            if let targetBotID = preferredWorkingBotID(in: item.roomID, deliveries: receipt.deliveries, mentions: receipt.message.mentions) {
+                optimisticRoomWork[item.roomID] = SummonOptimisticWork(botID: targetBotID, sentMessageID: receipt.message.id, startedAt: Date())
+            }
             if persistComposer() { item.attachments.forEach(discardStagedAttachment) }
             schedulePersistence()
+            scheduleActiveRoomRefresh(item.roomID, delayMs: 120)
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(1600))
+                guard let self, self.foreground, connection == self.connectionGeneration,
+                      self.optimisticRoomWork[item.roomID]?.sentMessageID == receipt.message.id else { return }
+                await self.loadRoom(item.roomID)
+                try? await Task.sleep(for: .milliseconds(1800))
+                guard self.foreground, connection == self.connectionGeneration,
+                      self.optimisticRoomWork[item.roomID]?.sentMessageID == receipt.message.id else { return }
+                await self.loadRoom(item.roomID)
+            }
             scheduleRefresh()
         } catch {
             guard connection == connectionGeneration else { return }
@@ -980,8 +1051,28 @@ final class SummonStore {
         guard foreground, connection == connectionGeneration else { return }
         isConnected = true
         switch event {
-        case .connected, .change: scheduleRefresh()
+        case .connected:
+            scheduleRefresh()
+        case .change:
+            if let id = activeRoomID, protocolReady {
+                scheduleActiveRoomRefresh(id, delayMs: 120)
+            }
+            scheduleRefresh()
         case .keepAlive: break
+        }
+    }
+
+    private func scheduleActiveRoomRefresh(_ roomID: String, delayMs: Int = 120) {
+        guard foreground, protocolReady else { return }
+        activeRoomRefreshTask?.cancel()
+        let connection = connectionGeneration
+        activeRoomRefreshTask = Task { [weak self] in
+            if delayMs > 0 {
+                do { try await Task.sleep(for: .milliseconds(delayMs)) } catch { return }
+            }
+            guard let self, self.foreground, connection == self.connectionGeneration else { return }
+            self.activeRoomRefreshTask = nil
+            await self.loadRoom(roomID)
         }
     }
 
@@ -1001,7 +1092,7 @@ final class SummonStore {
         guard foreground, refreshTask == nil else { return }
         let connection = connectionGeneration
         refreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
             guard let self, connection == self.connectionGeneration else { return }
             self.refreshTask = nil
             await self.refresh()
@@ -1010,7 +1101,7 @@ final class SummonStore {
 
     private func clearServerState() {
         bots = []; rooms = []; archivedRooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
-        roomActivities = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
+        roomActivities = [:]; optimisticRoomWork = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }

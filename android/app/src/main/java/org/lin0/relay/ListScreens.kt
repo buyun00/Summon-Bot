@@ -148,6 +148,8 @@ enum class ResourceSection(val title: String, val icon: ImageVector, val path: S
     Connections("执行连接与额度", Icons.Filled.Link, "/api/connections"),
 }
 
+private const val DEFAULT_FOLDER_ID = "__default__"
+
 private data class HomeFolder(val id: String, val name: String, val keys: List<String>)
 
 private data class HomeOrg(
@@ -201,7 +203,7 @@ private data class HomeOrg(
         val obj = JSONObject()
         obj.put("pinnedKeys", JSONArray(pinnedKeys))
         obj.put("hiddenKeys", JSONArray(hiddenKeys))
-        obj.put("collapsedIds", JSONArray(collapsedIds.toList()))
+        obj.put("collapsedIds", JSONArray(collapsedIds.filterNot { it == DEFAULT_FOLDER_ID }))
         val arr = JSONArray()
         folders.forEach { f ->
             arr.put(JSONObject().put("id", f.id).put("name", f.name).put("keys", JSONArray(f.keys)))
@@ -218,7 +220,7 @@ private data class HomeOrg(
                 val obj = JSONObject(raw)
                 val pinned = obj.optJSONArray("pinnedKeys")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
                 val hidden = obj.optJSONArray("hiddenKeys")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
-                val collapsed = obj.optJSONArray("collapsedIds")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }.orEmpty()
+                val collapsed = obj.optJSONArray("collapsedIds")?.let { a -> (0 until a.length()).map { a.getString(it) }.filterNot { it == DEFAULT_FOLDER_ID }.toSet() }.orEmpty()
                 val folders = obj.optJSONArray("folders")?.let { a ->
                     (0 until a.length()).map { idx ->
                         val f = a.getJSONObject(idx)
@@ -565,13 +567,13 @@ fun ConversationListScreen(
                         )
                     }
                 } else {
-                    if (defaultEntries.isNotEmpty()) {
-                        val defaultCollapsed = "__default__" in org.collapsedIds
+                    if (defaultEntries.isNotEmpty() || store.archivedRooms.isNotEmpty()) {
+                        val defaultCollapsed = DEFAULT_FOLDER_ID in org.collapsedIds
                         item(key = "folder-header-default") {
                             FolderSectionHeader(
                                 title = "群聊",
                                 collapsed = defaultCollapsed,
-                                onToggle = { updateOrg(org.toggleCollapsed("__default__")) },
+                                onToggle = { updateOrg(org.toggleCollapsed(DEFAULT_FOLDER_ID)) },
                             )
                         }
                         if (!defaultCollapsed) {
@@ -587,6 +589,38 @@ fun ConversationListScreen(
                                     onTogglePin = { swipedRowKey = null; updateOrg(org.togglePin(entry.key)) },
                                     onHide = { swipedRowKey = null; updateOrg(org.setHidden(entry.key, true)) },
                                 )
+                            }
+                            if (store.archivedRooms.isNotEmpty()) {
+                                item(key = "archive-assistant-row") {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable { showArchived = true }
+                                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        Box(
+                                            Modifier.size(44.dp).clip(CircleShape).background(palette.surface),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Icon(Icons.Filled.Archive, null, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
+                                        }
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                Text("归档群助手", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                                                Text("${store.archivedRooms.size}", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                            }
+                                            Text(
+                                                store.archivedRooms.take(3).joinToString("、") { it.name },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = palette.textSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -629,38 +663,6 @@ fun ConversationListScreen(
                             }
                         }
                     }
-                    if (store.archivedRooms.isNotEmpty()) {
-                        item(key = "archive-assistant-row") {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable { showArchived = true }
-                                    .padding(horizontal = 20.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Box(
-                                    Modifier.size(44.dp).clip(CircleShape).background(palette.surface),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(Icons.Filled.Archive, null, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
-                                }
-                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                        Text("归档群助手", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
-                                        Text("${store.archivedRooms.size}", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
-                                    }
-                                    Text(
-                                        store.archivedRooms.take(3).joinToString("、") { it.name },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = palette.textSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                        }
-                    }
                     if (systemEntries.isNotEmpty()) {
                         val systemCollapsed = "__system__" in org.collapsedIds
                         item(key = "folder-header-system") {
@@ -688,7 +690,7 @@ fun ConversationListScreen(
                     }
                 }
 
-                if (allEntries.isEmpty() && !store.isLoading && store.protocolReady) {
+                if (allEntries.isEmpty() && store.archivedRooms.isEmpty() && !store.isLoading && store.protocolReady) {
                     item(key = "empty-workspace") {
                         Column(Modifier.fillMaxWidth().padding(top = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("你的工作空间", style = MaterialTheme.typography.titleLarge)

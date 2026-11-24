@@ -482,7 +482,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
-  messages:[], roomActivities:[], roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomActivities:[], optimisticRoomWork:{}, roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', archiveDrawerOpen:false, menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -629,11 +629,54 @@ function mergedRoomMessages(roomId, remote = []) {
 }
 function renderSendStatus(message) {
   if (!message._delivery) return '';
-  if (message._delivery === 'sending') return '<div class="message-delivery" role="status">正在发送…</div>';
+  if (message._delivery === 'sending' || message._delivery === 'queued') {
+    return '<div class="message-delivery is-sending" role="status" aria-label="正在发送"><span class="sending-progress-track"><span class="sending-progress-bar"></span></span></div>';
+  }
   const rejected = message._delivery === 'rejected';
   return `<div class="message-delivery failed" role="status"><span>${esc(message._sendError || '尚未确认消息是否保存')}</span>
     <button class="text-button" data-action="${rejected ? 'restore-message-draft' : 'retry-message'}" data-id="${esc(message._retryId)}"
       ${!rejected && (!ui.protocolReady || ui.sendingRooms.has(message.roomId)) ? 'disabled' : ''}>${rejected ? '转回草稿' : '查询并重试'}</button></div>`;
+}
+function isBotPaused(bot) {
+  return !bot || bot.enabled === false || bot.control?.state === 'paused' || bot.activity === 'paused';
+}
+function preferredWorkingBotId(roomId, deliveries = [], mentions = []) {
+  for (const d of deliveries || []) {
+    const bot = botById(d?.bot_id);
+    if (bot && !isBotPaused(bot)) return bot.id;
+  }
+  const room = roomById(roomId);
+  if (!room) return null;
+  for (const id of mentions || []) {
+    if (!room.members?.includes(id)) continue;
+    const bot = botById(id);
+    if (bot && !isBotPaused(bot)) return bot.id;
+  }
+  if (room.lead_bot_id) {
+    const lead = botById(room.lead_bot_id);
+    if (lead && !isBotPaused(lead)) return lead.id;
+  }
+  const memberBots = (room.members || []).map(botById).filter(b => b && !isBotPaused(b));
+  const primary = memberBots.find(b => !isBuiltinGroupBot(b));
+  return (primary || memberBots[0])?.id || null;
+}
+function reconcileOptimisticRoomWork(roomId, messages = [], activities = [], suspendedRuns = []) {
+  const work = ui.optimisticRoomWork?.[roomId];
+  if (!work) return;
+  const hasLiveExec = (ui.roomExecutions || []).some(e => LIVE_EXEC_STATUSES.has(e.status));
+  if ((activities || []).length || hasLiveExec || (suspendedRuns || []).length) {
+    delete ui.optimisticRoomWork[roomId];
+    return;
+  }
+  const sentIdx = (messages || []).findIndex(m => m.id === work.sentMessageId);
+  if (sentIdx >= 0) {
+    const hasReplyAfter = messages.slice(sentIdx + 1).some(m => m.senderId !== 'user' && m.senderId !== 'system' && m.senderId !== 'platform');
+    if (hasReplyAfter) {
+      delete ui.optimisticRoomWork[roomId];
+      return;
+    }
+  }
+  if (Date.now() - work.startedAt >= 3000) delete ui.optimisticRoomWork[roomId];
 }
 function queueLocalMessage(roomId, payload, attachments) {
   const clientId = newClientId(), entries = ui.localMessages[roomId] ||= {};
@@ -666,6 +709,17 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
     const message = receipt.message;
     if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId || message.senderId !== 'user') throw new Error('服务器回执不完整');
     entry.message = message; entry.status = 'saved';
+    const targetBotId = preferredWorkingBotId(entry.roomId, receipt.deliveries, message.mentions);
+    if (targetBotId) {
+      ui.optimisticRoomWork[entry.roomId] = { botId: targetBotId, sentMessageId: message.id, startedAt: Date.now() };
+      for (const delay of [1600, 3400]) {
+        setTimeout(() => {
+          if (ui.optimisticRoomWork[entry.roomId]?.sentMessageId === message.id && ui.roomId === entry.roomId) {
+            void loadCurrent().then(() => render());
+          }
+        }, delay);
+      }
+    }
   } catch (error) {
     if (ui.localMessages[entry.roomId]?.[entry.clientId] === entry) {
       entry.status = error.messageRejected ? 'rejected' : 'unconfirmed';
@@ -1199,6 +1253,9 @@ async function loadCurrent() {
     roomDetails.push(readList('/api/files?' + scope).then(items => { if (ui.roomId === id && current()) ui.roomFiles = items; }));
   }
   await Promise.all(roomDetails);
+  if (ui.roomId === id && current()) {
+    reconcileOptimisticRoomWork(id, cached.messages, ui.roomActivities, ui.roomSuspendedRuns);
+  }
 }
 
 async function loadOlderMessages() {
@@ -1614,6 +1671,7 @@ async function restoreRoom(roomId) {
 async function stopCurrentRoom() {
   const room = roomById(ui.roomId);
   if (!room) return;
+  delete ui.optimisticRoomWork[room.id];
   const result = await api(roomPath(room.id) + '/stop', 'POST', {});
   const convCount = result.conversations?.length || 0;
   const sessCount = result.sessions?.length || 0;
@@ -2934,13 +2992,14 @@ function renderContactTime(room) {
   return time ? `<time class="contact-time" datetime="${esc(time)}" title="${esc(formatTime(time, true))}">${esc(contactTime(time))}</time>` : '';
 }
 const homeOrgStorageKey = 'summon:homeOrg:v1';
+const DEFAULT_FOLDER_ID = '__default__';
 function loadHomeOrg() {
   try {
     const raw = JSON.parse(localStorage.getItem(homeOrgStorageKey) || '{}');
     return {
       pinnedKeys: Array.isArray(raw.pinnedKeys) ? raw.pinnedKeys : [],
       folders: Array.isArray(raw.folders) ? raw.folders.filter(f => f && typeof f.id === 'string' && typeof f.name === 'string') : [],
-      collapsedIds: Array.isArray(raw.collapsedIds) ? raw.collapsedIds : [],
+      collapsedIds: Array.isArray(raw.collapsedIds) ? raw.collapsedIds.filter(id => id !== DEFAULT_FOLDER_ID) : [],
     };
   } catch {
     return { pinnedKeys: [], folders: [], collapsedIds: [] };
@@ -2948,7 +3007,12 @@ function loadHomeOrg() {
 }
 let homeOrg = loadHomeOrg();
 function saveHomeOrg() {
-  try { localStorage.setItem(homeOrgStorageKey, JSON.stringify(homeOrg)); } catch {}
+  try {
+    localStorage.setItem(homeOrgStorageKey, JSON.stringify({
+      ...homeOrg,
+      collapsedIds: homeOrg.collapsedIds.filter(id => id !== DEFAULT_FOLDER_ID),
+    }));
+  } catch {}
 }
 const isPinnedEntry = key => homeOrg.pinnedKeys.includes(key);
 const isFolderCollapsed = id => homeOrg.collapsedIds.includes(id);
@@ -3104,10 +3168,20 @@ function renderTopbar() {
     if (pinnedEntries.length) {
       contactsHtml += `<section class="sidebar-section pinned-section"><div class="pinned-shelf">${pinnedEntries.map(renderHomePinnedTile).join('')}</div></section>`;
     }
-    if (defaultEntries.length || !homeOrg.folders.length) {
-      const collapsed = isFolderCollapsed('__default__');
-      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span class="folder-header-label"><span>群聊</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length}</span></button>
-        <div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">点右上角 + 开始建一个新群</p>'}</div></section>`;
+    if (defaultEntries.length || archivedEntries.length || !homeOrg.folders.length) {
+      const collapsed = isFolderCollapsed(DEFAULT_FOLDER_ID);
+      const archiveAssistantHtml = archivedEntries.length ? (() => {
+        const previewNames = archivedEntries.slice(0, 3).map(e => e.title).join('、')
+          + (archivedEntries.length > 3 ? ` 等 ${archivedEntries.length} 个群` : '');
+        const hasSelectedArchived = archivedEntries.some(e => e.selected);
+        return `<button type="button" class="contact-row archive-assistant-row ${hasSelectedArchived ? 'selected' : ''}" data-action="open-archive-assistant" title="归档群助手（${archivedEntries.length} 个已归档群聊）">
+          <span class="contact-avatar-wrap"><span class="archive-assistant-avatar" aria-hidden="true">${icon('archive', 20)}</span></span>
+          <span class="contact-copy"><span class="contact-heading"><strong>归档群助手</strong><span class="archive-assistant-count">${archivedEntries.length}</span></span><span class="contact-preview">${esc(previewNames)}</span></span>
+        </button>`;
+      })() : '';
+      const defaultBodyHtml = defaultEntries.map(renderHomeEntryRow).join('') + archiveAssistantHtml;
+      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${DEFAULT_FOLDER_ID}"><span class="folder-header-label"><span>群聊</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length + archivedEntries.length}</span></button>
+        <div class="bot-contacts">${defaultBodyHtml || '<p class="sidebar-empty">点右上角 + 开始建一个新群</p>'}</div></section>`;
     }
     for (const folder of homeOrg.folders) {
       const folderKeys = new Set(folder.keys || []);
@@ -3115,17 +3189,6 @@ function renderTopbar() {
       const collapsed = isFolderCollapsed(folder.id);
       contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span class="folder-header-label"><span>${esc(folder.name)}</span>${icon('chevronDown', 13)}</span><span class="folder-count">${folderEntries.length}</span></button>
         <div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意群聊可移入此分组</p>'}</div></section>`;
-    }
-    if (archivedEntries.length) {
-      const previewNames = archivedEntries.slice(0, 3).map(e => e.title).join('、')
-        + (archivedEntries.length > 3 ? ` 等 ${archivedEntries.length} 个群` : '');
-      const hasSelectedArchived = archivedEntries.some(e => e.selected);
-      contactsHtml += `<section class="sidebar-section archive-assistant-section"><div class="bot-contacts">
-        <button type="button" class="contact-row archive-assistant-row ${hasSelectedArchived ? 'selected' : ''}" data-action="open-archive-assistant" title="归档群助手（${archivedEntries.length} 个已归档群聊）">
-          <span class="contact-avatar-wrap"><span class="archive-assistant-avatar" aria-hidden="true">${icon('archive', 20)}</span></span>
-          <span class="contact-copy"><span class="contact-heading"><strong>归档群助手</strong><span class="archive-assistant-count">${archivedEntries.length}</span></span><span class="contact-preview">${esc(previewNames)}</span></span>
-        </button>
-      </div></section>`;
     }
     if (systemEntries.length) {
       const collapsed = isFolderCollapsed('__system__');
@@ -3782,6 +3845,12 @@ function collectRoomActivityItems(room, members) {
       }
     }
   }
+  if (!items.length && room?.id) {
+    const opt = ui.optimisticRoomWork?.[room.id];
+    if (opt && Date.now() - opt.startedAt <= 12000 && botById(opt.botId)) {
+      items.push({ botId: opt.botId, name: nameOf(opt.botId), text: '正在工作', phase: 'thinking', ref: null });
+    }
+  }
   return items;
 }
 
@@ -3853,7 +3922,7 @@ function renderFloatingBotActivity(room, members) {
         <div class="bot-activity-track" data-activity-track>
           ${items.map((item, idx) => `<button type="button" class="activity-trigger" data-action="toggle-room-executions" data-activity-index="${idx}"
               aria-expanded="${drawerOpen}" title="${esc(item.name + ' · ' + item.text)}（点击${drawerOpen ? '收起' : '展开'}执行过程）">
-            ${face(botAvatar(item.botId), 26, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
+            ${face(botAvatar(item.botId), 24, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
             <span class="activity-bot-name">${esc(item.name)}</span>
             <span class="activity-sep">·</span>
             <span class="shimmer-status activity-summary">${esc(item.text)}</span>

@@ -40,6 +40,7 @@ struct BotAvatar:View {
     var body:some View {
         let inset = groupOutline == nil ? 0 : min(4, size * 0.08)
         let imageSize = size - inset * 2
+        let canvasSize = shouldAnimate ? size * 1.5 : size
         Group {
             if let bitmap=decodedImage {
                 Image(uiImage:bitmap).resizable().scaledToFill().frame(width:imageSize,height:imageSize)
@@ -47,7 +48,10 @@ struct BotAvatar:View {
                     .overlay { if let groupOutline { RoundedRectangle(cornerRadius:imageSize*0.22).stroke(groupOutline,lineWidth:inset) } }
                     .padding(inset)
             }
-            else {Canvas {context,bounds in draw(context,bounds)}}
+            else {
+                Canvas {context,bounds in draw(context,bounds)}
+                    .frame(width:canvasSize,height:canvasSize)
+            }
         }.frame(width:size,height:size).accessibilityHidden(true)
         .task(id: "\(shape)-\(color)-\(secondary ?? "")-\(ink ?? "")-\(paper ?? "")-\(shouldAnimate)") {
             let target = PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
@@ -75,9 +79,9 @@ struct BotAvatar:View {
         let frame=shouldAnimate ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
         let appearance = look ?? PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
         let body=frame.outlinePath ?? appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
-        // Keep the silhouette, paper backing and separator inside this member's canvas.
+        // Keep the silhouette, paper backing and separator inside the nominal size while allowing animated arcs to orbit freely.
         let inset = groupOutline == nil ? 0 : min(4, size * 0.08)
-        let scale = (bounds.width - inset * 2)/316*1.5
+        let scale = (size - inset * 2)/316*1.5
         var context=input;context.translateBy(x:bounds.width/2,y:bounds.height/2);context.scaleBy(x:scale,y:scale)
         let arcs=motion == "work" ? PaperLibrary.arcs(time:driver.age) : (frame.effects["arcs"] as? [[String:Any]] ?? []).map { PaperLibrary.Arc(back:CrewLibrary.path($0["back"] as? [[Any]] ?? []),front:CrewLibrary.path($0["front"] as? [[Any]] ?? []),width:$0["width"] as? Double ?? 1,opacity:$0["opacity"] as? Double ?? 1) }
         func drawDots(_ input:GraphicsContext, color dotColor: Color) {

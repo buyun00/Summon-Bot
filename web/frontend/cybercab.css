@@ -639,6 +639,33 @@ html.dark .outgoing .bot-mention {
   margin-top: 4px;
 }
 .message-delivery.failed { color: var(--red); }
+.message-delivery.is-sending {
+  min-height: 10px;
+  margin-top: 6px;
+}
+.sending-progress-track {
+  position: relative;
+  display: inline-block;
+  width: 76px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  overflow: hidden;
+}
+.sending-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 78%, transparent);
+  animation: sendingProgressSlide 1.15s ease-in-out infinite;
+}
+@keyframes sendingProgressSlide {
+  0% { transform: translateX(-28px); }
+  100% { transform: translateX(76px); }
+}
 
 /* Inline Interactive Panel (Pending Execution Inputs / Choices inside Chat) */
 .interact-panel {
@@ -680,7 +707,7 @@ html.dark .outgoing .bot-mention {
 }
 .bot-activity-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  width: 100%; min-height: 34px; padding: 0 2px;
+  width: 100%; min-height: 38px; padding: 0 2px;
   animation: cybercabPeek 260ms var(--spring) both;
 }
 @keyframes cybercabPeek {
@@ -700,7 +727,7 @@ html.dark .outgoing .bot-mention {
   flex: none; max-width: none;
 }
 .bot-activity-bar[data-layout="ticker"] .bot-activity-viewport {
-  height: 34px;
+  height: 38px;
 }
 .bot-activity-bar[data-layout="ticker"] .bot-activity-track {
   flex-direction: column; align-items: stretch; gap: 0;
@@ -711,14 +738,14 @@ html.dark .outgoing .bot-mention {
   width: 100%; flex: none;
 }
 .activity-trigger {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 34px; min-width: 0; max-width: 100%;
-  padding: 2px 8px 2px 2px;
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 38px; min-width: 0; max-width: 100%;
+  padding: 2px 8px 2px 7px;
   border-radius: 999px; text-align: left; cursor: pointer;
   transition: background 140ms ease;
 }
 .activity-trigger:hover { background: var(--hover); }
-.activity-trigger .summon-bot-face { width: 26px !important; height: 26px !important; flex: none; }
+.activity-trigger .summon-bot-face { width: 24px !important; height: 24px !important; flex: none; }
 .activity-bot-name {
   flex: none; white-space: nowrap;
   font-size: calc(13px * var(--ui-font-scale, 1)); font-weight: 600;
@@ -1380,7 +1407,6 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
 .floating-menu-sub-item { padding: 7px 10px 7px 20px; font-size: calc(12.5px * var(--ui-font-scale, 1)); }
 .floating-menu-sub-item.accent { color: var(--ok); font-weight: 550; }
 
-.archive-assistant-section { margin-top: 6px; }
 .archive-assistant-avatar {
   width: 44px; height: 44px; border-radius: 14px;
   display: inline-grid; place-items: center;

@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let defaultFolderID = "__default__"
+
 private struct HomeFolder: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
@@ -32,15 +34,18 @@ private struct HomeOrganization: Codable, Equatable, Sendable {
     static func load(for endpoint: String) -> HomeOrganization {
         let key = storagePrefix + (endpoint.isEmpty ? "default" : endpoint)
         guard let data = UserDefaults.standard.data(forKey: key),
-              let saved = try? JSONDecoder().decode(HomeOrganization.self, from: data) else {
+              var saved = try? JSONDecoder().decode(HomeOrganization.self, from: data) else {
             return HomeOrganization()
         }
+        saved.collapsedFolderIDs.removeAll { $0 == defaultFolderID }
         return saved
     }
 
     func save(for endpoint: String) {
         let key = Self.storagePrefix + (endpoint.isEmpty ? "default" : endpoint)
-        if let data = try? JSONEncoder().encode(self) {
+        var persisted = self
+        persisted.collapsedFolderIDs.removeAll { $0 == defaultFolderID }
+        if let data = try? JSONEncoder().encode(persisted) {
             UserDefaults.standard.set(data, forKey: key)
         }
     }
@@ -146,6 +151,7 @@ struct ConversationListView: View {
     @State private var path: [ConversationRoute] = []
     @State private var query = ""
     @State private var org = HomeOrganization()
+    @State private var loadedEndpoint: String?
     @State private var showSettings = false
     @State private var showPanel = false
     @State private var showHidden = false
@@ -336,11 +342,42 @@ struct ConversationListView: View {
                         conversationRowCell(entry)
                     }
                 } else {
-                    if !defaultFolderEntries.isEmpty {
-                        folderHeaderRow(id: "__default__", title: "群聊", customFolder: nil)
-                        if !org.isCollapsed("__default__") {
+                    if !defaultFolderEntries.isEmpty || !store.archivedRooms.isEmpty {
+                        folderHeaderRow(id: defaultFolderID, title: "群聊", customFolder: nil)
+                        if !org.isCollapsed(defaultFolderID) {
                             ForEach(defaultFolderEntries) { entry in
                                 conversationRowCell(entry)
+                            }
+                            if !store.archivedRooms.isEmpty {
+                                Button { showArchived = true } label: {
+                                    HStack(spacing: 12) {
+                                        ZStack {
+                                            Circle().fill(SummonTheme.surface).frame(width: 44, height: 44)
+                                            Image(systemName: "archivebox").font(.system(size: 18, weight: .medium)).foregroundStyle(.secondary)
+                                        }
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack {
+                                                Text("归档群助手")
+                                                    .summonFont(.body, weight: .medium)
+                                                    .foregroundStyle(.primary)
+                                                Spacer()
+                                                Text("\(store.archivedRooms.count)")
+                                                    .summonFont(.caption2, weight: .medium)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Text(store.archivedRooms.prefix(3).map(\.name).joined(separator: "、"))
+                                                .summonFont(.footnote)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
                             }
                         }
                     }
@@ -365,38 +402,6 @@ struct ConversationListView: View {
                         }
                     }
 
-                    if !store.archivedRooms.isEmpty {
-                        Button { showArchived = true } label: {
-                            HStack(spacing: 12) {
-                                ZStack {
-                                    Circle().fill(SummonTheme.surface).frame(width: 44, height: 44)
-                                    Image(systemName: "archivebox").font(.system(size: 18, weight: .medium)).foregroundStyle(.secondary)
-                                }
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack {
-                                        Text("归档群助手")
-                                            .summonFont(.body, weight: .medium)
-                                            .foregroundStyle(.primary)
-                                        Spacer()
-                                        Text("\(store.archivedRooms.count)")
-                                            .summonFont(.caption2, weight: .medium)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(store.archivedRooms.prefix(3).map(\.name).joined(separator: "、"))
-                                        .summonFont(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                    }
-
                     if !systemFolderEntries.isEmpty {
                         folderHeaderRow(id: "__system__", title: "系统", customFolder: nil)
                         if !org.isCollapsed("__system__") {
@@ -407,7 +412,7 @@ struct ConversationListView: View {
                     }
                 }
 
-                if allEntries.isEmpty && !store.isLoading && store.protocolReady {
+                if allEntries.isEmpty && store.archivedRooms.isEmpty && !store.isLoading && store.protocolReady {
                     ContentUnavailableView {
                         Label("你的工作空间", systemImage: "bubble.left.and.bubble.right")
                     } description: {
@@ -497,8 +502,14 @@ struct ConversationListView: View {
                     }
                 }
             }
-            .onAppear { org = HomeOrganization.load(for: store.settings.baseURL) }
+            .onAppear {
+                if loadedEndpoint != store.settings.baseURL {
+                    loadedEndpoint = store.settings.baseURL
+                    org = HomeOrganization.load(for: store.settings.baseURL)
+                }
+            }
             .onChange(of: store.settings.baseURL) { _, newURL in
+                loadedEndpoint = newURL
                 org = HomeOrganization.load(for: newURL)
             }
             .onChange(of: org) { _, updated in
