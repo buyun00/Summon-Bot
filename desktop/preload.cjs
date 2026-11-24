@@ -35,4 +35,10 @@ if (location.protocol === 'summon-setup:' && location.host === 'connection') {
     ipcRenderer.on('summon:update-state', listener);
     return () => ipcRenderer.removeListener('summon:update-state', listener);
   },
+  onWindowActive: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, active) => callback(Boolean(active));
+    ipcRenderer.on('summon:window-active', listener);
+    return () => ipcRenderer.removeListener('summon:window-active', listener);
+  },
 }));

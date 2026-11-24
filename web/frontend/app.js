@@ -2910,17 +2910,17 @@ function botAvatar(botOrId) {
   return window.SummonAvatars.normalize({ ...window.SummonAvatars.defaults(bot?.id || '', index), ...(bot?.avatar || {}) });
 }
 function face(config, size = 60, options = {}) { return window.SummonAvatars ? window.SummonAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
-function avatar(id, large = false, key = `bot:${id}`) {
+function avatar(id, large = false, key = '') {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
   if (id === 'user') return `<img class="user-avatar" src="/icons/user-avatar.jpg?v=owner-20261028" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
-  const motion = botActivity(botById(id)).motion || 'idle';
-  return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}`, state: motion })}</span>`;
+  const motion = key ? (botActivity(botById(id)).motion || 'idle') : 'idle';
+  return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, static: !key, identity: `bot:${id}`, state: motion })}</span>`;
 }
-function groupAvatar(room, size = 96, key = `group:${room?.id}:${size}`) {
+function groupAvatar(room, size = 96, _key = '') {
   const members = (room?.members || []).filter(id => id === 'user' || botById(id)).slice(0, 4);
   if (!members.length) return `<span class="group-avatar group-avatar-empty" style="width:${size}px;height:${size}px">${icon('chat', Math.round(size * .6))}</span>`;
-  return `<span class="group-avatar" data-count="${members.length}" style="width:${size}px;height:${size}px">${members.map((id, index) => `<span class="group-face pos-${index}">${avatar(id, members.length === 1 ? size : Math.round(size * .64), `${key}:${index}`)}</span>`).join('')}</span>`;
+  return `<span class="group-avatar" data-count="${members.length}" style="width:${size}px;height:${size}px">${members.map((id, index) => `<span class="group-face pos-${index}">${avatar(id, members.length === 1 ? size : Math.round(size * .64), '')}</span>`).join('')}</span>`;
 }
 function currentBot() {
   const room = roomById(ui.roomId);
@@ -3658,8 +3658,8 @@ function renderChatMessage(message, timeline, grouped, isGroup, previous = null)
   const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(senderLabel)}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
   const ownTime = own && message.createdAt ? `<time class="outgoing-time" datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time>` : '';
   const avatarSlot = own || (!isGroup && !platform) ? '' : grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
-    ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'message:' + message.id)}</button>`
-    : `<span class="message-avatar">${avatar(sender,36,'message:' + message.id)}</span>`;
+    ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'')}</button>`
+    : `<span class="message-avatar">${avatar(sender,36,'')}</span>`;
   const reply = showReplyQuote ? `<button type="button" class="reply-quote" data-action="open-reference" data-kind="event" data-id="${esc(message.replyTo)}">
     <strong>${esc(parent ? nameOf(parent.senderId) : '引用消息')}</strong><span>${esc(parent ? messagePreview(parent) : '查看原文')}</span></button>` : '';
   const actions = message._delivery ? '' : `<div class="bubble-actions">
@@ -3991,6 +3991,7 @@ function syncBotActivityDock() {
   bar.dataset.layout = 'ticker';
   applyBotActivityTickerPosition(bar, false);
   activityTickerTimer = setInterval(() => {
+    if (document.hidden || document.documentElement.classList.contains('summon-inactive')) return;
     const liveBar = $('[data-activity-bar]');
     if (!liveBar || liveBar.dataset.layout !== 'ticker') { stopBotActivityTicker(); return; }
     if (liveBar.matches(':hover')) return;
@@ -4570,4 +4571,14 @@ renderTopbar();
 setInterval(() => { if (!ui.streamConnected && navigator.onLine && !document.hidden) scheduleRefresh(); }, 3000);
 window.addEventListener('offline', () => { setProtocol(false, '当前离线。草稿和待确认的发送已保留。'); persistClientSession(); });
 window.addEventListener('online', scheduleRefresh);
+let desktopWindowActive = true;
+function syncWindowActivity() {
+  const active = desktopWindowActive && !document.hidden && (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
+  document.documentElement.classList.toggle('summon-inactive', !active);
+  window.SummonAvatars?.setActive?.(active);
+}
+window.addEventListener('blur', syncWindowActivity);
+window.addEventListener('focus', syncWindowActivity);
+document.addEventListener('visibilitychange', syncWindowActivity);
+window.SummonDesktop?.onWindowActive?.(active => { desktopWindowActive = Boolean(active); syncWindowActivity(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); else persistClientSession(); });

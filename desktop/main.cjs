@@ -184,8 +184,18 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: initialDark ? '#e6eaf4' : '#3a3832', height: 44 },
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: true },
   });
+  const sendWindowActive = active => {
+    if (!target.isDestroyed()) target.webContents.send('summon:window-active', Boolean(active));
+  };
+  target.on('focus', () => sendWindowActive(true));
+  target.on('blur', () => sendWindowActive(false));
+  target.on('minimize', () => sendWindowActive(false));
+  target.on('hide', () => sendWindowActive(false));
+  target.on('restore', () => sendWindowActive(target.isFocused()));
+  target.on('show', () => sendWindowActive(target.isFocused()));
+  target.webContents.on('did-finish-load', () => sendWindowActive(target.isVisible() && !target.isMinimized() && target.isFocused()));
   target.on('closed', () => { if (target === window) window = null; });
   target.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) {

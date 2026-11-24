@@ -21,7 +21,7 @@
   }
   function scheduleExpression() {
     setTimeout(() => {
-      if (!document.hidden && !reduced.matches) {
+      if (!document.hidden && !reduced.matches && !document.documentElement.classList.contains('summon-inactive')) {
         expression = expression === 'idle' ? nextExpression() : 'idle';
         heads.forEach(head => head.paint());
       }
@@ -57,7 +57,7 @@
   }
   customElements.define('summon-wordmark', SummonWordmark);
   function refreshColor() {
-    if (document.hidden || Date.now() < nextColor) return;
+    if (document.hidden || document.documentElement.classList.contains('summon-inactive') || Date.now() < nextColor) return;
     palette = pick(brandPalettes.filter(item => item.id !== palette.id));
     nextColor = Date.now() + (12 + Math.random() * 6) * 60000;
     heads.forEach(head => head.paint());
