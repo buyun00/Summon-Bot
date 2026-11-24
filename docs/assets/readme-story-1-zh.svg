@@ -1,19 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 2989" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1466" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif; }
       .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
       .pulse { animation: pulse 2.2s ease-in-out infinite; }
+      .flow { stroke-dasharray: 6 5; animation: dash 14s linear infinite; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      @keyframes dash { to { stroke-dashoffset: -110; } }
     </style>
     <linearGradient id="zh1-bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F4F1E8"/>
       <stop offset="100%" stop-color="#F0ECE1"/>
     </linearGradient>
+    <filter id="windowShadow" x="-4%" y="-1%" width="108%" height="103%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#221E17" flood-opacity="0.08"/>
+    </filter>
     <filter id="pillShadow" x="-6%" y="-12%" width="112%" height="130%">
       <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#221E16" flood-opacity="0.06"/>
     </filter>
-    <filter id="cardShadow" x="-3%" y="-4%" width="106%" height="112%">
+    <filter id="cardShadow" x="-4%" y="-4%" width="108%" height="112%">
       <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#221E17" flood-opacity="0.06"/>
     </filter>
     
@@ -43,193 +48,125 @@
     </g>
   </defs>
 
-  <path d="M 24 0 H 856 Q 880 0 880 24 V 2989 H 0 V 24 Q 0 0 24 0 Z" fill="url(#zh1-bg)"/>
-  <path d="M 0.75 2989 V 24 Q 0.75 0.75 24 0.75 H 856 Q 879.25 0.75 879.25 24 V 2989" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 28 0 H 1252 Q 1280 0 1280 28 V 1466 H 0 V 28 Q 0 0 28 0 Z" fill="url(#zh1-bg)"/>
+  <path d="M 0.75 1466 V 28 Q 0.75 0.75 28 0.75 H 1252 Q 1279.25 0.75 1279.25 28 V 1466" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
-      <g transform="translate(30, 28)">
-        <rect x="0" y="0" width="275" height="34" rx="17" fill="#E5DFD0"/>
+      <g transform="translate(30, 32)">
+        <rect x="0" y="0" width="288" height="34" rx="17" fill="#E5DFD0"/>
         <circle cx="18" cy="17" r="5" fill="#477A54" class="pulse"/>
-        <text x="32" y="22.5" class="font" font-size="14" font-weight="700" fill="#4B4840">一镜到底 · 真实群聊实录（1 / 3）</text>
-        <text x="0" y="78" class="font" font-size="34" font-weight="800" fill="#1F1E1B" letter-spacing="-0.5">从一句模糊的想法，到一款游戏做完交付</text>
-        <text x="0" y="112" class="font" font-size="16" fill="#5C564B">在 Summon Bot 里，群界面干净得像普通聊天软件——所有快读分流、自动招人组队、</text>
-        <text x="0" y="135" class="font" font-size="16" fill="#5C564B">后台拉起 Codex 并行写代码与工具自修，都在后台悄然完成。</text>
+        <text x="32" y="22.5" class="font" font-size="14.5" font-weight="700" fill="#4B4840">一镜到底 · 真实群聊实录（1 / 3）</text>
+        <text x="0" y="82" class="font" font-size="40" font-weight="800" fill="#1F1E1B" letter-spacing="-0.6">从一句模糊的想法，到一款游戏做完交付</text>
+        <text x="0" y="120" class="font" font-size="18.5" fill="#5C564B">群界面干净得就像普通聊天软件——快读分流、自动招人、后台并行 Codex 与工具自修都在幕后自动发生。</text>
       </g>
     
 
-  <g transform="translate(24, 176)">
-    <path d="M 22 0 H 810 Q 832 0 832 22 V 2813 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 2813 V 22 Q 0.75 0.75 22 0.75 H 810 Q 831.25 0.75 831.25 22 V 2813" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <!-- Left Continuous Chat Window -->
+  <g transform="translate(24, 174)" filter="url(#windowShadow)">
+    <path d="M 22 0 H 602 Q 624 0 624 22 V 1292 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 1292 V 22 Q 0.75 0.75 22 0.75 H 602 Q 623.25 0.75 623.25 22 V 1292" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
-      <g transform="translate(24, 22)">
-        <circle cx="22" cy="26" r="20" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
-        <rect x="14" y="19" width="16" height="14" rx="2.5" fill="none" stroke="#8A8478" stroke-width="1.7"/>
-        <line x1="20" y1="19" x2="20" y2="33" stroke="#8A8478" stroke-width="1.7"/>
+      <g transform="translate(18, 20)">
+        <circle cx="20" cy="25" r="19" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
+        <rect x="12" y="18" width="16" height="14" rx="2.5" fill="none" stroke="#8A8478" stroke-width="1.6"/>
+        <line x1="18" y1="18" x2="18" y2="32" stroke="#8A8478" stroke-width="1.6"/>
 
-        <g transform="translate(247, 0)" filter="url(#pillShadow)">
-          <rect width="290" height="52" rx="26" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
-          <use href="#zh1-av-lead" transform="translate(22.50 17.50) scale(0.08070)"/>
-          <use href="#zh1-av-egg" transform="translate(41.50 17.50) scale(0.08070)"/>
-          <use href="#zh1-av-tool" transform="translate(22.50 35.50) scale(0.08070)"/>
-          <use href="#zh1-av-plan" transform="translate(41.50 35.50) scale(0.08070)"/>
-          <text x="62" y="32" class="font" font-size="16.5" font-weight="700" fill="#1F1E1B">新游戏项目群</text>
-          <text x="270" y="32" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 位伙伴</text>
+        <g transform="translate(151, 0)" filter="url(#pillShadow)">
+          <rect width="286" height="50" rx="25" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
+          <use href="#zh1-av-lead" transform="translate(22.00 16.00) scale(0.07595)"/>
+          <use href="#zh1-av-egg" transform="translate(40.00 16.00) scale(0.07595)"/>
+          <use href="#zh1-av-tool" transform="translate(22.00 34.00) scale(0.07595)"/>
+          <use href="#zh1-av-plan" transform="translate(40.00 34.00) scale(0.07595)"/>
+          <text x="58" y="31" class="font" font-size="16" font-weight="700" fill="#1F1E1B">新游戏项目群</text>
+          <text x="268" y="31" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 位伙伴</text>
         </g>
-        <text x="784" y="32" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">打断在途</text>
+        <text x="588" y="31" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">打断在途</text>
       </g>
-    <text x="416" y="108" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">今天 09:55</text>
-    <g transform="translate(175, 130)">
-      <path d="M 22 0 H 609 Q 631 0 631 22 V 92 Q 631 100 623 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">我想做个轻量的单机小游戏，周末能随时打开玩两把，关掉下次还能</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">接着上次的进度。你们觉得做什么题材和核心玩法比较好落地？</text>
-      <text x="613" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:55</text>
+    <text x="312" y="102" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">今天 09:55</text>
+    <g transform="translate(80, 122)">
+      <path d="M 20 0 H 506 Q 526 0 526 20 V 95 Q 526 102 519 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">我想做个轻量的单机小游戏，周末随时打开玩</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">两把，关掉下次还能接着进度。做什么题材好？</text>
+      <text x="510" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">09:55</text>
       
     </g>
   
-    <g transform="translate(26, 252)">
-      <use href="#zh1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:55</tspan></text>
-      <path d="M 70 28 H 692 Q 714 28 714 50 V 125 Q 714 147 692 147 H 84 Q 62 147 62 125 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">如果要轻量、好存档又有重玩价值，推荐做“节点选路类的航海远征”：</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">每章是一张海域图，带初始补给选分岔路线、过事件收勋章，每个节点</text><text x="84" y="121" class="font" font-size="18" fill="#1F1E1B">天然就是存档点。你更想偏重战斗，还是偏重补给资源取舍？</text>
+    <g transform="translate(18, 246)">
+      <use href="#zh1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:55</tspan></text>
+      <path d="M 64 28 H 539 Q 559 28 559 48 V 131 Q 559 151 539 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">推荐“节点选路类的航海远征”：每章是一张</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">海域图，带初始补给选分岔路线、过事件收</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">勋章，每步天然存档。偏战斗还是资源取舍？</text>
     </g>
   
-    <g transform="translate(160, 421)">
-      <path d="M 22 0 H 624 Q 646 0 646 22 V 92 Q 646 100 638 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">航海选路这个点子好！别搞复杂战斗了，就主打“补给 vs 风险回报”：</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">走稳妥线省补给但奖励少，走风暴线耗补给但勋章多。</text>
-      <text x="628" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:56</text>
+    <g transform="translate(81, 419)">
+      <path d="M 20 0 H 505 Q 525 0 525 20 V 95 Q 525 102 518 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">航海选路好！别搞复杂战斗，就主打“补给</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">vs 风险回报”：稳妥线省补给，风暴线勋章多。</text>
+      <text x="509" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">09:56</text>
       
     </g>
   
-    <g transform="translate(26, 543)">
-      <use href="#zh1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:56</tspan></text>
-      <path d="M 70 28 H 671 Q 693 28 693 50 V 96 Q 693 118 671 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">那我们按章节递进：第一章做「海岸章」跑通营地、风暴和遗迹三类</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">节点，后面再接雪原章和夜航章。游戏名字叫《雾港远征》怎么样？</text>
+    <g transform="translate(18, 543)">
+      <use href="#zh1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:56</tspan></text>
+      <path d="M 64 28 H 562 Q 582 28 582 48 V 100 Q 582 120 562 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">那按章节递进：第一章「海岸章」跑通营地、</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">风暴和遗迹，后面接雪原章。叫《雾港远征》？</text>
     </g>
   
-    <g transform="translate(178, 683)">
-      <path d="M 22 0 H 606 Q 628 0 628 22 V 92 Q 628 100 620 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">《雾港远征》好听，就叫这个！海岸章先按初始补给 10、每步扣 1：</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">营地额外补 2，风暴额外扣 2，遗迹给 2 枚勋章。</text>
-      <text x="610" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:58</text>
+    <g transform="translate(144, 685)">
+      <path d="M 20 0 H 442 Q 462 0 462 20 V 95 Q 462 102 455 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">好听！海岸章先按补给 10、每步扣 1 算：</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">营地补 2，风暴扣 2，遗迹给 2 枚勋章。</text>
+      <text x="446" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">09:58</text>
       
     </g>
   
-    <g transform="translate(26, 805)">
-      <use href="#zh1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:58</tspan></text>
-      <path d="M 70 28 H 690 Q 712 28 712 50 V 96 Q 712 118 690 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">好，我负责底层路线结算和存档读档，程序按带版本号的章表读参数。</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">不过每章的路线平衡和试玩调表，最好有位固定负责人长期维护。</text>
+    <g transform="translate(18, 809)">
+      <use href="#zh1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:58</tspan></text>
+      <path d="M 64 28 H 539 Q 559 28 559 48 V 100 Q 559 120 539 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">好，我负责底层路线结算和存档读档。不过</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">每章数值平衡与试玩调表，最好有固定专人。</text>
     </g>
   
-    <g transform="translate(26, 945)">
-      <use href="#zh1-av-egg" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">EggBot <tspan font-weight="400" fill="#A6A093" font-size="14">09:59</tspan></text>
-      <path d="M 70 28 H 709 Q 731 28 731 50 V 71 Q 731 93 709 93 H 84 Q 62 93 62 71 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+    <g transform="translate(18, 951)">
+      <use href="#zh1-av-egg" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">EggBot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:59</tspan></text>
+      <path d="M 64 28 H 447 Q 467 28 467 48 V 104 Q 467 124 447 124 H 76 Q 56 124 56 104 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       
-      <text x="84" y="64" class="font" font-size="18" fill="#1F1E1B">已邀请新成员</text>
-      <rect x="208" y="43" width="124" height="30" rx="15" fill="#DCE8DF" stroke="#C5DBC9"/>
-      <use href="#zh1-av-plan" transform="translate(225.00 58.00) scale(0.11392)"/>
-      <text x="241" y="63.5" class="font" font-size="16" font-weight="700" fill="#2B5638">@关卡策划</text>
-      <text x="340" y="64" class="font" font-size="18" fill="#1F1E1B">入群，专门负责各章路线配置与奖励平衡。</text>
-    
+      <text x="76" y="64" class="font" font-size="21" fill="#1F1E1B">已邀请新成员</text>
+      <rect x="220" y="41" width="132" height="32" rx="16" fill="#DCE8DF" stroke="#C5DBC9"/>
+      <use href="#zh1-av-plan" transform="translate(237.00 57.00) scale(0.11392)"/>
+      <text x="253" y="63" class="font" font-size="17.5" font-weight="700" fill="#2B5638">@关卡策划</text>
+      <text x="358" y="64" class="font" font-size="21" fill="#1F1E1B">入群，</text>
+    <text x="76" y="98" class="font" font-size="21" fill="#1F1E1B">专门负责各章路线配置与奖励平衡。</text>
     </g>
   
-    <g transform="translate(26, 1060)">
-      <use href="#zh1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14">09:59</tspan></text>
-      <path d="M 70 28 H 719 Q 741 28 741 50 V 125 Q 741 147 719 147 H 84 Q 62 147 62 125 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">大家好，我接《雾港远征》的关卡经济！按补给 10 试算了两条首章路线：</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">稳妥线（营地→风暴→遗迹）剩 7 补给、2 勋章；冒险线（风暴→风暴→</text><text x="84" y="121" class="font" font-size="18" fill="#1F1E1B">遗迹）只剩 3 补给、也是 2 勋章，回报是不是偏低？</text>
-    </g>
-  
-    <g transform="translate(26, 1229)" filter="url(#cardShadow)">
-      <rect width="780" height="264" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="232" rx="2.75" fill="#A87932"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#A87932"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">01</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#8C6223">自动招人组队（EGGBOT）</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">从模糊想法聊出分工，EggBot 自己招人进群</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">真正的项目从不是一上来就甩一份完美文档。你随口抛出周末小游戏想法，</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B"><tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan> 陪你三轮发散才定下《雾港远征》的航海选路玩法。</text><text x="28" y="162" class="font" font-size="16.5" fill="#47433B">聊到第 6 句时，旁听的 <tspan font-weight="700" fill="#785620">EggBot</tspan> 发现每章数值平衡缺少长期负责人，</text><text x="28" y="189" class="font" font-size="16.5" fill="#47433B">无需你下令，自动调用 <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> 孵化 <tspan font-weight="700" fill="#2E633D">@关卡策划</tspan> 入群并完成交接。</text>
-    <rect x="28" y="208" width="724" height="36" rx="10" fill="#F6F2E8"/>
-    <text x="44" y="231" class="mono" font-size="13.5" font-weight="600" fill="#785620">EggBot 按消息步长观察进展 → 自动发现职责缺口并拉专员入群</text>
-  
-    </g>
-  
-    <g transform="translate(149, 1521)">
-      <path d="M 22 0 H 635 Q 657 0 657 22 V 136 Q 657 144 649 144 H 22 Q 0 144 0 122 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      
-      <rect x="18" y="18" width="621" height="34" rx="8" fill="#D3E0D7"/>
-      <line x1="18" y1="18" x2="18" y2="52" stroke="#687C6E" stroke-width="3"/>
-      <text x="30" y="40" class="font" font-size="14.5" fill="#465249"><tspan font-weight="700" fill="#1E221E">关卡策划</tspan> 大家好，我接《雾港远征》的关卡经济！按补给 10 试算了两条…</text>
-    <text x="22" y="80" class="font" font-size="18" fill="#1E221E">确实，冒险线顶着两次风暴只剩 3 点补给，还是 2 枚勋章没人愿意走。</text><text x="22" y="109" class="font" font-size="18" fill="#1E221E">改成每过一处风暴额外多给 1 枚勋章吧，更新一下海岸章表。</text>
-      <text x="639" y="134" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:00</text>
-      
-      <rect x="463" y="154" width="194" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
-      <text x="560" y="175" text-anchor="middle" class="font" font-size="14" fill="#433F37"><tspan font-weight="700" fill="#7A7366">快读摘要 · 3 位伙伴 ▾</tspan></text>
-    
-      <rect x="138" y="194" width="519" height="108" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
-      <text x="156" y="222" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">关卡策划</tspan>  用户要求每处风暴 +1 勋章并更新海岸章表</text><text x="156" y="248" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan>  用户向关卡策划反馈风暴勋章加成，存档规则不变（静默）</text><text x="156" y="274" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan>  关卡策划正在跟进海岸章平衡反馈（静默）</text>
-    
-    </g>
-  
-    <g transform="translate(26, 1847)">
-      <use href="#zh1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14">10:01</tspan></text>
-      <path d="M 70 28 H 689 Q 711 28 711 50 V 96 Q 711 118 689 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">海岸章 v2 更新好了：稳妥线剩 7 补给、3 枚勋章；冒险线剩 3 补给、</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">4 枚勋章。风险和收益拉开了，这张 v2 表已经置顶到群里。</text>
-    </g>
-  
-    <g transform="translate(127, 1987)">
-      <path d="M 22 0 H 657 Q 679 0 679 22 V 92 Q 679 100 671 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">这个梯度舒服了！我刚放了一批海浪和风暴的 wav 音效进目录，体积有点</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">大，得压成 ogg，顺便还得能对比每次构建哪些资源把包体撑大了。</text>
-      <text x="661" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:01</text>
-      
-    </g>
-  
-    <g transform="translate(26, 2109)">
-      <use href="#zh1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 729 Q 751 28 751 50 V 67 Q 751 89 729 89 H 84 Q 62 89 62 67 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">音频表归我管，看了下当前目录没转码工具，我先写脚本去下载 FFmpeg？</text>
-    </g>
-  
-    <g transform="translate(26, 2220)">
-      <use href="#zh1-av-tool" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">总接口 Bot <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 658 Q 680 28 680 50 V 140 Q 680 162 658 162 H 84 Q 62 162 62 140 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">不用重新下载，这台机器的 WinGet 目录已经装了 FFmpeg 8.1.2，</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">而且已经登记在执行连接里，直接调用就行：</text>
-        <rect x="84" y="110" width="172" height="32" rx="16" fill="#E4E0D5" stroke="#D3CCB9"/>
-        <text x="170" y="131" text-anchor="middle" class="font" font-size="14.5" font-weight="600" fill="#3F3C35">🔗 连接 cli-ffmpeg</text>
-      
-    </g>
-  
-    <g transform="translate(26, 2404)">
-      <use href="#zh1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 67 Q 778 89 756 89 H 84 Q 62 89 62 67 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">太好了，差点重复装一遍！我已经用 cli-ffmpeg 把海岸章音效全转成 ogg 了。</text>
-    </g>
-  
-    <g transform="translate(26, 2515)" filter="url(#cardShadow)">
-      <rect width="780" height="264" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="232" rx="2.75" fill="#477A54"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#477A54"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">02</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#2E633D">① 快读静默分流与免 @ 主动救场</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">4 个 Bot 绝不抢话刷屏，却能及时拦住弯路</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#1F1E1B">无关时当场 quiet</tspan>：每句话先跑关闭思考（<tspan class="mono">off</tspan>）的 <tspan font-weight="700" fill="#2E633D">① 快读层</tspan>。10:00 调勋章</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B">  不改代码，主控和 EggBot 直接静默，既不插嘴又省下 90% 陪聊 Token。</text><text x="28" y="162" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#B2634F">队友走弯路时免 @ 救场</tspan>：10:02 没人 @总接口 Bot，但它旁听到队友要重复</text><text x="28" y="189" class="font" font-size="16.5" fill="#47433B">  下载 FFmpeg，立刻主动递上本机现成连接 <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> 拦住弯路！</text>
-    <rect x="28" y="208" width="724" height="36" rx="10" fill="#EBF4EE"/>
-    <text x="44" y="231" class="mono" font-size="13.5" font-weight="600" fill="#2E633D">① 快读摘要走独立 room-message-summaries 通道，绝不污染模型上下文</text>
-  
+    <g transform="translate(18, 1097)">
+      <use href="#zh1-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:59</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 131 Q 588 151 568 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">大家好，我接《雾港远征》关卡经济！按补给</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">10 试算：稳妥线剩 7 补给、2 勋章；冒险线</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">（两风暴）只剩 3 补给、也才 2 勋章，偏低吧？</text>
     </g>
   
   </g>
+
+  <!-- Right Vertical Timeline Axis -->
+  <line x1="724" y1="224" x2="724" y2="1466" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+
+  <!-- Smooth Curved Connectors -->
+  <path d="M 511.0 1201.0 C 668.0 1201.0, 672 1215.0, 696 1215.0" fill="none" stroke="#A87932" stroke-width="2.4" class="flow"/>
+
+  <!-- Right Callout Cards -->
+  
+    <g transform="translate(696, 961)">
+      <circle cx="28" cy="28" r="20" fill="#A87932"/>
+      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">01</text>
+      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#8C6223">自动招人组队（EGGBOT）</text>
+      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">从模糊想法聊出分工，</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">EggBot 自己招人进群</text>
+      <g transform="translate(0, 94)" filter="url(#cardShadow)">
+        <rect width="560" height="354" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="24" y="34" class="font" font-size="19" fill="#454139">真正的项目从不是一上来就甩一份完</text><text x="24" y="63" class="font" font-size="19" fill="#454139">整文档。你随口抛出周末小游戏想法，</text><text x="24" y="92" class="font" font-size="19" fill="#454139"><tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan> 陪你三轮发散，才慢慢定下</text><text x="24" y="121" class="font" font-size="19" fill="#454139">《雾港远征》的航海选路与章节结构。</text><text x="24" y="162" class="font" font-size="19" fill="#454139">聊到第 6 句，旁听的 <tspan font-weight="700" fill="#785620">EggBot</tspan> 发现每章</text><text x="24" y="191" class="font" font-size="19" fill="#454139">数值平衡缺专人长期盯，无需你下令，</text><text x="24" y="220" class="font" font-size="19" fill="#454139">自动调用 <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> 孵化 <tspan font-weight="700" fill="#2E633D">@关卡策划</tspan></text><text x="24" y="249" class="font" font-size="19" fill="#454139">拉进群，进群首句就把路线算得明白。</text>
+    <rect x="24" y="272" width="512" height="60" rx="10" fill="#F6F2E8"/>
+    <text x="38" y="296" class="mono" font-size="14.2" font-weight="600" fill="#785620">EggBot 按步长观察进展 → 自动发现缺口</text><text x="38" y="318" class="mono" font-size="14.2" font-weight="600" fill="#785620">并完成专员孵化与上下文交接</text>
+  
+      </g>
+    </g>
+  
 </svg>

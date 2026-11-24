@@ -1,19 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1354" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 2177" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
       .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
       .pulse { animation: pulse 2.2s ease-in-out infinite; }
+      .flow { stroke-dasharray: 6 5; animation: dash 14s linear infinite; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      @keyframes dash { to { stroke-dashoffset: -110; } }
     </style>
     <linearGradient id="en2-bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F0ECE1"/>
       <stop offset="100%" stop-color="#ECE7DA"/>
     </linearGradient>
+    <filter id="windowShadow" x="-4%" y="-1%" width="108%" height="103%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#221E17" flood-opacity="0.08"/>
+    </filter>
     <filter id="pillShadow" x="-6%" y="-12%" width="112%" height="130%">
       <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#221E16" flood-opacity="0.06"/>
     </filter>
-    <filter id="cardShadow" x="-3%" y="-4%" width="106%" height="112%">
+    <filter id="cardShadow" x="-4%" y="-4%" width="108%" height="112%">
       <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#221E17" flood-opacity="0.06"/>
     </filter>
     
@@ -43,104 +48,175 @@
     </g>
   </defs>
 
-  <path d="M 0 0 H 880 V 1354 H 0 Z" fill="url(#en2-bg)"/>
-  <path d="M 0.75 0 V 1354 M 879.25 0 V 1354" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 0 0 H 1280 V 2177 H 0 Z" fill="url(#en2-bg)"/>
+  <path d="M 0.75 0 V 2177 M 1279.25 0 V 2177" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
 
-  <g transform="translate(24, 0)">
-    <path d="M 0 0 H 832 V 1354 H 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 0 V 1354 M 831.25 0 V 1354" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <!-- Left Continuous Chat Window -->
+  <g transform="translate(24, 0)" filter="url(#windowShadow)">
+    <path d="M 0 0 H 624 V 2177 H 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 0 V 2177 M 623.25 0 V 2177" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
-    <g transform="translate(70, 24)">
-      <path d="M 22 0 H 714 Q 736 0 736 22 V 92 Q 736 100 728 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">Great! Start coding now: Lead Bot, build the Coast route/save CLI and</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">bundle diff tool, plus a standalone offline HTML battle report from JSON.</text>
-      <text x="718" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:03</text>
+    <g transform="translate(50, 26)">
+      <path d="M 20 0 H 536 Q 556 0 556 20 V 139 Q 556 146 549 146 H 20 Q 0 146 0 126 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
       
-    </g>
-  
-    <g transform="translate(26, 146)">
-      <use href="#en2-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14">10:03</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 96 Q 778 118 756 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Started both the route/save diff CLI and offline HTML report in parallel.</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">Background coding does not block chat—want to design Chapter 2 now?</text>
-    </g>
-  
-    <g transform="translate(89, 286)">
-      <path d="M 22 0 H 695 Q 717 0 717 22 V 92 Q 717 100 709 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">Sure, love not waiting on a frozen terminal! For Snowfield, add a</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">blizzard rule: 2 exposed nodes in a row cost -1 extra supply until Camp.</text>
-      <text x="699" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:04</text>
+      <rect x="16" y="16" width="524" height="34" rx="7" fill="#D2DFD6"/>
+      <line x1="16" y1="16" x2="16" y2="50" stroke="#687C6E" stroke-width="3"/>
+      <text x="27" y="38" class="font" font-size="15.2" fill="#465249"><tspan font-weight="700" fill="#1E221E">LevelDesigner</tspan> Hi all, I own <tspan font-style="italic">Mistport</tspan> economy!…</text>
+    <text x="20" y="80" class="font" font-size="21" fill="#1E221E">Agreed—2 storms for 2 medals is not worth it.</text><text x="20" y="111" class="font" font-size="21" fill="#1E221E">Grant +1 bonus medal per storm on Coast.</text>
+      <text x="540" y="138" text-anchor="end" class="font" font-size="14" fill="#728577">10:00</text>
       
-    </g>
-  
-    <g transform="translate(26, 408)">
-      <use href="#en2-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14">10:04</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 96 Q 778 118 756 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Great mechanic! I will add a frost_streak counter to Snowfield that resets</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">at Campfire nodes—forcing a crisp trade-off between medals and warmth.</text>
-    </g>
-  
-    <g transform="translate(26, 548)" filter="url(#cardShadow)">
-      <rect width="780" height="316" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="284" rx="2.75" fill="#597C91"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#597C91"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">03</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#325672">CHAT VS. HEAVY ENGINE SPLIT (NO SESSION JUGGLING)</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">Two Codex lanes run in background while you design Ch. 2</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">Summon cleanly separates <tspan font-weight="700" fill="#325672">② Main Room Chat</tspan> from <tspan font-weight="700" fill="#1F1E1B">③ Execution Sessions</tspan>—Lead Bot</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B">orchestrates parallel Codex workers behind the scenes while chat replies instantly:</text>
-        <g transform="translate(28, 144)">
-          <rect width="352" height="104" rx="14" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="14.5" font-weight="700" fill="#F3F4F8">Session #1 · Route &amp; Diff CLI</text>
-          <text x="18" y="56" class="mono" font-size="13" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
-          <text x="18" y="84" class="mono" font-size="13.2" fill="#5CD49B">$ node diff.mjs → exit 0</text>
-        </g>
-      
-        <g transform="translate(400, 144)">
-          <rect width="352" height="104" rx="14" fill="#171C26"/>
-          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
-          <text x="32" y="29" class="font" font-size="14.5" font-weight="700" fill="#F3F4F8">Session #2 · Offline HTML Report</text>
-          <text x="18" y="56" class="mono" font-size="13" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
-          <text x="18" y="84" class="mono" font-size="13.2" fill="#E6AB55">$ node render.mjs → bundling</text>
-        </g>
-      
-    <rect x="28" y="260" width="724" height="36" rx="10" fill="#EEF3F7"/>
-    <text x="44" y="283" class="mono" font-size="13.5" font-weight="600" fill="#325672">Code gate blocks ③ workers from posting to chat (403 room_send_forbidden)</text>
-  
-    </g>
-  
-    <g transform="translate(70, 892)">
-      <path d="M 22 0 H 714 Q 736 0 736 22 V 92 Q 736 100 728 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">Oh, just remembered! The 0-byte blank.png in the Coast manifest is a valid</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">placeholder—make sure the HTML report shows it with before/after columns.</text>
-      <text x="718" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:05</text>
-      
-      <rect x="136" y="110" width="600" height="32" rx="16" fill="#E8F4EC" stroke="#C9E2D0"/>
-      <text x="436" y="131" text-anchor="middle" class="font" font-size="14" fill="#2C4A35"><tspan font-weight="700" fill="#235E34">Fast-Read Steer · Lead Bot:</tspan> Add 0-byte &amp; 2 columns (injected into live job)</text>
+      <rect x="263" y="154" width="293" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
+      <text x="409.5" y="175.5" text-anchor="middle" class="font" font-size="15.2" fill="#433F37"><tspan font-weight="700" fill="#7A7366">Fast-Read Summary · 3 peers ▾</tspan></text>
+    
+      <rect x="16" y="194" width="540" height="110" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
+      <text x="32" y="221" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">LevelDesigner</tspan> +1 medal per storm on Coast table</text><text x="32" y="249" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> Balance tweak only; code intact (quiet)</text><text x="32" y="277" class="font" font-size="15.2" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan> LevelDesigner handling feedback (quiet)</text>
     
     </g>
   
-    <g transform="translate(26, 1056)" filter="url(#cardShadow)">
-      <rect width="780" height="264" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="232" rx="2.75" fill="#2E8548"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#2E8548"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">04</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#235E34">① DIRECT FORWARD (STEER) &amp; TOOL SELF-REPAIR</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">Mid-flight chat steers Codex live; broken tools self-heal</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#235E34">Zero-latency forward (route: forward)</tspan>: Lead Bot ① Fast-Read matches 10:05 to live</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B">  Session #2 and injects your words straight into Codex via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>!</text><text x="28" y="162" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI self-healing</tspan>: When a local CLI update breaks parsing, tasks notify</text><text x="28" y="189" class="font" font-size="16.5" fill="#47433B">  an out-of-room <tspan font-weight="700" fill="#1F1E1B">Maintainer Bot</tspan> to patch the adapter silently—never spamming chat.</text>
-    <rect x="28" y="208" width="724" height="36" rx="10" fill="#E8F4EC"/>
-    <text x="44" y="231" class="mono" font-size="13.5" font-weight="600" fill="#235E34">Built-in Bot Maintenance Room reviews daily connection_usage standups</text>
+    <g transform="translate(18, 354)">
+      <use href="#en2-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:01</tspan></text>
+      <path d="M 64 28 H 538 Q 558 28 558 48 V 100 Q 558 120 538 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Coast v2 pinned: Safe leaves 7 supply / 3</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">medals; Risky leaves 3 supply / 4 medals.</text>
+    </g>
   
+    <g transform="translate(78, 496)">
+      <path d="M 20 0 H 508 Q 528 0 528 20 V 95 Q 528 102 521 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Nice gradient! I also dropped wav audio in—</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">compress to ogg &amp; track bundle size diffs.</text>
+      <text x="512" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:01</text>
+      
+    </g>
+  
+    <g transform="translate(18, 620)">
+      <use href="#en2-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:02</tspan></text>
+      <path d="M 64 28 H 529 Q 549 28 549 48 V 100 Q 549 120 529 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">No audio converter here—shall I write a</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">script to download FFmpeg first?</text>
+    </g>
+  
+    <g transform="translate(18, 762)">
+      <use href="#en2-av-tool" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Tool Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:02</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 146 Q 588 166 568 166 H 76 Q 56 166 56 146 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">No need! FFmpeg 8.1.2 is already installed</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">on this host—use this registered connection:</text>
+        <rect x="76" y="112" width="242" height="34" rx="17" fill="#E4E0D5" stroke="#D3CCB9"/>
+        <text x="197" y="134.5" text-anchor="middle" class="font" font-size="15.5" font-weight="600" fill="#3F3C35">🔗 Connection cli-ffmpeg</text>
+      
+    </g>
+  
+    <g transform="translate(18, 950)">
+      <use href="#en2-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:02</tspan></text>
+      <path d="M 64 28 H 544 Q 564 28 564 48 V 100 Q 564 120 544 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Awesome, saved a redundant install!</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Converted all Coast audio via cli-ffmpeg.</text>
+    </g>
+  
+    <g transform="translate(69, 1092)">
+      <path d="M 20 0 H 517 Q 537 0 537 20 V 95 Q 537 102 530 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Great! Lead Bot, build the Coast route/diff</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">CLI and a standalone offline HTML report.</text>
+      <text x="521" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:03</text>
+      
+    </g>
+  
+    <g transform="translate(18, 1216)">
+      <use href="#en2-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:03</tspan></text>
+      <path d="M 64 28 H 559 Q 579 28 579 48 V 100 Q 579 120 559 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Started CLI &amp; HTML report in parallel.</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Chat stays live—want to design Chapter 2?</text>
+    </g>
+  
+    <g transform="translate(52, 1358)">
+      <path d="M 20 0 H 534 Q 554 0 554 20 V 95 Q 554 102 547 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Love zero waiting! For Snowfield, 2 exposed</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">nodes in a row cost -1 extra supply till Camp.</text>
+      <text x="538" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:04</text>
+      
+    </g>
+  
+    <g transform="translate(18, 1482)">
+      <use href="#en2-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">10:04</tspan></text>
+      <path d="M 64 28 H 552 Q 572 28 572 48 V 100 Q 572 120 552 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Great mechanic! Adding frost_streak to</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Snowfield that resets at Campfire nodes.</text>
+    </g>
+  
+    <g transform="translate(78, 1624)">
+      <path d="M 20 0 H 508 Q 528 0 528 20 V 95 Q 528 102 521 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Oh, just remembered! 0-byte blank.png is a</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">valid placeholder—show it + 2 size columns.</text>
+      <text x="512" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">10:05</text>
+      
+      <rect x="131" y="110" width="397" height="32" rx="16" fill="#E8F4EC" stroke="#C9E2D0"/>
+      <text x="329.5" y="131.5" text-anchor="middle" class="font" font-size="15.2" fill="#2C4A35"><tspan font-weight="700" fill="#235E34">Fast-Read Steer · Lead Bot:</tspan> 0-byte &amp; 2 cols</text>
+    
     </g>
   
   </g>
+
+  <!-- Right Vertical Timeline Axis -->
+  <line x1="724" y1="0" x2="724" y2="2177" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+
+  <!-- Smooth Curved Connectors -->
+  <path d="M 632.0 275.0 C 668.0 275.0, 672 245.7, 696 245.7" fill="none" stroke="#477A54" stroke-width="2.4" class="flow"/><path d="M 632.0 859.0 C 668.0 859.0, 672 405.7, 696 405.7" fill="none" stroke="#B2634F" stroke-width="2.4" class="flow"/><path d="M 623.0 1290.0 C 668 1290.0, 668 1322.3, 668 1354.5 C 668 1386.8, 672 1419.0, 696 1419.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 616.0 1556.0 C 668.0 1556.0, 672 1554.0, 696 1554.0" fill="none" stroke="#597C91" stroke-width="2.4" class="flow"/><path d="M 632.0 1750.0 C 668.0 1750.0, 672 1938.0, 696 1938.0" fill="none" stroke="#2E8548" stroke-width="2.4" class="flow"/>
+
+  <!-- Right Callout Cards -->
+  
+    <g transform="translate(696, 81.7)">
+      <circle cx="28" cy="28" r="20" fill="#477A54"/>
+      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">02</text>
+      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#2E633D">① FAST-READ TRIAGE &amp; PROACTIVE RESCUE</text>
+      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">4 Bots never spam,</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">yet catch mistakes live</text>
+      <g transform="translate(0, 94)" filter="url(#cardShadow)">
+        <rect width="560" height="296" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#1F1E1B">Silent when unrelated</tspan>: Every message runs</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  zero-thinking ① <tspan font-weight="700" fill="#2E633D">Fast-Read</tspan>. At 10:00 Lead</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  &amp; EggBot stay quiet, saving 90% tokens.</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#B2634F">Proactive rescue</tspan>: Nobody tagged <tspan font-weight="700" fill="#1F1E1B">Tool Bot</tspan></text><text x="24" y="162" class="font" font-size="19" fill="#454139">  at 10:02, yet it caught a redundant install</text><text x="24" y="191" class="font" font-size="19" fill="#454139">  and handed over <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> live!</text>
+    <rect x="24" y="214" width="512" height="60" rx="10" fill="#EBF4EE"/>
+    <text x="38" y="238" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">Summaries sync via room-message-summaries</text><text x="38" y="260" class="mono" font-size="14.2" font-weight="600" fill="#2E633D">with zero prompt pollution</text>
+  
+      </g>
+    </g>
+  
+    <g transform="translate(696, 1250)">
+      <circle cx="28" cy="28" r="20" fill="#597C91"/>
+      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">03</text>
+      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#325672">CHAT VS. HEAVY ENGINE SPLIT</text>
+      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Two Codex lanes run;</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">you plan Ch. 2 live</text>
+      <g transform="translate(0, 94)" filter="url(#cardShadow)">
+        <rect width="560" height="372" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="24" y="34" class="font" font-size="19" fill="#454139">Summon splits ② <tspan font-weight="700" fill="#325672">Main Room Chat</tspan> from</text><text x="24" y="63" class="font" font-size="19" fill="#454139">③ <tspan font-weight="700" fill="#1F1E1B">Execution Sessions</tspan> in parallel:</text>
+        <g transform="translate(24, 84)">
+          <rect width="512" height="88" rx="13" fill="#171C26"/>
+          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
+          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">Session #1 · Route &amp; Diff CLI</text>
+          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-astra (max)</text>
+          <text x="18" y="76" class="mono" font-size="14.5" fill="#5CD49B">$ node diff.mjs → exit 0</text>
+        </g>
+      
+        <g transform="translate(24, 184)">
+          <rect width="512" height="88" rx="13" fill="#171C26"/>
+          <circle cx="18" cy="24" r="5" fill="#5CD49B" class="pulse"/>
+          <text x="32" y="29" class="font" font-size="16.5" font-weight="700" fill="#F3F4F8">Session #2 · Offline HTML Report</text>
+          <text x="18" y="53" class="mono" font-size="14" fill="#929AAC">Codex · gpt-6.2-sol (xhigh)</text>
+          <text x="18" y="76" class="mono" font-size="14.5" fill="#E6AB55">$ node render.mjs → bundling</text>
+        </g>
+      
+    <rect x="24" y="290" width="512" height="60" rx="10" fill="#EEF3F7"/>
+    <text x="38" y="314" class="mono" font-size="14.2" font-weight="600" fill="#325672">Code gate blocks ③ workers from posting</text><text x="38" y="336" class="mono" font-size="14.2" font-weight="600" fill="#325672">(403 room_send_forbidden)</text>
+  
+      </g>
+    </g>
+  
+    <g transform="translate(696, 1764)">
+      <circle cx="28" cy="28" r="20" fill="#2E8548"/>
+      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">04</text>
+      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#235E34">① DIRECT FORWARD &amp; TOOL SELF-REPAIR</text>
+      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Mid-flight chat steers</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">Codex; tools self-heal</text>
+      <g transform="translate(0, 94)" filter="url(#cardShadow)">
+        <rect width="560" height="267" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="24" y="34" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#235E34">Zero-latency steer</tspan>: Lead Bot ① Fast-Read</text><text x="24" y="63" class="font" font-size="19" fill="#454139">  injects 10:05 straight into live Session #2</text><text x="24" y="92" class="font" font-size="19" fill="#454139">  via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>—no restart needed.</text><text x="24" y="133" class="font" font-size="19" fill="#454139">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI repair</tspan>: Broken tools alert</text><text x="24" y="162" class="font" font-size="19" fill="#454139">  a <tspan font-weight="700" fill="#1F1E1B">Maintainer Bot</tspan> outside the room to patch.</text>
+    <rect x="24" y="185" width="512" height="60" rx="10" fill="#E8F4EC"/>
+    <text x="38" y="209" class="mono" font-size="14.2" font-weight="600" fill="#235E34">Built-in Bot Maintenance Room reviews</text><text x="38" y="231" class="mono" font-size="14.2" font-weight="600" fill="#235E34">daily connection_usage standups</text>
+  
+      </g>
+    </g>
+  
 </svg>

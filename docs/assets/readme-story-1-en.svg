@@ -1,19 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 2989" width="100%" height="100%" style="display:block">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1528" width="100%" height="100%" style="display:block">
   <defs>
     <style>
       .font { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; }
       .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
       .pulse { animation: pulse 2.2s ease-in-out infinite; }
+      .flow { stroke-dasharray: 6 5; animation: dash 14s linear infinite; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      @keyframes dash { to { stroke-dashoffset: -110; } }
     </style>
     <linearGradient id="en1-bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F4F1E8"/>
       <stop offset="100%" stop-color="#F0ECE1"/>
     </linearGradient>
+    <filter id="windowShadow" x="-4%" y="-1%" width="108%" height="103%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#221E17" flood-opacity="0.08"/>
+    </filter>
     <filter id="pillShadow" x="-6%" y="-12%" width="112%" height="130%">
       <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#221E16" flood-opacity="0.06"/>
     </filter>
-    <filter id="cardShadow" x="-3%" y="-4%" width="106%" height="112%">
+    <filter id="cardShadow" x="-4%" y="-4%" width="108%" height="112%">
       <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#221E17" flood-opacity="0.06"/>
     </filter>
     
@@ -43,193 +48,125 @@
     </g>
   </defs>
 
-  <path d="M 24 0 H 856 Q 880 0 880 24 V 2989 H 0 V 24 Q 0 0 24 0 Z" fill="url(#en1-bg)"/>
-  <path d="M 0.75 2989 V 24 Q 0.75 0.75 24 0.75 H 856 Q 879.25 0.75 879.25 24 V 2989" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
+  <path d="M 28 0 H 1252 Q 1280 0 1280 28 V 1528 H 0 V 28 Q 0 0 28 0 Z" fill="url(#en1-bg)"/>
+  <path d="M 0.75 1528 V 28 Q 0.75 0.75 28 0.75 H 1252 Q 1279.25 0.75 1279.25 28 V 1528" fill="none" stroke="#E2DDD1" stroke-width="1.5"/>
 
   
-      <g transform="translate(30, 28)">
-        <rect x="0" y="0" width="313" height="34" rx="17" fill="#E5DFD0"/>
+      <g transform="translate(30, 32)">
+        <rect x="0" y="0" width="330" height="34" rx="17" fill="#E5DFD0"/>
         <circle cx="18" cy="17" r="5" fill="#477A54" class="pulse"/>
-        <text x="32" y="22.5" class="font" font-size="14" font-weight="700" fill="#4B4840">Continuous Room Walkthrough (1 / 3)</text>
-        <text x="0" y="78" class="font" font-size="28.5" font-weight="800" fill="#1F1E1B" letter-spacing="-0.5">From a Vague Idea to a Finished Game in One Room</text>
-        <text x="0" y="112" class="font" font-size="16" fill="#5C564B">In Summon Bot, the group chat stays as clean as a normal messenger—while Fast-Read triage,</text>
-        <text x="0" y="135" class="font" font-size="16" fill="#5C564B">autonomous team spawning, parallel Codex builds, and CLI self-repair run quietly underneath.</text>
+        <text x="32" y="22.5" class="font" font-size="14.5" font-weight="700" fill="#4B4840">Continuous Room Walkthrough (1 / 3)</text>
+        <text x="0" y="82" class="font" font-size="38" font-weight="800" fill="#1F1E1B" letter-spacing="-0.6">From a Vague Idea to a Finished Game in One Room</text>
+        <text x="0" y="120" class="font" font-size="18.5" fill="#5C564B">The room stays as clean as a normal messenger—Fast-Read triage, team spawning &amp; parallel Codex run underneath.</text>
       </g>
     
 
-  <g transform="translate(24, 176)">
-    <path d="M 22 0 H 810 Q 832 0 832 22 V 2813 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
-    <path d="M 0.75 2813 V 22 Q 0.75 0.75 22 0.75 H 810 Q 831.25 0.75 831.25 22 V 2813" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
+  <!-- Left Continuous Chat Window -->
+  <g transform="translate(24, 174)" filter="url(#windowShadow)">
+    <path d="M 22 0 H 602 Q 624 0 624 22 V 1354 H 0 V 22 Q 0 0 22 0 Z" fill="#F8F6F1"/>
+    <path d="M 0.75 1354 V 22 Q 0.75 0.75 22 0.75 H 602 Q 623.25 0.75 623.25 22 V 1354" fill="none" stroke="#E4DFD3" stroke-width="1.5"/>
     
-      <g transform="translate(24, 22)">
-        <circle cx="22" cy="26" r="20" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
-        <rect x="14" y="19" width="16" height="14" rx="2.5" fill="none" stroke="#8A8478" stroke-width="1.7"/>
-        <line x1="20" y1="19" x2="20" y2="33" stroke="#8A8478" stroke-width="1.7"/>
+      <g transform="translate(18, 20)">
+        <circle cx="20" cy="25" r="19" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
+        <rect x="12" y="18" width="16" height="14" rx="2.5" fill="none" stroke="#8A8478" stroke-width="1.6"/>
+        <line x1="18" y1="18" x2="18" y2="32" stroke="#8A8478" stroke-width="1.6"/>
 
-        <g transform="translate(250, 0)" filter="url(#pillShadow)">
-          <rect width="284" height="52" rx="26" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
-          <use href="#en1-av-lead" transform="translate(22.50 17.50) scale(0.08070)"/>
-          <use href="#en1-av-egg" transform="translate(41.50 17.50) scale(0.08070)"/>
-          <use href="#en1-av-tool" transform="translate(22.50 35.50) scale(0.08070)"/>
-          <use href="#en1-av-plan" transform="translate(41.50 35.50) scale(0.08070)"/>
-          <text x="62" y="32" class="font" font-size="16.5" font-weight="700" fill="#1F1E1B">New Game Project</text>
-          <text x="264" y="32" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 peers</text>
+        <g transform="translate(152, 0)" filter="url(#pillShadow)">
+          <rect width="284" height="50" rx="25" fill="#FFFDF8" stroke="#E4DFD3" stroke-width="1.2"/>
+          <use href="#en1-av-lead" transform="translate(22.00 16.00) scale(0.07595)"/>
+          <use href="#en1-av-egg" transform="translate(40.00 16.00) scale(0.07595)"/>
+          <use href="#en1-av-tool" transform="translate(22.00 34.00) scale(0.07595)"/>
+          <use href="#en1-av-plan" transform="translate(40.00 34.00) scale(0.07595)"/>
+          <text x="58" y="31" class="font" font-size="16" font-weight="700" fill="#1F1E1B">New Game Project</text>
+          <text x="266" y="31" text-anchor="end" class="font" font-size="14" fill="#8A8478">4 peers</text>
         </g>
-        <text x="784" y="32" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">Stop Active</text>
+        <text x="588" y="31" text-anchor="end" class="font" font-size="14.5" fill="#8A8478">Stop Active</text>
       </g>
-    <text x="416" y="108" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">Today 09:55</text>
-    <g transform="translate(70, 130)">
-      <path d="M 22 0 H 714 Q 736 0 736 22 V 92 Q 736 100 728 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">I want to build a lightweight single-player game I can play in short</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">sessions and resume anytime. What theme and core loop would work well?</text>
-      <text x="718" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:55</text>
+    <text x="312" y="102" text-anchor="middle" class="font" font-size="14.5" fill="#A6A093">Today 09:55</text>
+    <g transform="translate(50, 122)">
+      <path d="M 20 0 H 536 Q 556 0 556 20 V 126 Q 556 133 549 133 H 20 Q 0 133 0 113 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">I want a lightweight single-player game I can</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">play in short sessions and resume anytime.</text><text x="20" y="98" class="font" font-size="21" fill="#1E221E">What genre and core loop would work well?</text>
+      <text x="540" y="125" text-anchor="end" class="font" font-size="14" fill="#728577">09:55</text>
       
     </g>
   
-    <g transform="translate(26, 252)">
-      <use href="#en1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:55</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 125 Q 778 147 756 147 H 84 Q 62 147 62 125 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">For quick sessions and natural save points, how about a node-based</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">maritime expedition? Each chapter is a sea map where you spend supply</text><text x="84" y="121" class="font" font-size="18" fill="#1F1E1B">to pick routes, survive events, and earn medals. Combat or resource focus?</text>
+    <g transform="translate(18, 277)">
+      <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:55</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 131 Q 588 151 568 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">How about a node-based maritime expedition?</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Each chapter is a sea map: spend supply to</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">pick routes &amp; earn medals. Combat or resource?</text>
     </g>
   
-    <g transform="translate(84, 421)">
-      <path d="M 22 0 H 700 Q 722 0 722 22 V 92 Q 722 100 714 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">Love the maritime route idea! Skip complex combat—focus on supply vs.</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">risk/reward choices: safe routes save supply, storms pay more medals.</text>
-      <text x="704" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:56</text>
+    <g transform="translate(83, 450)">
+      <path d="M 20 0 H 503 Q 523 0 523 20 V 126 Q 523 133 516 133 H 20 Q 0 133 0 113 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E">Love maritime routes! Skip heavy combat—</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">focus on supply vs. risk/reward choices:</text><text x="20" y="98" class="font" font-size="21" fill="#1E221E">safe routes save supply, storms pay more.</text>
+      <text x="507" y="125" text-anchor="end" class="font" font-size="14" fill="#728577">09:56</text>
       
     </g>
   
-    <g transform="translate(26, 543)">
-      <use href="#en1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:56</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 96 Q 778 118 756 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Let us build by chapters: start with Coast (Camp, Storm, Ruin nodes),</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">then expand to Snowfield. How about <tspan font-style="italic">Mistport Expedition</tspan>?</text>
+    <g transform="translate(18, 605)">
+      <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:56</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Start with Coast (Camp, Storm, Ruin nodes),</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">then add Snowfield. Call it <tspan font-style="italic">Mistport Expedition</tspan>?</text>
     </g>
   
-    <g transform="translate(104, 683)">
-      <path d="M 22 0 H 680 Q 702 0 702 22 V 92 Q 702 100 694 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E"><tspan font-style="italic">Mistport Expedition</tspan> sounds great! Start with 10 supply (-1 per step):</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">Camp restores +2, Storm costs -2 extra, and Ruin grants 2 medals.</text>
-      <text x="684" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">09:58</text>
+    <g transform="translate(56, 747)">
+      <path d="M 20 0 H 530 Q 550 0 550 20 V 95 Q 550 102 543 102 H 20 Q 0 102 0 82 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="20" y="36" class="font" font-size="21" fill="#1E221E"><tspan font-style="italic">Mistport Expedition</tspan> sounds great! 10 supply</text><text x="20" y="67" class="font" font-size="21" fill="#1E221E">(-1/step): Camp +2, Storm -2, Ruin 2 medals.</text>
+      <text x="534" y="94" text-anchor="end" class="font" font-size="14" fill="#728577">09:58</text>
       
     </g>
   
-    <g transform="translate(26, 805)">
-      <use href="#en1-av-lead" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14">09:58</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 96 Q 778 118 756 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Got it—I will own route settlement and save files via versioned tables.</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">Still, ongoing chapter balance and playtest tuning need a dedicated owner.</text>
+    <g transform="translate(18, 871)">
+      <use href="#en1-av-lead" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">Lead Bot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:58</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 100 Q 588 120 568 120 H 76 Q 56 120 56 100 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">I will own route settlement &amp; save files.</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Still, chapter balance needs a dedicated owner.</text>
     </g>
   
-    <g transform="translate(26, 945)">
-      <use href="#en1-av-egg" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">EggBot <tspan font-weight="400" fill="#A6A093" font-size="14">09:59</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 71 Q 778 93 756 93 H 84 Q 62 93 62 71 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+    <g transform="translate(18, 1013)">
+      <use href="#en1-av-egg" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">EggBot <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:59</tspan></text>
+      <path d="M 64 28 H 548 Q 568 28 568 48 V 104 Q 568 124 548 124 H 76 Q 56 124 56 104 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
       
-      <text x="84" y="64" class="font" font-size="18" fill="#1F1E1B">Invited</text>
-      <rect x="163" y="43" width="173" height="30" rx="15" fill="#DCE8DF" stroke="#C5DBC9"/>
-      <use href="#en1-av-plan" transform="translate(180.00 58.00) scale(0.11392)"/>
-      <text x="196" y="63.5" class="font" font-size="16" font-weight="700" fill="#2B5638">@LevelDesigner</text>
-      <text x="344" y="64" class="font" font-size="18" fill="#1F1E1B">to own chapter tables and playtest balance.</text>
-    
-    </g>
-  
-    <g transform="translate(26, 1060)">
-      <use href="#en1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14">09:59</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 125 Q 778 147 756 147 H 84 Q 62 147 62 125 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Hi all, I will own <tspan font-style="italic">Mistport Expedition</tspan> balance! With 10 starting supply:</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">Safe route (Camp → Storm → Ruin) leaves 7 supply &amp; 2 medals; Risky route</text><text x="84" y="121" class="font" font-size="18" fill="#1F1E1B">(Storm → Storm → Ruin) leaves 3 supply &amp; 2 medals. Payoff feels low?</text>
-    </g>
-  
-    <g transform="translate(26, 1229)" filter="url(#cardShadow)">
-      <rect width="780" height="264" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="232" rx="2.75" fill="#A87932"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#A87932"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">01</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#8C6223">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">From vague chat to an auto-assembled specialist team</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">Real projects never start with a finished PRD. You began with “a weekend game,”</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B">and <tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed three turns to shape <tspan font-style="italic">Mistport Expedition</tspan>.</text><text x="28" y="162" class="font" font-size="16.5" fill="#47433B">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> spotted that no one owned long-term chapter economy tables.</text><text x="28" y="189" class="font" font-size="16.5" fill="#47433B">Unprompted, it called <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn <tspan font-weight="700" fill="#2E633D">@LevelDesigner</tspan> and hand off context.</text>
-    <rect x="28" y="208" width="724" height="36" rx="10" fill="#F6F2E8"/>
-    <text x="44" y="231" class="mono" font-size="13.5" font-weight="600" fill="#785620">EggBot observes room checkpoints → spots role gaps &amp; invites specialists</text>
-  
-    </g>
-  
-    <g transform="translate(91, 1521)">
-      <path d="M 22 0 H 693 Q 715 0 715 22 V 136 Q 715 144 707 144 H 22 Q 0 144 0 122 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
+      <text x="76" y="64" class="font" font-size="21" fill="#1F1E1B">Invited</text>
+      <rect x="168" y="41" width="187" height="32" rx="16" fill="#DCE8DF" stroke="#C5DBC9"/>
+      <use href="#en1-av-plan" transform="translate(185.00 57.00) scale(0.11392)"/>
+      <text x="201" y="63" class="font" font-size="17.5" font-weight="700" fill="#2B5638">@LevelDesigner</text>
       
-      <rect x="18" y="18" width="679" height="34" rx="8" fill="#D3E0D7"/>
-      <line x1="18" y1="18" x2="18" y2="52" stroke="#687C6E" stroke-width="3"/>
-      <text x="30" y="40" class="font" font-size="14.5" fill="#465249"><tspan font-weight="700" fill="#1E221E">LevelDesigner</tspan> Hi all, I will own <tspan font-style="italic">Mistport Expedition</tspan> balance! With 10 starting…</text>
-    <text x="22" y="80" class="font" font-size="18" fill="#1E221E">Agreed—surviving two storms with 3 supply left for the same 2 medals</text><text x="22" y="109" class="font" font-size="18" fill="#1E221E">is not worth it. Award +1 bonus medal per storm on the Coast table.</text>
-      <text x="697" y="134" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:00</text>
-      
-      <rect x="439" y="154" width="276" height="32" rx="16" fill="#EFECE4" stroke="#DFD9CB"/>
-      <text x="577" y="175" text-anchor="middle" class="font" font-size="14" fill="#433F37"><tspan font-weight="700" fill="#7A7366">Fast-Read Summary · 3 peers ▾</tspan></text>
-    
-      <rect x="178" y="194" width="537" height="108" rx="14" fill="#EFECE4" stroke="#E2DDD1"/>
-      <text x="196" y="222" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">LevelDesigner</tspan>  User asked for +1 medal per storm on Coast table</text><text x="196" y="248" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan>  Table balance tweak only; save code unchanged (quiet)</text><text x="196" y="274" class="font" font-size="14.5" fill="#4B4840"><tspan font-weight="700" fill="#1F1E1B">EggBot</tspan>  LevelDesigner is handling Coast balance feedback (quiet)</text>
-    
+    <text x="76" y="98" class="font" font-size="21" fill="#1F1E1B">to own chapter tables &amp; playtest balance.</text>
     </g>
   
-    <g transform="translate(26, 1847)">
-      <use href="#en1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14">10:01</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 96 Q 778 118 756 118 H 84 Q 62 118 62 96 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Coast v2 updated: Safe route leaves 7 supply &amp; 3 medals; Risky route</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">leaves 3 supply &amp; 4 medals. Much better gradient—pinned v2 to the room.</text>
-    </g>
-  
-    <g transform="translate(86, 1987)">
-      <path d="M 22 0 H 698 Q 720 0 720 22 V 92 Q 720 100 712 100 H 22 Q 0 100 0 78 V 22 Q 0 0 22 0 Z" fill="#E1EAE4" stroke="#CFE0D4" stroke-width="1.2"/>
-      <text x="22" y="36" class="font" font-size="18" fill="#1E221E">Nice! I also dropped raw wav audio files for waves and storms into the</text><text x="22" y="65" class="font" font-size="18" fill="#1E221E">folder. Let us compress them to ogg and track what grows bundle size.</text>
-      <text x="702" y="90" text-anchor="end" class="font" font-size="13.5" fill="#728577">10:01</text>
-      
-    </g>
-  
-    <g transform="translate(26, 2109)">
-      <use href="#en1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 67 Q 778 89 756 89 H 84 Q 62 89 62 67 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">I do not see an audio converter here—shall I write a script to download FFmpeg?</text>
-    </g>
-  
-    <g transform="translate(26, 2220)">
-      <use href="#en1-av-tool" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">Tool Bot <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 747 Q 769 28 769 50 V 140 Q 769 162 747 162 H 84 Q 62 162 62 140 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">No need to download—FFmpeg 8.1.2 is already installed under WinGet on</text><text x="84" y="92" class="font" font-size="18" fill="#1F1E1B">this host and registered as an execution connection:</text>
-        <rect x="84" y="110" width="223" height="32" rx="16" fill="#E4E0D5" stroke="#D3CCB9"/>
-        <text x="195.5" y="131" text-anchor="middle" class="font" font-size="14.5" font-weight="600" fill="#3F3C35">🔗 Connection cli-ffmpeg</text>
-      
-    </g>
-  
-    <g transform="translate(26, 2404)">
-      <use href="#en1-av-plan" transform="translate(24.00 52.00) scale(0.22785)"/>
-      <text x="64" y="19" class="font" font-size="15.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14">10:02</tspan></text>
-      <path d="M 70 28 H 756 Q 778 28 778 50 V 67 Q 778 89 756 89 H 84 Q 62 89 62 67 V 36 Q 62 28 70 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
-      <text x="84" y="63" class="font" font-size="18" fill="#1F1E1B">Awesome, saved a redundant install! Converted all Coast audio via cli-ffmpeg.</text>
-    </g>
-  
-    <g transform="translate(26, 2515)" filter="url(#cardShadow)">
-      <rect width="780" height="264" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.4"/>
-      <!-- Clean left accent stripe -->
-      <rect x="0" y="16" width="5.5" height="232" rx="2.75" fill="#477A54"/>
-
-      <!-- Header -->
-      <circle cx="46" cy="37" r="18" fill="#477A54"/>
-      <text x="46" y="43" text-anchor="middle" class="mono" font-size="14.5" font-weight="800" fill="#FFF">02</text>
-      <text x="76" y="29" class="font" font-size="13.2" font-weight="700" fill="#2E633D">① FAST-READ SILENT TRIAGE &amp; PROACTIVE RESCUE</text>
-      <text x="76" y="54" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">4 Bots never talk over each other, yet catch mistakes live</text>
-      <line x1="28" y1="70" x2="752" y2="70" stroke="#EFEAE0" stroke-width="1.2"/>
-
-      <text x="28" y="98" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#1F1E1B">Silent when unrelated (quiet)</tspan>: Every message runs a read-only ① <tspan font-weight="700" fill="#2E633D">Fast-Read</tspan> (thinking: off).</text><text x="28" y="125" class="font" font-size="16.5" fill="#47433B">  At 10:00 Lead Bot &amp; EggBot stay quiet, saving 90% of idle chatter tokens.</text><text x="28" y="162" class="font" font-size="16.5" fill="#47433B">• <tspan font-weight="700" fill="#B2634F">Proactive rescue without @mention</tspan>: At 10:02 nobody tagged <tspan font-weight="700" fill="#1F1E1B">Tool Bot</tspan>, yet it caught</text><text x="28" y="189" class="font" font-size="16.5" fill="#47433B">  a redundant FFmpeg download and handed over <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> on its own!</text>
-    <rect x="28" y="208" width="724" height="36" rx="10" fill="#EBF4EE"/>
-    <text x="44" y="231" class="mono" font-size="13.5" font-weight="600" fill="#2E633D">Summaries sync via room-message-summaries · Zero prompt pollution</text>
-  
+    <g transform="translate(18, 1159)">
+      <use href="#en1-av-plan" transform="translate(22.00 50.00) scale(0.20886)"/>
+      <text x="58" y="20" class="font" font-size="16.5" font-weight="700" fill="#4B4840">LevelDesigner <tspan font-weight="400" fill="#A6A093" font-size="14.5">09:59</tspan></text>
+      <path d="M 64 28 H 568 Q 588 28 588 48 V 131 Q 588 151 568 151 H 76 Q 56 151 56 131 V 36 Q 56 28 64 28 Z" fill="#EFECE4" stroke="#E4DFD2" stroke-width="1.1"/>
+      <text x="76" y="63" class="font" font-size="21" fill="#1F1E1B">Hi all, I own <tspan font-style="italic">Mistport</tspan> economy! With 10 supply:</text><text x="76" y="94" class="font" font-size="21" fill="#1F1E1B">Safe leaves 7 supply &amp; 2 medals; Risky (2</text><text x="76" y="125" class="font" font-size="21" fill="#1F1E1B">storms) leaves 3 supply &amp; 2 medals—too low?</text>
     </g>
   
   </g>
+
+  <!-- Right Vertical Timeline Axis -->
+  <line x1="724" y1="224" x2="724" y2="1528" stroke="#D8D0C0" stroke-width="2" stroke-dasharray="6 6"/>
+
+  <!-- Smooth Curved Connectors -->
+  <path d="M 612.0 1263.0 C 668.0 1263.0, 672 1277.0, 696 1277.0" fill="none" stroke="#A87932" stroke-width="2.4" class="flow"/>
+
+  <!-- Right Callout Cards -->
+  
+    <g transform="translate(696, 1023)">
+      <circle cx="28" cy="28" r="20" fill="#A87932"/>
+      <text x="28" y="34" text-anchor="middle" class="mono" font-size="15.5" font-weight="800" fill="#FFF">01</text>
+      <text x="60" y="20" class="font" font-size="14" font-weight="700" fill="#8C6223">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
+      <text x="60" y="46" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">From vague chat to an</text><text x="60" y="74" class="font" font-size="22.5" font-weight="800" fill="#1F1E1B">auto-assembled team</text>
+      <g transform="translate(0, 94)" filter="url(#cardShadow)">
+        <rect width="560" height="354" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="24" y="34" class="font" font-size="19" fill="#454139">Real projects never start with a rigid PRD.</text><text x="24" y="63" class="font" font-size="19" fill="#454139">You began with “a weekend game,” and</text><text x="24" y="92" class="font" font-size="19" fill="#454139"><tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed three turns to</text><text x="24" y="121" class="font" font-size="19" fill="#454139">shape <tspan font-style="italic">Mistport Expedition</tspan>.</text><text x="24" y="162" class="font" font-size="19" fill="#454139">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> spotted a role gap</text><text x="24" y="191" class="font" font-size="19" fill="#454139">in chapter economy tables. Unprompted,</text><text x="24" y="220" class="font" font-size="19" fill="#454139">it called <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn</text><text x="24" y="249" class="font" font-size="19" fill="#454139"><tspan font-weight="700" fill="#2E633D">@LevelDesigner</tspan> and hand off context.</text>
+    <rect x="24" y="272" width="512" height="60" rx="10" fill="#F6F2E8"/>
+    <text x="38" y="296" class="mono" font-size="14.2" font-weight="600" fill="#785620">EggBot observes room checkpoints →</text><text x="38" y="318" class="mono" font-size="14.2" font-weight="600" fill="#785620">spots role gaps &amp; hands off context</text>
+  
+      </g>
+    </g>
+  
 </svg>
