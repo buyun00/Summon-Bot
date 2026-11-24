@@ -158,22 +158,22 @@
     <g transform="translate(682, 210)">
       <circle cx="28" cy="30" r="22" fill="#597C91"/>
       <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">00</text>
-      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">阅读导览 · 群聊背后的三层架构</text>
-      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">一个干净群聊，三层分工各司其职</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">阅读导览 · 不是赛博 COSPLAY，而是真实感赛博岗位</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="700" fill="#1F1E1B">不是角色扮演，是长驻岗位的真同事</text>
       <g transform="translate(0, 70)" filter="url(#cardShadow)">
-        <rect width="578" height="340" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="22" y="38" class="font" font-size="22" fill="#413D35">左侧是你实际看到的极简群聊界面；背后每条消息</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">都会经过三层解耦机制，既不刷屏也不卡住聊天：</text>
-        <rect x="22" y="94" width="534" height="64" rx="12" fill="#EBF4EE" stroke="none"/>
-        <text x="38" y="119" class="font" font-size="18.5" font-weight="700" fill="#2E633D">① 快读层（关闭思考 · 只读零写权限）</text>
-        <text x="38" y="145" class="font" font-size="16.5" fill="#4A453D">毫秒判断该静默、主动救场，还是直转补件给在途任务</text>
+        <rect width="578" height="456" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="22" fill="#413D35">Summon 的 Bot 不是套个头衔的 <tspan font-weight="700" fill="#1F1E1B">赛博 Cosplay</tspan>，而</text><text x="22" y="72" class="font" font-size="22" fill="#413D35">是真正长期负责一个领域的 <tspan font-weight="700" fill="#325672">真实感赛博岗位</tspan>——能</text><text x="22" y="106" class="font" font-size="22" fill="#413D35">主动参与讨论、及时纠错、沉淀记忆，并持续维护</text><text x="22" y="140" class="font" font-size="22" fill="#413D35">本领域的专业文档与规范，而非用完即丢的提示词。</text><text x="22" y="188" class="font" font-size="22" fill="#413D35">要让真实岗位既不刷屏也不卡聊，背后靠三层解耦：</text>
+        <rect x="22" y="210" width="534" height="64" rx="12" fill="#EBF4EE" stroke="none"/>
+        <text x="38" y="235" class="font" font-size="18.5" font-weight="700" fill="#2E633D">① 快读层（关闭思考 · 只读零写权限）</text>
+        <text x="38" y="261" class="font" font-size="16.5" fill="#4A453D">毫秒判断该静默、主动救场，还是直转补件给在途任务</text>
       
-        <rect x="22" y="168" width="534" height="64" rx="12" fill="#EEF3F7" stroke="none"/>
-        <text x="38" y="193" class="font" font-size="18.5" font-weight="700" fill="#325672">② 群主对话（深度思考 · 扁平同伴）</text>
-        <text x="38" y="219" class="font" font-size="16.5" fill="#4A453D">陪你发散讨论、拆解需求、协同验收并沉淀本群长期约定</text>
+        <rect x="22" y="284" width="534" height="64" rx="12" fill="#EEF3F7" stroke="none"/>
+        <text x="38" y="309" class="font" font-size="18.5" font-weight="700" fill="#325672">② 群主对话（深度思考 · 扁平同伴）</text>
+        <text x="38" y="335" class="font" font-size="16.5" fill="#4A453D">陪你发散讨论、拆解需求、协同验收并沉淀本群长期约定</text>
       
-        <rect x="22" y="242" width="534" height="64" rx="12" fill="#F6F2E8" stroke="none"/>
-        <text x="38" y="267" class="font" font-size="18.5" font-weight="700" fill="#785620">③ 后台执行（Codex / Pi · 多路并行）</text>
-        <text x="38" y="293" class="font" font-size="16.5" fill="#4A453D">埋头写代码、跑构建与测试，受硬门禁隔离绝不刷群</text>
+        <rect x="22" y="358" width="534" height="64" rx="12" fill="#F6F2E8" stroke="none"/>
+        <text x="38" y="383" class="font" font-size="18.5" font-weight="700" fill="#785620">③ 后台执行（Codex / Pi · 多路并行）</text>
+        <text x="38" y="409" class="font" font-size="16.5" fill="#4A453D">埋头写代码、跑构建与测试，受硬门禁隔离绝不刷群</text>
       
       </g>
     </g>

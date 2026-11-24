@@ -158,22 +158,22 @@
     <g transform="translate(682, 210)">
       <circle cx="28" cy="30" r="22" fill="#597C91"/>
       <text x="28" y="36.5" text-anchor="middle" class="mono" font-size="16" font-weight="800" fill="#FFF">00</text>
-      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">AT A GLANCE · THREE-LAYER RUNTIME</text>
-      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">One clean group chat,</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">three decoupled layers</text>
+      <text x="62" y="21" class="font" font-size="15" font-weight="700" fill="#325672">WHY CREATE BOTS · NOT CYBER COSPLAY</text>
+      <text x="62" y="50" class="font" font-size="24" font-weight="800" fill="#1F1E1B">Not cyber cosplay—</text><text x="62" y="81" class="font" font-size="24" font-weight="800" fill="#1F1E1B">real long-term cyber roles</text>
       <g transform="translate(0, 102)" filter="url(#cardShadow)">
-        <rect width="578" height="334" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
-        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Left is the calm messenger UI you talk in; underneath,</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">every message flows through three clean layers:</text>
-        <rect x="22" y="88" width="534" height="64" rx="12" fill="#EBF4EE" stroke="none"/>
-        <text x="38" y="113" class="font" font-size="17.5" font-weight="700" fill="#2E633D">① Fast-Read (thinking: off · read-only)</text>
-        <text x="38" y="139" class="font" font-size="15.8" fill="#4A453D">Decides in ms to stay quiet, rescue peers, or steer live jobs</text>
+        <rect width="578" height="472" rx="18" fill="#FFFDF8" stroke="#E0DACB" stroke-width="1.3"/>
+        <text x="22" y="38" class="font" font-size="20.5" fill="#413D35">Summon Bots are not <tspan font-weight="700" fill="#1F1E1B">cyber cosplay</tspan>—slapping job</text><text x="22" y="69" class="font" font-size="20.5" fill="#413D35">titles onto throwaway prompts. Each Bot owns a real</text><text x="22" y="100" class="font" font-size="20.5" fill="#413D35">domain over time: <tspan font-weight="700" fill="#325672">catching mistakes early</tspan>, joining</text><text x="22" y="131" class="font" font-size="20.5" fill="#413D35">proactively, compounding memory, and maintaining</text><text x="22" y="162" class="font" font-size="20.5" fill="#413D35">living domain docs just like a real teammate.</text><text x="22" y="207" class="font" font-size="20.5" fill="#413D35">Three decoupled layers keep real roles calm &amp; fast:</text>
+        <rect x="22" y="226" width="534" height="64" rx="12" fill="#EBF4EE" stroke="none"/>
+        <text x="38" y="251" class="font" font-size="17.5" font-weight="700" fill="#2E633D">① Fast-Read (thinking: off · read-only)</text>
+        <text x="38" y="277" class="font" font-size="15.8" fill="#4A453D">Decides in ms to stay quiet, rescue peers, or steer live jobs</text>
       
-        <rect x="22" y="162" width="534" height="64" rx="12" fill="#EEF3F7" stroke="none"/>
-        <text x="38" y="187" class="font" font-size="17.5" font-weight="700" fill="#325672">② Main Room Chat (thinking: high · peers)</text>
-        <text x="38" y="213" class="font" font-size="15.8" fill="#4A453D">Brainstorms goals, splits tasks, verifies work &amp; saves rules</text>
+        <rect x="22" y="300" width="534" height="64" rx="12" fill="#EEF3F7" stroke="none"/>
+        <text x="38" y="325" class="font" font-size="17.5" font-weight="700" fill="#325672">② Main Room Chat (thinking: high · peers)</text>
+        <text x="38" y="351" class="font" font-size="15.8" fill="#4A453D">Brainstorms goals, splits tasks, verifies work &amp; saves rules</text>
       
-        <rect x="22" y="236" width="534" height="64" rx="12" fill="#F6F2E8" stroke="none"/>
-        <text x="38" y="261" class="font" font-size="17.5" font-weight="700" fill="#785620">③ Background Exec (Codex / Pi · parallel)</text>
-        <text x="38" y="287" class="font" font-size="15.8" fill="#4A453D">Runs heavy code &amp; builds in isolation—never spams the room</text>
+        <rect x="22" y="374" width="534" height="64" rx="12" fill="#F6F2E8" stroke="none"/>
+        <text x="38" y="399" class="font" font-size="17.5" font-weight="700" fill="#785620">③ Background Exec (Codex / Pi · parallel)</text>
+        <text x="38" y="425" class="font" font-size="15.8" fill="#4A453D">Runs heavy code &amp; builds in isolation—never spams the room</text>
       
       </g>
     </g>

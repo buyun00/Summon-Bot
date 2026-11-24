@@ -28,10 +28,26 @@
 <br/>
 
 <p align="center">
-  <a href="#top"><img src="docs/assets/readme-story-1-zh.svg" alt="Summon Bot 连续群聊实录（1 / 3）：从模糊想法聊出航海选路游戏《雾港远征》；01 EggBot 旁听发现每章数值平衡缺专人，无需指令自动 create_bot 孵化 @关卡策划 入群并试算海岸章路线。" width="100%" /></a><br/>
+  <a href="#top"><img src="docs/assets/readme-story-1-zh.svg" alt="Summon Bot 连续群聊实录（1 / 3）：00 阅读导览指出 Summon 的 Bot 不是套头衔的赛博 Cosplay，而是长期负责一个领域的真实感赛博岗位（主动参与、及时纠错、沉淀记忆、维护专业文档），背后由 ① 快读层（关闭思考·只读零写权限）、② 群主对话（深度思考·扁平同伴）、③ 后台执行（Codex/Pi·多路并行）三层解耦支撑；随后展示从模糊想法聊出航海选路游戏《雾港远征》，01 EggBot 旁听发现每章数值平衡缺专人，无需指令自动 create_bot 孵化 @关卡策划 入群并试算海岸章路线。" width="100%" /></a><br/>
   <a href="#top"><img src="docs/assets/readme-story-2-zh.svg" alt="Summon Bot 连续群聊实录（2 / 3）：02 ① 快读层（thinking: off）实现无关消息当场 quiet 静默省 90% Token，并在关卡策划想下载 FFmpeg 时由总接口 Bot 免 @ 主动递上 cli-ffmpeg；03 ② 群主对话与 ③ 后台执行会话双层分离，后台并行跑 CLI 与战报 HTML 两路 Codex，平台硬门禁（403 room_send_forbidden）禁止执行器刷群，前台照常秒回聊雪原章 frost_streak；04 随口补充 0 字节 blank.png 与前后两列由 ① 快读原生 steer 秒级直转在途 Codex，后台工具换版报错由群外维护 Bot 静默自修。" width="100%" /></a><br/>
   <a href="#top"><img src="docs/assets/readme-story-3-zh.svg" alt="Summon Bot 连续群聊实录（3 / 3）：05 先好的先交（10:06 report.json、10:07 report.html 引用原提问）、试玩反馈秒改单文件战报、稳定主线加本轮私有 Fork 保持 90%+ 缓存命中、五层人格与 material_index_ref 将战报格式永久写入本群约定；06 P2 用途模型表为快读、主对话与独立执行分层配模型与思考档，usage.sqlite 独立记账。" width="100%" /></a>
 </p>
+
+---
+
+## 为什么要创建 Bot？这不是赛博 Cosplay，而是真实感赛博岗位
+
+很多“多 Agent”工具让人觉得鸡肋，是因为它们本质上只是**赛博 Cosplay**——给同一个大模型硬套上“资深架构师”“测试总监”之类的角色提示词，按预设剧本轮流寒暄两句，会话一关全部失忆，最后干活和串上下文的还是你自己。
+
+**Summon Bot 创建专职 Bot 的出发点完全不同**：我们不是在演职场过家家，而是在为你组建一群**真正长时间负责一个领域的真实感赛博岗位**。一个岗位值不值得单独建 Bot，只看五件实在的事：
+
+- **长期盯死一个领域，而不是用完即丢**：无论是长期盯各章数值平衡的 `@关卡策划`、把关视觉 Token 与移动端的 `@前端视觉`、守着线上节点的 `@运维专员`，还是管你差旅节奏的 `日程助理`，每位 Bot 都拥有独立、干净、不被其他杂事污染的领域上下文，跨天跨周持续对这一摊事负责。
+- **独立视角及时纠错，而不是一味顺着你说**：单对话大模型最容易越聊越顺从、陪着你一起掉进盲区；但在 Summon 群里，不同岗位各自守着自己的边界——策划进群第一句就能算出“冒险线两风暴给 2 勋章偏低”，总接口 Bot 听到队友要硬重启 Nginx 并清空缓存时能当场叫停并保住 OOM 堆快照。
+- **该出手时主动参与，无关时静默不抢话**：依托关闭思考的快读旁听层，Bot 既不是必须手动 `@` 才动一下的提线木偶，也不是每句话都要插嘴刷屏的复读机——无关讨论自动安静旁听，一旦触及自己负责的领域或发现队友走弯路，无需点名就会主动站出来接手或救场。
+- **持续沉淀记忆，把经验变成团队肌肉记忆**：你在群里拍板的战报格式、代码规范、排程偏好与排障教训，会由五层人格、本群约定与 `material_index_ref` 自动结构化落盘。哪怕聊上几百轮触发历史压缩、或者隔了两周开新章节，该记住的规矩依然稳稳生效。
+- **长期维护本领域的专业文档与资产**：真实岗位的价值不止于聊天，更在于把零散讨论沉淀成可复用的活资产——关卡数值表、设计规范、运维排障手册、交付模板，以及系统预置「Bot 维护群」里持续复盘和热修复的工具方法库（`connection_usage`），越用越像一支磨合已久的真团队。
+
+> 也正因为每个 Bot 都是真实岗位而非固定剧本，你**不需要**开局手写一堆繁琐的角色模板——只管在群里聊目标，真正出现长期职责缺口时，EggBot 会自动为你招进合适的专员。
 
 ---
 
@@ -159,10 +175,26 @@
 <br/>
 
 <p align="center">
-  <a href="#top"><img src="docs/assets/readme-story-1-en.svg" alt="Summon Bot Continuous Walkthrough (1 / 3): From a rough single-player game idea to Mistport Expedition; 01 EggBot observes the room, spots a long-term balance ownership gap, and calls create_bot to spawn @LevelDesigner who immediately simulates Coast routes." width="100%" /></a><br/>
+  <a href="#top"><img src="docs/assets/readme-story-1-en.svg" alt="Summon Bot Continuous Walkthrough (1 / 3): 00 Why Create Bots clarifies that Summon Bots are not cyber cosplay slapping job titles onto throwaway prompts, but real long-term cyber roles owning a domain (catching mistakes early, joining proactively, compounding memory, and maintaining living domain docs), powered by 3 decoupled layers (① Fast-Read, ② Main Room Chat, ③ Background Exec); then shows a rough game idea evolving into Mistport Expedition where 01 EggBot spots a balance ownership gap and calls create_bot to spawn @LevelDesigner who immediately simulates Coast routes." width="100%" /></a><br/>
   <a href="#top"><img src="docs/assets/readme-story-2-en.svg" alt="Summon Bot Continuous Walkthrough (2 / 3): 02 ① Fast-Read layer (thinking: off) stays quiet on unrelated turns saving 90% tokens while Tool Bot proactively steps in without @mention to hand over cli-ffmpeg; 03 ② Main Room Chat and ③ Background Execution Sessions split so two parallel Codex jobs run under code hard gate (403 room_send_forbidden) while chat designs Chapter 2 Snowfield (frost_streak); 04 Casual mid-build addendum (0-byte blank.png & 2 columns) steers live via ① Fast-Read into Codex while broken CLI tools self-heal out-of-band." width="100%" /></a><br/>
   <a href="#top"><img src="docs/assets/readme-story-3-en.svg" alt="Summon Bot Continuous Walkthrough (3 / 3): 05 Staged verified delivery (10:06 report.json, 10:07 report.html quoting the original request), rapid playtest UI tweaks, stable trunk + private fork (90%+ cache hit), and 5-layer persona/material_index_ref persisting room conventions permanently; 06 P2 purpose-based model routing table assigns distinct models and thinking levels to Fast-Read, Main Chat, and Standalone Execution with usage.sqlite accounting." width="100%" /></a>
 </p>
+
+---
+
+## Why Create Bots? Not Cyber Cosplay — Real Long-Term Cyber Roles
+
+Many "multi-agent" setups feel gimmicky because they are just **cyber cosplay**—slapping titles like *"Senior Architect"* or *"QA Director"* onto throwaway prompts that recite scripted handoffs, forget everything the moment a session closes, and leave you doing the real coordination anyway.
+
+**Summon Bot creates specialist Bots for the exact opposite reason**: each Bot is a **real, long-lived cyber role** that owns a concrete domain over days, weeks, and months. A Bot earns its seat in a room by delivering five tangible things:
+
+- **Long-term ownership of a real domain**: Whether it is `@LevelDesigner` owning chapter balance across releases, `@UIDesigner` guarding design tokens and mobile grids, `@Ops Bot` watching production nodes, or `Schedule Bot` managing your travel rhythm, every Bot keeps a clean, role-isolated context focused on its area—never discarded after a single prompt.
+- **Timely error-catching instead of yes-man echoing**: A single overloaded chat thread easily drifts into blind agreement. With independent domain perspectives, specialists catch blind spots early—spotting that a two-storm risky route pays too few medals on message #1, or halting a destructive Nginx restart + cache wipe before it erases OOM heap evidence.
+- **Proactive participation without chatter spam**: Powered by the zero-thinking Fast-Read triage layer, Bots are neither passive puppets waiting to be `@`-mentioned nor noisy chatbots replying to everything. They stay silent on unrelated turns, yet step in on their own the instant a teammate takes a detour or touches their domain.
+- **Compounding persistent memory**: Conventions, coding standards, scheduling habits, and hard-won lessons are persisted structurally through Summon's five-layer persona, room conventions, and `material_index_ref`. Even hundreds of turns later—after context compaction or across new milestones—decisions made once stay honored automatically.
+- **Maintaining living domain documentation & assets**: Real teammates leave behind durable artifacts, not just chat logs. Each specialist actively maintains the specs, balance tables, runbooks, delivery templates, and self-healing tool methods (`connection_usage` reviewed in the built-in Bot Maintenance Room) for its domain—getting sharper the longer you work together.
+
+> Because these are real roles rather than static roleplay scripts, you **never** have to pre-author a YAML org chart upfront—just talk through your goal in chat, and let EggBot recruit a specialist only when a genuine long-term ownership gap emerges.
 
 ---
 
