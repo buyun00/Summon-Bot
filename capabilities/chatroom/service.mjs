@@ -761,7 +761,7 @@ export class ChatroomService {
                 sequence: msg.sequence,
                 sender_id: msg.senderId,
                 author: msg.author,
-                text: msg.content.slice(0, 1200),
+                text: msg.content.slice(0, 8000),
                 reply_to: msg.replyTo,
                 mentions: msg.mentions,
                 created_at: msg.createdAt,

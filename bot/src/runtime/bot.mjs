@@ -1262,7 +1262,7 @@ export class BotRuntime {
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
-        result: content.length <= 12000 ? result : { preview: content.slice(0, 12000), truncated: true } }));
+        result: content.length <= 256_000 ? result : { preview: content.slice(0, 256_000), characters: content.length, truncated: true } }));
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
@@ -1585,13 +1585,13 @@ export class BotRuntime {
       return [...previous, ...current];
     });
     if (modelPage || typeof cursor === 'string' && cursor.startsWith('fragment:')) return { ...state, transcript_page: true,
-      output: !cursor && typeof last?.result?.text === 'string' ? last.result.text.slice(0, 3000) : undefined,
+      output: !cursor && typeof last?.result?.text === 'string' ? last.result.text.slice(0, 128_000) : undefined,
       ...transcriptPage(output, cursor, limit) };
     const after = cursor == null ? 0 : output.findIndex(entry => entry.id === cursor) + 1;
     if (cursor && !after) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
     const slice = output.slice(after, after + limit);
     const rawOutput = last?.result?.text;
-    const text = cursor || typeof rawOutput !== 'string' ? undefined : rawOutput.slice(0, 16000);
+    const text = cursor || typeof rawOutput !== 'string' ? undefined : rawOutput.slice(0, 256_000);
     return { ...state, messages: slice, output: text,
       next_cursor: after + slice.length < output.length ? slice.at(-1)?.id : null };
   }

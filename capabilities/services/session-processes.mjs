@@ -201,9 +201,9 @@ export class SessionProcesses {
     return operation;
   }
 
-  async output(operation, { stream = 'stdout', offset = 0, limit = 16_384 } = {}) {
+  async output(operation, { stream = 'stdout', offset = 0, limit = 65_536 } = {}) {
     if (!['stdout', 'stderr', 'events'].includes(stream) || !Number.isSafeInteger(offset) || offset < 0 ||
-        !Number.isSafeInteger(limit) || limit < 1024 || limit > 65_536) reject('invalid_cursor', 'Invalid process output page');
+        !Number.isSafeInteger(limit) || limit < 1024 || limit > 262_144) reject('invalid_cursor', 'Invalid process output page');
     const path = join(this.directory(operation), stream === 'events' ? 'events.jsonl' : stream + '.log');
     return processPage(path, offset, limit, stream === 'events');
   }

@@ -525,6 +525,22 @@ export class SummonConnections {
       .map(item => ({ call_id: item.id, operation_call_id: item.operation_id, kind: item.kind,
         target: item.target, status: item.receipt?.status || item.status, receipt: item.receipt }));
     if (!latest.instance_id) {
+      if (typeof cursor === 'string' && cursor.startsWith('output:')) {
+        const offset = Number(cursor.slice(7));
+        if (!Number.isSafeInteger(offset) || offset < 0) reject('invalid_cursor', 'Invalid output cursor');
+        const full = typeof facts.output === 'string' ? facts.output : JSON.stringify(facts.output ?? null);
+        if (offset > full.length) reject('invalid_cursor', 'Output cursor is unavailable', 409);
+        const pageSize = limit === undefined ? 200_000 : Math.max(4096, Math.min(limit * 1024, 256_000));
+        const end = Math.min(full.length, offset + pageSize);
+        const { output: _omitted, ...meta } = facts;
+        return {
+          ...meta,
+          operations: members,
+          input_receipts: this.clean(inputPositions),
+          output_page: { text: full.slice(offset, end), offset, next_offset: end, total_characters: full.length, more: end < full.length },
+          next_cursor: end < full.length ? `output:${end}` : null,
+        };
+      }
       const events = this.store.list('session-service-events').filter(item => item.operation_id === latest.id);
       const from = cursor ? events.findIndex(item => item.id === cursor) + 1 : 0;
       if (cursor && !from) reject('invalid_cursor', 'Output cursor is unavailable', 409);
@@ -541,7 +557,7 @@ export class SummonConnections {
       offset = parsed[1];
       stream = parsed[2] || stream;
     }
-    const out = await this.processes.output(selected, { offset, stream, limit: limit === undefined ? 16_384 : Math.max(1024, Math.min(limit * 1024, 65_536)) });
+    const out = await this.processes.output(selected, { offset, stream, limit: limit === undefined ? 65_536 : Math.max(1024, Math.min(limit * 1024, 262_144)) });
     return { ...facts, operations: members, input_receipts: this.clean(inputPositions), output_page: this.clean(out), output_call_id: selected.id,
       next_cursor: keyOf(selected.id, out.next_offset, stream) };
   }
@@ -838,7 +854,7 @@ export class SummonConnections {
         if (event.type !== 'tool' && !(event.type === 'item' && ['commandExecution', 'mcpToolCall'].includes(event.itemType))) continue;
         const { itemId, phase, status, tool, itemType, command, text, output, exitCode } = event;
         const position = itemId && itemId.length <= 72 ? ['item', itemId, phase, status] : ['log', offset];
-        report(position, { phase, status, tool: tool ?? itemType, command, text: (text ?? output)?.slice(0, 2000), exit_code: exitCode });
+        report(position, { phase, status, tool: tool ?? itemType, command, text: (text ?? output)?.slice(0, 16_000), exit_code: exitCode });
       }
       more = page.more || offset < page.next_offset;
     }
@@ -847,9 +863,9 @@ export class SummonConnections {
     if (previous !== status) {
       let diagnostic = facts.error;
       if (!diagnostic && operation.instance_id && status === 'failed')
-        diagnostic = (await this.processes.output(operation, { stream: 'stderr', limit: 2048 })).text;
+        diagnostic = (await this.processes.output(operation, { stream: 'stderr', limit: 16_384 })).text;
       report(['status', status], { phase: 'execution', status, code: facts.code,
-        text: diagnostic?.slice(0, 2000), exit_code: operation.exit_code, http_status: operation.result?.http_status ?? operation.http_status });
+        text: diagnostic?.slice(0, 16_000), exit_code: operation.exit_code, http_status: operation.result?.http_status ?? operation.http_status });
     }
     if (offset !== operation.work_offset || status !== previous || settled(status) && operation.runtime_ended && !more)
       this.saveOperation(operation, { work_offset: offset, work_status: status,

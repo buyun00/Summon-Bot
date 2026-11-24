@@ -20,7 +20,7 @@ const tokenMetricKeyPattern = /(?:^(?:input|output|total|prompt|completion|cache
 
 function sanitizeDetails(value, depth = 0, key = '') {
   if (value === null || value === undefined) return value;
-  if (depth > 8) return '[truncated]';
+  if (depth > 32) return '[truncated]';
   if (key && sensitiveKeyPattern.test(key) && !tokenMetricKeyPattern.test(key) && (typeof value === 'string' || typeof value === 'number')) return '[redacted]';
   if (typeof value === 'string') return modelError(value);
   if (Array.isArray(value)) return value.map(item => sanitizeDetails(item, depth + 1, key));

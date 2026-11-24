@@ -6,7 +6,7 @@ import { builtInInstructions, defaultPublicDuty } from '../../../roles/index.mjs
 import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { isMaterialFact } from '../context/materials.mjs';
-import { contextTokens, eventInput, repairRun, roomMessageInput, textMessage, toolObservation } from '../context/projection.mjs';
+import { contextTokens, eventInput, repairRun, roomMessageInput, textMessage, toolObservation, toolObservationLimitFor } from '../context/projection.mjs';
 import { fitRoomHistory, pruneOversizedTranscript, splitOversizedCompressionRecord } from '../context/room-history.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 
@@ -531,12 +531,12 @@ export class BotEngine {
         inbox.store.putRecord(R.call, { ...persisted, state: returnWaits.length ? 'submitted' : 'completed', result, finished_at: now() });
         inbox.attachReturnWaits(context.origin.conversation_id, runId, returnWaits);
       });
-      return toolObservation(readTools.has(name) ? null : id, result);
+      return toolObservation(readTools.has(name) ? null : id, result, false, toolObservationLimitFor(model?.contextWindow));
     } catch (error) {
       const code = error.status && error.status < 500 ? 'failed' : 'unknown';
       const result = { ...this.clean.error(asError(error)), state: code, result_ref: { kind: 'call', id } };
       inbox.store.putRecord(R.call, { ...original, state: code, result, finished_at: now() });
-      return toolObservation(readTools.has(name) ? null : id, result, true);
+      return toolObservation(readTools.has(name) ? null : id, result, true, toolObservationLimitFor(model?.contextWindow));
     } finally {
       job.inToolCall = false;
     }

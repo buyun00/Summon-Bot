@@ -25,7 +25,7 @@ const nativeKeys = ['file', 'canonical_file', 'workspace_root', 'workspace_write
 const methodKeys = ['id', 'name', 'description', 'args', 'effect', 'input', 'keep_input', 'env', 'protocol', 'script'];
 
 const INSPECT_TIMEOUT_MS = 15_000;
-const INSPECT_OUTPUT_LIMIT = 12_000;
+const INSPECT_OUTPUT_LIMIT = 256_000;
 
 function trimOutput(value) {
   const text = String(value ?? '');

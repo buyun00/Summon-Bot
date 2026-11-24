@@ -82,7 +82,7 @@ export async function inspectNative(file, args, cwd, { signal, timeoutMs = 4000,
     windowsHide: true, detached: !windows, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
   const output = { stdout: '', stderr: '' };
   const decoders = Object.entries(output).map(([name]) => [name, pipeNativeText(child[name], chunk => {
-    if (output[name].length < 65_536) output[name] += chunk.slice(0, 65_536 - output[name].length);
+    if (output[name].length < 1_048_576) output[name] += chunk.slice(0, 1_048_576 - output[name].length);
   }, codex ? 'utf8' : encoding?.[name])]);
   child.stdin?.on('error', () => { /* The process can close stdin before exiting. */ });
   child.stdin?.end(input);

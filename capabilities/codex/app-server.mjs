@@ -415,7 +415,7 @@ if (mode === 'history') {
     const final = messages.findLast(item => item.phase === 'final_answer') || messages.at(-1);
     process.stdout.write(JSON.stringify({ threadId: thread.id, threadStatus: thread.status?.type, model: thread.model,
       effort: thread.reasoningEffort, ...(turn ? { turnId: turn.id, turnStatus: turn.status,
-        error: turn.error?.message, text: final?.text?.slice(0, 16000) } : {}) }) + '\n');
+        error: turn.error?.message, text: final?.text?.slice(0, 256_000) } : {}) }) + '\n');
     finish('completed');
   }).catch(error => { process.stderr.write(error.message + '\n'); finish('failed'); });
 }

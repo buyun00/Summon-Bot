@@ -101,7 +101,7 @@ export function transcriptPage(entries, cursor, limit, following = null) {
   if (cursor != null && position === -1) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
   let index = offset ? position : position + 1;
   const messages = [];
-  let remaining = 12000;
+  let remaining = 65_536;
   while (index < entries.length && messages.length < limit) {
     const entry = entries[index];
     const size = JSON.stringify(entry).length + 1;
@@ -114,8 +114,7 @@ export function transcriptPage(entries, cursor, limit, following = null) {
     if (messages.length) break;
     const source = JSON.stringify(entry.message);
     if (offset >= source.length) throw runtimeFailure('cursor_expired', 'The transcript entry has changed');
-    // JSON escaping can expand each UTF-16 code unit to six characters.
-    let end = Math.min(source.length, offset + 1900);
+    let end = Math.min(source.length, offset + 16_000);
     if (end < source.length && /[\uD800-\uDBFF]/.test(source[end - 1])) end--;
     messages.push({ id: entry.id, run_id: entry.run_id, message_fragment: source.slice(offset, end),
       encoding: 'json', offset, total_characters: source.length });
@@ -126,9 +125,15 @@ export function transcriptPage(entries, cursor, limit, following = null) {
   return { messages, next_cursor: index < entries.length ? messages.at(-1)?.id : following };
 }
 
-export function toolObservation(callId, value, isError = false) {
+export const DEFAULT_TOOL_OBSERVATION_LIMIT = 256_000;
+
+export function toolObservationLimitFor(contextWindow) {
+  if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0) return DEFAULT_TOOL_OBSERVATION_LIMIT;
+  return Math.max(DEFAULT_TOOL_OBSERVATION_LIMIT, Math.min(512_000, Math.floor(contextWindow * 0.6)));
+}
+
+export function toolObservation(callId, value, isError = false, limit = DEFAULT_TOOL_OBSERVATION_LIMIT) {
   const raw = JSON.stringify(value ?? null);
-  const limit = 24000;
   if (raw.length <= limit) return { content: [{ type: 'text', text: raw }], details: value, isError };
 
   const { kind, id, execution_ref, control } = value ?? {};
@@ -163,9 +168,10 @@ export function toolObservation(callId, value, isError = false) {
     return { content: [{ type: 'text', text: JSON.stringify(details) }], details, isError };
   }
   const previewLimit = Math.max(0, limit - executionLength);
+  const fallbackCursor = value?.next_cursor ?? (kind === 'session' && value?.output !== undefined ? 'output:0' : null);
   const details = { ...execution, preview: raw.slice(0, previewLimit), characters: raw.length, truncated: true,
     ...(callId ? { result_ref: { kind: 'call', id: callId } } : {}), status: value?.status, target: value?.target,
-    next_cursor: value?.next_cursor, ref: value?.ref, wait_guidance: value?.wait_guidance };
+    next_cursor: fallbackCursor, ref: value?.ref, wait_guidance: value?.wait_guidance };
   return { content: [{ type: 'text', text: JSON.stringify(details) }], details, isError };
 }
 

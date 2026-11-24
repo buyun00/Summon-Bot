@@ -25,8 +25,8 @@ export async function executionGuide({ example, includeExamples = false } = {}) 
   }
   return { path: fileURLToPath(resource), version, text };
 }
-const pageText = (text, offset = 0) => ({ text: text.slice(offset, offset + 12_000),
-  next_offset: offset + 12_000 < text.length ? offset + 12_000 : null });
+const pageText = (text, offset = 0) => ({ text: text.slice(offset, offset + 256_000),
+  next_offset: offset + 256_000 < text.length ? offset + 256_000 : null });
 const names = /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,119}$/;
 const description = name => `${name} execution through a locally installed CLI`;
 
@@ -80,9 +80,9 @@ export class ConnectionInitializer {
     const topic_help = topicRes ? [topicRes.stdout, topicRes.stderr].filter(Boolean).join('\n') : '';
     return { status: 'observed', cwd, version, help, topic_help,
       observations: [
-        { purpose: 'version', exitCode: versionRes.exitCode ?? null, stdout: versionRes.stdout.slice(0, 12_000), stderr: versionRes.stderr.slice(0, 12_000) },
-        { purpose: 'help', exitCode: helpRes.exitCode ?? null, stdout: helpRes.stdout.slice(0, 12_000), stderr: helpRes.stderr.slice(0, 12_000) },
-        ...(topicRes ? [{ purpose: 'topic_help', exitCode: topicRes.exitCode ?? null, stdout: topicRes.stdout.slice(0, 12_000), stderr: topicRes.stderr.slice(0, 12_000) }] : []),
+        { purpose: 'version', exitCode: versionRes.exitCode ?? null, stdout: versionRes.stdout.slice(0, 256_000), stderr: versionRes.stderr.slice(0, 256_000) },
+        { purpose: 'help', exitCode: helpRes.exitCode ?? null, stdout: helpRes.stdout.slice(0, 256_000), stderr: helpRes.stderr.slice(0, 256_000) },
+        ...(topicRes ? [{ purpose: 'topic_help', exitCode: topicRes.exitCode ?? null, stdout: topicRes.stdout.slice(0, 256_000), stderr: topicRes.stderr.slice(0, 256_000) }] : []),
       ] };
   }
 
