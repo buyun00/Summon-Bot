@@ -147,7 +147,7 @@
 
 </details>
 
-<details>
+<details open>
 <summary>
   <picture>
     <img src="docs/assets/readme-guide-en.svg" alt="Lead Bot & EggBot Guide Card: Click to expand the English continuous group chat walkthrough, multi-domain scenarios, and tool comparison" width="100%" />

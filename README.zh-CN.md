@@ -18,7 +18,7 @@
 
 <a id="top"></a>
 
-<details>
+<details open>
 <summary>
   <picture>
     <img src="docs/assets/readme-guide-zh.svg" alt="主控 Bot 引导卡片：点击展开简体中文一镜到底群聊实录、多场景演示与竞品对比导览" width="100%" />
