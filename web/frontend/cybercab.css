@@ -602,6 +602,53 @@ html.dark .outgoing .bot-mention {
 .message-attachment:hover { transform: translateY(-1px); border-color: var(--composer-focus-border); }
 .message-attachment small { color: var(--muted); }
 .message-attachment.has-image { cursor: zoom-in; }
+.message-attachment-row {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  border-radius: 14px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  overflow: hidden;
+  transition: border-color 160ms ease;
+}
+.message-attachment-row:hover {
+  border-color: var(--composer-focus-border);
+}
+.message-attachment-row .message-attachment-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  transform: none !important;
+  transition: background 140ms ease;
+}
+.message-attachment-row .message-attachment-open:hover {
+  background: var(--hover);
+  transform: none !important;
+}
+.message-attachment-row .message-attachment-open:active {
+  background: var(--active);
+}
+.message-attachment-download {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  color: var(--muted);
+  border-left: 1px solid var(--line);
+  transition: background 140ms ease, color 140ms ease;
+}
+.message-attachment-download:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.message-attachment-download:active {
+  background: var(--active);
+}
 .reference-chip {
   background: var(--hover);
   border: 1px solid var(--line);

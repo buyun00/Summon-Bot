@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, screen, session, shell, protocol, nativeTheme } = require('electron');
-const { join } = require('node:path');
-const { readFile, writeFile } = require('node:fs/promises');
+const { randomBytes } = require('node:crypto');
+const { basename, join } = require('node:path');
+const { mkdir, readFile, writeFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
 const { runtime, setupUrl, isFreshInstallSync, prepareLocalConnection } = require('./connection.cjs');
@@ -498,6 +499,35 @@ ipcMain.handle('summon:pick-directory', async event => {
   if (!owner || owner.isDestroyed()) return '';
   const result = await dialog.showOpenDialog(owner, { properties: ['openDirectory', 'createDirectory'] });
   return result.canceled ? '' : (result.filePaths?.[0] || '');
+});
+
+ipcMain.handle('summon:open-attachment', async (event, { url, name } = {}) => {
+  trusted(event, { allowMainWeb: true });
+  if (!connection?.origin || typeof url !== 'string' || !url.trim()) {
+    throw new Error('无效的文件地址');
+  }
+  const target = new URL(url, connection.origin);
+  if (target.origin !== connection.origin) {
+    throw new Error('仅支持打开当前工作台的文件');
+  }
+  if (!/^\/(?:hub\/nodes\/[^/]+\/)?api\/(?:attachments\/[^/]+|files\/[^/]+\/download|workspaces\/[^/]+\/file)/i.test(target.pathname)) {
+    throw new Error('不支持打开该路径');
+  }
+  const webSession = event.sender.session || session.defaultSession;
+  const response = await webSession.fetch(target.href);
+  if (!response.ok) {
+    throw new Error(`读取文件失败（HTTP ${response.status}）`);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const rawName = basename(String(name || 'file')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim();
+  const safeName = rawName && rawName !== '.' && rawName !== '..' ? rawName : 'file';
+  const dir = join(app.getPath('temp'), 'summon-open', randomBytes(4).toString('hex'));
+  await mkdir(dir, { recursive: true });
+  const filePath = join(dir, safeName);
+  await writeFile(filePath, bytes);
+  const openError = await shell.openPath(filePath);
+  if (openError) throw new Error(openError);
+  return { ok: true, path: filePath };
 });
 
 ipcMain.handle('summon:preview-desktop-intro', async event => {

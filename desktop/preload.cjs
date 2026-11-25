@@ -25,6 +25,7 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
       catch { return ''; }
     },
     pickDirectory: () => ipcRenderer.invoke('summon:pick-directory'),
+    openAttachment: options => ipcRenderer.invoke('summon:open-attachment', options || {}),
     previewDesktopIntro: () => ipcRenderer.invoke('summon:preview-desktop-intro'),
     settleIntroWindow: size => ipcRenderer.invoke('summon:intro-settle-window', size || {}),
     prepareIntroHandoff: options => ipcRenderer.invoke('summon:intro-prepare-handoff', options || {}),

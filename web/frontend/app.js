@@ -271,16 +271,16 @@ function renderSettingsPanelBody(tab) {
     </div>
     <div class="settings-section">
       <div class="settings-group-head">
-        <h3 class="settings-group-label">本机凭据与隐私输入</h3>
+        <h3 class="settings-group-label">本机凭据</h3>
       </div>
       <div class="settings-card">
         <div class="settings-row">
           <div class="settings-row-copy">
-            <strong>独立隐私输入窗（不经过 AI）</strong>
-            <small>直接向本机 runtime.env、云端中枢、模型凭据库或工作区 .env 安全写入密码、Token 与 API Key</small>
+            <strong>隐私输入</strong>
+            <small>管理 runtime.env 环境变量、中枢登录与 API Key</small>
           </div>
           <div class="settings-row-actions">
-            <button type="button" class="secondary-button small-button" data-action="open-secret-input" data-secret-tab="env">${icon('shield', 14)} 管理凭据 / 隐私输入</button>
+            <button type="button" class="secondary-button small-button" data-action="open-secret-input" data-secret-tab="env">${icon('shield', 14)} 打开</button>
           </div>
         </div>
       </div>
@@ -544,9 +544,21 @@ function renderMessageAttachments(items = []) {
       return '<div><button type="button" class="message-attachment has-image" data-action="preview-image" data-src="' + esc(thumbnail) + '" data-download="' + esc(url) + '" data-name="' + esc(name) + '">' +
         '<img src="' + esc(thumbnail) + '" alt="' + esc(name) + '" loading="lazy">' + title + '</button></div>';
     }
-    return '<div><a class="message-attachment" href="' + esc(url) + '" download="' + esc(name) + '">' +
-      icon('file', 24) + title + '</a>' +
-      (view ? '<a class="text-button" href="' + esc(view) + '" target="_blank" rel="noopener noreferrer">打开预览</a>' : '') + '</div>';
+    const fileIdMatch = typeof item.url === 'string' ? item.url.match(/^\/api\/files\/([^/?#]+)\/download/i) : null;
+    const fileId = fileIdMatch ? decodeURIComponent(fileIdMatch[1]) : '';
+    return '<div class="message-attachment-row">' +
+      '<button type="button" class="message-attachment message-attachment-open" data-action="open-attachment"' +
+        ' data-url="' + esc(url) + '"' +
+        (view ? ' data-view="' + esc(view) + '"' : '') +
+        (fileId ? ' data-file-id="' + esc(fileId) + '"' : '') +
+        ' data-name="' + esc(name) + '"' +
+        ' title="使用默认程序打开">' +
+        icon('file', 24) + title +
+      '</button>' +
+      '<a class="message-attachment-download" href="' + esc(url) + '" download="' + esc(name) + '" title="下载文件" aria-label="下载 ' + esc(name) + '">' +
+        icon('install', 16) +
+      '</a>' +
+    '</div>';
   });
   return '<div class="message-attachments">' + cards.join('') + '</div>';
 }
@@ -2608,6 +2620,24 @@ async function act(action, element) {
     return;
   }
   if (action === 'open-file') return openReference({ kind:'file',id });
+  if (action === 'open-attachment') {
+    const url = element?.dataset?.url || '';
+    const view = element?.dataset?.view || '';
+    const fileId = element?.dataset?.fileId || '';
+    const name = element?.dataset?.name || 'file';
+    if (window.SummonDesktop?.openAttachment && url) {
+      try {
+        await window.SummonDesktop.openAttachment({ url, name });
+      } catch (error) {
+        toast(error?.message || '无法使用默认程序打开文件', true);
+      }
+      return;
+    }
+    if (fileId) return openReference({ kind: 'file', id: fileId });
+    if (view) { window.open(view, '_blank', 'noopener,noreferrer'); return; }
+    if (url) { window.open(url, '_blank', 'noopener,noreferrer'); return; }
+    return;
+  }
   if (action === 'open-file-revision') {
     const targetRev = Number(element.dataset.revision);
     const latestRev = ui.fileDetail?.latest_revision ?? ui.fileDetail?.revision;
@@ -3532,43 +3562,31 @@ function renderMessagePrompt(message, timeline) {
         <div class="prompt-answer-row"><span class="prompt-answer-q">${kind === 'secret' ? '已取消本次隐私输入' : '已跳过本次选择，由 Bot 自行处理'}</span></div>
       </div>`;
     }
-    const doneLabel = kind === 'secret' ? '已安全直达' : kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
-    const deliveryMeta = answered.secret_delivery;
+    const doneLabel = kind === 'secret' ? '已提交' : kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
     const rows = answered.answers.map(ans => {
       if (ans.redacted) {
-        return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-redacted">${icon('lock', 12)} 已安全直达（未经过 AI）</span></div>`;
+        return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-redacted">••••••</span></div>`;
       }
       const parts = [...(ans.selected_labels || [])];
       if (ans.custom_text) parts.push(ans.custom_text);
       return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-v">${esc(parts.join(' · ') || '—')}</span></div>`;
     }).join('');
-    const deliveryRow = kind === 'secret' && deliveryMeta?.target_label
-      ? `<div class="prompt-answer-row"><span class="prompt-answer-q">直达目标</span><span class="prompt-answer-v">${esc(deliveryMeta.target_label)}</span></div>`
-      : '';
     return `<div class="prompt-card is-${esc(kind)} is-answered" data-prompt-msg="${esc(message.id)}">
-      <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon(kind === 'secret' ? 'shield' : 'check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
-      <div class="prompt-answer-list">${deliveryRow}${rows}</div>
+      <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon('check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+      <div class="prompt-answer-list">${rows}</div>
     </div>`;
   }
   const busy = ui.promptSubmitting.has(message.id);
   if (kind === 'secret') {
-    const destText = window.SummonSecretInput?.targetDestinationText?.(prompt.secret_target) || prompt.secret_target?.label || '本机凭据库 (runtime.env)';
-    const fieldsHtml = prompt.questions.map(q => {
-      const isSecret = q.mode === 'secret' || q.secret === true;
-      return `<span class="prompt-secret-field-pill ${isSecret ? 'is-masked' : ''}">${isSecret ? icon('lock', 12) : ''}${esc(q.label)}${q.env_name ? ` · ${esc(q.env_name)}` : ''}${!isSecret && q.default_value ? ` (${esc(q.default_value)})` : ''}</span>`;
-    }).join('');
+    const openLabel = prompt.submit_label || (prompt.secret_target?.kind === 'hub_login' ? '登录' : '填写');
     return `<div class="prompt-card is-secret" data-prompt-msg="${esc(message.id)}">
       <div class="prompt-card-head">
         <span class="prompt-kind-badge">${icon('shield', 13)} 隐私输入</span>
         ${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}
       </div>
-      ${prompt.description ? `<p class="prompt-secret-desc">${esc(prompt.description)}</p>` : ''}
-      <div class="prompt-secret-route">${icon('lock', 13)} <span>直达目标：</span><strong>${esc(destText)}</strong><span>· 不经过 AI</span></div>
-      <div class="prompt-secret-fields">${fieldsHtml}</div>
       <div class="prompt-card-foot">
-        <span class="prompt-enter-hint">独立窗口 · 提交即清空</span>
         <button type="button" class="secondary-button prompt-skip-btn" data-action="prompt-skip" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>取消</button>
-        <button type="button" class="primary-button prompt-submit-btn prompt-secret-open-btn" data-action="prompt-secret-open" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>${icon('shield', 14)} ${busy ? '提交中…' : '打开隐私输入窗'}</button>
+        <button type="button" class="primary-button prompt-submit-btn prompt-secret-open-btn" data-action="prompt-secret-open" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>${busy ? '提交中…' : esc(openLabel)}</button>
       </div>
     </div>`;
   }
@@ -3630,6 +3648,14 @@ function openSecretPromptModal(msgId) {
   const prompt = message?.prompt;
   if (!prompt || prompt.kind !== 'secret') return;
   window.SummonSecretInput?.openForPrompt?.(message, {
+    onStart: () => {
+      ui.promptSubmitting.add(msgId);
+      render();
+    },
+    onError: () => {
+      ui.promptSubmitting.delete(msgId);
+      render();
+    },
     onSubmitted: async ({ answers, secret_delivery, summaryText }) => {
       const mentions = message.senderId && message.senderId !== 'user' && message.senderId !== 'system' && room.members.includes(message.senderId)
         ? [message.senderId] : [];
@@ -3643,8 +3669,6 @@ function openSecretPromptModal(msgId) {
           ...(secret_delivery ? { secret_delivery } : {}),
         },
       };
-      ui.promptSubmitting.add(msgId);
-      render();
       try {
         const entry = queueLocalMessage(room.id, payload, []);
         await sendLocalMessage(entry, true);
@@ -3733,7 +3757,7 @@ async function skipPromptCard(msgId) {
     ? [message.senderId] : [];
   const kind = prompt.kind || 'question';
   const payload = {
-    text: kind === 'secret' ? '已取消本次隐私输入' : kind === 'permission' ? '已跳过权限确认' : '已跳过选择，由你自行处理',
+    text: kind === 'secret' ? '已取消' : kind === 'permission' ? '已跳过权限确认' : '已跳过选择，由你自行处理',
     mentions,
     reply_to: messageRef(message.id),
     prompt_response: { prompt_message_id: message.id, skipped: true, answers: [] },
@@ -3799,23 +3823,23 @@ function renderRoomPendingPrompts() {
           </button>`;
         }).join('')}</div>`
       : `<div class="prompt-custom-wrap"><input type="${isSecretText ? 'password' : 'text'}" id="${esc(inputId)}" class="exec-prompt-input prompt-custom-input"
-          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="${isSecretText ? '隐私直达目标会话，不入聊天（Enter 提交）…' : '输入回答，按 Enter 提交…'}"
+          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="${isSecretText ? '隐私输入（Enter 提交）' : '输入回答，按 Enter 提交…'}"
           ${isSecretText ? 'autocomplete="off" spellcheck="false"' : ''} ${busy ? 'disabled' : ''}></div>`;
     const secretToggleBtn = !choices.length
-      ? `<button type="button" class="exec-secret-toggle ${isSecretText ? 'active' : ''}" data-action="exec-prompt-toggle-secret" data-exec-key="${esc(key)}" data-question="${esc(req.question || '')}" title="切换隐藏隐私输入" ${busy ? 'disabled' : ''}>${icon('lock', 12)} ${isSecretText ? '隐私输入中' : '隐私模式'}</button>`
+      ? `<button type="button" class="exec-secret-toggle ${isSecretText ? 'active' : ''}" data-action="exec-prompt-toggle-secret" data-exec-key="${esc(key)}" data-question="${esc(req.question || '')}" ${busy ? 'disabled' : ''}>${icon('lock', 12)} 隐私</button>`
       : '';
     return `<div class="prompt-card exec-pending-card ${isSecretText ? 'is-secret' : isApproval ? 'is-permission' : 'is-question'}" data-exec-key="${esc(key)}">
       <div class="prompt-card-head">
-        <span class="prompt-kind-badge">${isSecretText ? `${icon('shield', 12)} 隐私会话输入` : isApproval ? '执行权限审批' : '执行会话提问'}</span>
+        <span class="prompt-kind-badge">${isSecretText ? `${icon('shield', 12)} 隐私输入` : isApproval ? '执行权限审批' : '执行会话提问'}</span>
         <strong class="prompt-title">${esc(actorLabel)}${exec.engine ? ` · ${esc(exec.engine)}` : ''}</strong>
         ${secretToggleBtn}
       </div>
       ${req.question ? `<p class="exec-pending-question">${esc(req.question)}</p>` : ''}
       ${body}
       <div class="prompt-card-foot">
-        <span class="prompt-enter-hint">${isSecretText ? '直达会话 · 自动脱敏' : 'Enter 提交'}</span>
+        <span class="prompt-enter-hint">Enter 提交</span>
         ${skipId ? `<button type="button" class="secondary-button prompt-skip-btn" data-action="exec-prompt-skip" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>跳过</button>` : ''}
-        <button type="button" class="primary-button prompt-submit-btn ${isSecretText ? 'prompt-secret-open-btn' : ''}" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isSecretText ? '隐私提交' : isApproval ? '确认审批' : '提交回答'}</button>
+        <button type="button" class="primary-button prompt-submit-btn ${isSecretText ? 'prompt-secret-open-btn' : ''}" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isSecretText ? '提交' : isApproval ? '确认审批' : '提交回答'}</button>
       </div>
     </div>`;
   }).join('')}</div>`;
@@ -3851,7 +3875,7 @@ async function submitExecPromptCard(key, overrideValue = null) {
     }
     ui.execPromptDrafts.delete(key);
     ui.execPromptMasked.delete(key);
-    toast(overrideValue ? '已跳过该执行请求' : isSecretText ? '已通过隐私通道直达执行会话' : item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
+    toast(overrideValue ? '已跳过该执行请求' : isSecretText ? '已提交' : item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
     await refresh();
   } finally {
     ui.execPromptBusy.delete(key);
@@ -4526,7 +4550,7 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
         <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="给 ${esc(room.name)} 发消息">${esc(ui.drafts[room.id] || '')}</textarea>
         <div class="composer-tools"><div class="menu-anchor">${members.length ? `<button class="composer-mention ${mentions.length ? 'has-target' : ''}" type="button"
           data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
-          <button class="icon-button composer-secret-btn" type="button" data-action="open-secret-input" title="独立隐私输入窗（账号/密码/Key 直达目标，不经过 AI）" aria-label="独立隐私输入窗">${icon('shield',18)}</button>
+          <button class="icon-button composer-secret-btn" type="button" data-action="open-secret-input" title="隐私输入" aria-label="隐私输入">${icon('shield',18)}</button>
           <button class="icon-button" type="button" data-action="add-reference" title="添加资料引用" aria-label="添加资料引用">${icon('link',18)}</button></div>
         <button type="submit" class="composer-send" ${sendBusy(room.id) ? 'disabled' : ''} aria-label="发送消息">${icon('send',22)}</button>
       </form>
