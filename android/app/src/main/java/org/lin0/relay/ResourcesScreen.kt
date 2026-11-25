@@ -76,7 +76,7 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
         try {
             if (section == ResourceSection.Bots) store.refresh()
             else if (section == ResourceSection.Connections) {
-                items = store.request("/api/bundled-bots")["items"].array.orEmpty()
+                items = store.request("/api/engines")["items"].array.orEmpty()
                 directories = store.list("/api/workspaces")
             } else items = store.list(path)
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -133,31 +133,36 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
                 Text("各群聊的基础消息关注规则请在对应群聊详情中调整。", color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
             ResourceSection.Connections -> {
-                Text("预置专职 Bot 库", style = MaterialTheme.typography.titleMedium)
+                Text("工作引擎", style = MaterialTheme.typography.titleMedium)
                 items.forEach { item ->
                     val id = item["id"].string ?: return@forEach
-                    val installed = item["installed"].bool == true
-                    val botId = item["bot_id"].string
+                    val enabled = item["enabled"].bool == true
+                    val available = item["available"].bool == true
+                    val statusText = if (available) "已就绪" else if (!enabled) "已停用" else "未检测到 CLI"
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
-                            Text(item["name"].string ?: id, style = MaterialTheme.typography.titleSmall)
-                            item["public_duty"].string?.takeIf { it.isNotEmpty() }?.let {
+                            Text("${item["name"].string ?: id} · $statusText", style = MaterialTheme.typography.titleSmall)
+                            item["summary"].string?.takeIf { it.isNotEmpty() }?.let {
                                 Text(it, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                             }
                         }
-                        if (installed && botId != null) {
-                            TextButton(onClick = { detail = SummonReference("bot", botId) }) { Text("查看") }
-                        } else {
-                            TextButton(enabled = store.protocolReady && !loading, onClick = {
-                                scope.launch {
-                                    try {
-                                        store.request("/api/bundled-bots/activate", "POST", SummonJson.obj("id" to SummonJson.Str(id), "wake" to SummonJson.Bool(true)))
-                                        store.refresh()
-                                        reload()
-                                    } catch (failure: Exception) { error = failure.localizedMessage }
-                                }
-                            }) { Text("激活") }
-                        }
+                        TextButton(enabled = store.protocolReady && !loading, onClick = {
+                            scope.launch {
+                                try {
+                                    store.request("/api/engines/${SummonApiClient.component(id)}/check", "POST", SummonJson.obj("wake" to SummonJson.Bool(true)))
+                                    store.refresh()
+                                } catch (failure: Exception) { error = failure.localizedMessage }
+                            }
+                        }) { Text("自检") }
+                        TextButton(enabled = store.protocolReady && !loading, onClick = {
+                            scope.launch {
+                                try {
+                                    store.request("/api/engines/${SummonApiClient.component(id)}", "PATCH", SummonJson.obj("enabled" to SummonJson.Bool(!enabled)))
+                                    store.refresh()
+                                    reload()
+                                } catch (failure: Exception) { error = failure.localizedMessage }
+                            }
+                        }) { Text(if (enabled) "停用" else "启用") }
                     }
                 }
                 Text("执行目录", style = MaterialTheme.typography.titleMedium)

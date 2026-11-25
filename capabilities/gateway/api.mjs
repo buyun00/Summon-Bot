@@ -1,6 +1,6 @@
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
-import { listBotFolderFiles, listBotMemoryItems, previewBundledBot, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
+import { listBotFolderFiles, listBotMemoryItems, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
 import { roleCatalog } from '../bot-management/roles.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
 
@@ -84,7 +84,7 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       const state = {
         bots: visible.filter(bot => !bot.archivedAt).map(enrichBot),
         archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(enrichBot),
-        bundledBots: platform.manager.bundledCatalog(),
+        engines: platform.engines.list(),
         roles: roleCatalog,
         rooms: allRooms.filter(item => !item.archived_at),
         archivedRooms: allRooms.filter(item => Boolean(item.archived_at)),
@@ -116,18 +116,32 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       if (method === 'GET') return list('room', params);
       if (method === 'POST') return mutation('create_room', args, clientId);
     }
-    if (path === '/api/bundled-bots' && method === 'GET') {
-      return { items: platform.manager.bundledCatalog(), localLogins: await models.localLogins() };
+    if (path === '/api/engines' && method === 'GET') {
+      return { items: platform.engines.list({ fresh: true }) };
     }
-    if ((match = path.match(/^\/api\/bundled-bots\/([^/]+)$/)) && method === 'GET') {
+    if ((match = path.match(/^\/api\/engines\/([^/]+)\/file$/))) {
       const id = decodeURIComponent(match[1]);
-      const preview = previewBundledBot(platform.releaseRoot, id);
-      const active = platform.manager.findByBundledId(id) || (id === 'eggbot' ? platform.manager.eggBot() : null);
-      return { ...preview, installed: Boolean(active), bot_id: active?.id || null };
+      if (method === 'GET') {
+        return { engine_id: id, ...platform.engines.readFile(id, params.get('path') || '') };
+      }
+      if (method === 'PUT' || method === 'POST') {
+        const written = platform.engines.writeFile(id, args.path, args.content);
+        emit('engine');
+        return { engine_id: id, ...written };
+      }
     }
-    if (path === '/api/bundled-bots/activate' && method === 'POST') {
-      if (typeof args.id !== 'string' || !args.id.trim()) reject('invalid_arguments', 'Specify a bundled Bot id');
-      return platform.activateBundledBot(args.id.trim(), { roomId: args.room_id || args.roomId || null, wake: args.wake !== false });
+    if ((match = path.match(/^\/api\/engines\/([^/]+)\/check$/)) && method === 'POST') {
+      const id = decodeURIComponent(match[1]);
+      return platform.checkWorkEngine(id, { roomId: args.room_id || args.roomId || null, wake: args.wake !== false });
+    }
+    if ((match = path.match(/^\/api\/engines\/([^/]+)$/))) {
+      const id = decodeURIComponent(match[1]);
+      if (method === 'GET') return platform.engines.get(id, { fresh: true });
+      if (method === 'PATCH') {
+        const updated = platform.engines.setEnabled(id, args.enabled === undefined ? null : args.enabled);
+        emit('engine');
+        return updated;
+      }
     }
     if ((match = path.match(/^\/api\/bots\/([^/]+)\/files$/)) && method === 'GET') {
       const id = decodeURIComponent(match[1]);
@@ -324,7 +338,7 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         platform.initializeDefaults();
         platform.runtime.resumeRecoveredRuns({ kind: 'model', id: args.connectionId });
       }
-      return platform.startOnboarding({ activateBundled: args.activateBundled || args.activate_bundled || null });
+      return platform.startOnboarding({ checkEngine: args.checkEngine || args.check_engine || args.activateBundled || args.activate_bundled || null });
     }
     if (path === '/api/onboarding/finish' && method === 'POST') {
       return platform.finishOnboarding();

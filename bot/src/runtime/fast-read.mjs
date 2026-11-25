@@ -52,7 +52,7 @@ const fastReadRules = [
 ].join('\n\n');
 
 function buildFastReadSystem(bot, room, members, instructions, namingContext = null) {
-  const duty = builtInInstructions(bot.built_in_role, []);
+  const duty = builtInInstructions(bot.built_in_role, bot.id);
   const identityLines = [
     `Bot ID: ${bot.id}`,
     `名称: ${bot.name}`,

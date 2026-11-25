@@ -129,7 +129,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (kind === 'workspace') return '正在查找工作区';
       if (kind === 'file') return args.query ? `正在搜索资料 ${compactActivityText(args.query, 18)}` : '正在查找资料';
       if (kind === 'bot') return '正在查看成员列表';
-      if (kind === 'bundled_bot') return '正在查看预置 Bot 库';
+      if (kind === 'engine') return '正在查看工作引擎';
       if (kind === 'execution') return '正在查看执行状态';
       if (kind === 'event') return '正在检索群记录';
       if (kind === 'wakeup') return '正在查看提醒规则';
@@ -146,6 +146,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (refKind === 'session' || refKind === 'conversation') return '正在查看执行输出';
       if (refKind === 'event') return '正在查看消息详情';
       if (refKind === 'bot') return args.path ? `正在读取 ${shortPathLabel(args.path)}` : '正在查看成员配置';
+      if (refKind === 'engine') return args.path ? `正在读取工作引擎 ${shortPathLabel(args.path)}` : '正在查看工作引擎';
       if (refKind === 'room') return '正在读取群信息';
       return '正在读取内容';
     }
@@ -154,7 +155,6 @@ function describeToolActivity(name, args = {}, platform = null) {
       return target ? `正在写入 ${target}` : '正在保存资料';
     }
     case 'create_bot':
-      if (args.bundled_id) return `正在激活预置 Bot ${compactActivityText(args.bundled_id, 16)}`;
       return args.name ? `正在创建成员 ${compactActivityText(args.name, 16)}` : '正在创建成员';
     case 'configure_bot':
       return args.name ? `正在更新成员名称为 ${compactActivityText(args.name, 16)}` : '正在更新成员配置';
@@ -1184,10 +1184,10 @@ export class BotRuntime {
     if (workEngines.length) {
       facts.push(textMessage({
         type: 'work_engines',
-        engines: workEngines.map(({ id, name, duty, recommended_models }) => ({
+        engines: workEngines.map(({ id, name, summary, recommended_models }) => ({
           id,
           name,
-          duty,
+          summary,
           ...(recommended_models?.length ? { recommended_models } : {}),
         })),
       }));

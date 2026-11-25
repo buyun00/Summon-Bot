@@ -2,6 +2,6 @@
   "id": "eggbot",
   "name": "EggBot",
   "role_id": "eggbot",
-  "public_duty": "团队孵化与协作改善伙伴，按需建群、增配专职成员（含工具专职 Bot）与优化协作分工",
+  "public_duty": "团队孵化与协作改善伙伴，按需建群、增配业务专职成员与优化协作分工",
   "env_slots": []
 }

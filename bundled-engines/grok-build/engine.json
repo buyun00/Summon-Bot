@@ -1,0 +1,9 @@
+{
+  "id": "grok-build",
+  "name": "Grok Build",
+  "summary": "xAI Grok Build CLI：代码开发、工程调研与自动化脚本任务",
+  "command": "grok",
+  "script": "bridge.mjs",
+  "model_provider": "grok",
+  "env_slots": ["XAI_API_KEY"]
+}

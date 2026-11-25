@@ -11,7 +11,7 @@ enum ResourceSection: String, CaseIterable, Identifiable {
         case .executions: "执行会话"
         case .files: "资料"
         case .wakeups: "订阅与提醒"
-        case .connections: "预置 Bot 与目录"
+        case .connections: "工作引擎与目录"
         }
     }
     var symbol: String {
@@ -23,7 +23,7 @@ enum ResourceSection: String, CaseIterable, Identifiable {
         case .connections: "puzzlepiece.extension"
         }
     }
-    var endpoint: String { self == .connections ? "/api/bundled-bots" : "/api/\(rawValue)" }
+    var endpoint: String { self == .connections ? "/api/engines" : "/api/\(rawValue)" }
 }
 
 struct SummonProtocolNotice: View {
@@ -169,31 +169,37 @@ struct SummonObjectList: View {
 
     private var connectionSections: some View {
         Group {
-            Section("预置专职 Bot 库") {
+            Section("工作引擎") {
                 ForEach(items, id: \.prettyPrinted) { item in
                     let id = item["id"].stringValue
-                    let installed = item["installed"].bool == true
+                    let enabled = item["enabled"].bool == true
+                    let available = item["available"].bool == true
+                    let statusText = available ? "已就绪" : (!enabled ? "已停用" : "未检测到 CLI")
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(item["name"].string ?? id)
-                            if let duty = item["public_duty"].string, !duty.isEmpty {
-                                Text(duty).summonFont(.caption).foregroundStyle(.secondary)
+                            Text("\(item["name"].string ?? id) · \(statusText)")
+                            if let summary = item["summary"].string, !summary.isEmpty {
+                                Text(summary).summonFont(.caption).foregroundStyle(.secondary)
                             }
                         }
                         Spacer()
-                        if installed, let botId = item["bot_id"].string {
-                            NavigationLink("查看") { BotDetailsView(botID: botId) }
-                        } else {
-                            Button("激活") {
-                                Task {
-                                    do {
-                                        _ = try await store.request(path: "/api/bundled-bots/activate", method: "POST", body: .object(["id": .string(id), "wake": .bool(true)]))
-                                        await store.refresh()
-                                        await reload()
-                                    } catch { self.error = error.localizedDescription }
-                                }
-                            }.disabled(!store.protocolReady || loading)
-                        }
+                        Button("自检") {
+                            Task {
+                                do {
+                                    _ = try await store.request(path: "/api/engines/\(SummonAPIClient.component(id))/check", method: "POST", body: .object(["wake": .bool(true)]))
+                                    await store.refresh()
+                                } catch { self.error = error.localizedDescription }
+                            }
+                        }.disabled(!store.protocolReady || loading)
+                        Button(enabled ? "停用" : "启用") {
+                            Task {
+                                do {
+                                    _ = try await store.request(path: "/api/engines/\(SummonAPIClient.component(id))", method: "PATCH", body: .object(["enabled": .bool(!enabled)]))
+                                    await store.refresh()
+                                    await reload()
+                                } catch { self.error = error.localizedDescription }
+                            }
+                        }.disabled(!store.protocolReady || loading)
                     }
                 }
             }
@@ -217,10 +223,10 @@ struct SummonObjectList: View {
         do {
             if section == .bots { await store.refresh(); return }
             if section == .connections {
-                async let bundled = store.request(path: "/api/bundled-bots")
+                async let enginesRes = store.request(path: "/api/engines")
                 async let workspaces = store.list("/api/workspaces")
-                let (b, w) = try await (bundled, workspaces)
-                items = b["items"].array ?? []
+                let (e, w) = try await (enginesRes, workspaces)
+                items = e["items"].array ?? []
                 directories = w
             } else {
                 items = try await store.list(path)

@@ -4,9 +4,10 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { botMaintenanceRoomId, groupLeadRole, roleIds } from '../bot-management/roles.mjs';
+import { botMaintenanceLeadId, botMaintenanceRoomId, groupLeadRole, roleIds } from '../bot-management/roles.mjs';
 import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
+import { EngineManager } from '../engines/service.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
@@ -32,6 +33,7 @@ export class SummonPlatform {
     this.roomActivityLog = new Map();
     this.resources = new HostResources(store);
     this.manager = new BotManager({ store, dataRoot, releaseRoot, models, canUseModel: (actor, id) => this.canUseModel(actor, id) });
+    this.engines = new EngineManager({ store, dataRoot, releaseRoot });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit, chatroom: () => this.room,
       onEnqueue: () => this.scheduleFlush(),
       canReadEvent: (botId, event) => this.canReadEvent(event, { actor: { kind: 'bot', id: botId } }),
@@ -93,6 +95,7 @@ export class SummonPlatform {
 
   initializeDefaults() {
     const defaultWs = this.ensureDefaultWorkspace();
+    this.engines.ensureDefaults();
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
     this.room.ensureMaintenanceRoom({ defaultWorkspaceId: defaultWs?.id || null });
     this.store.transaction(() => {
@@ -101,33 +104,27 @@ export class SummonPlatform {
     if (changed) this.emit('bot');
   }
 
-  activateBundledBot(bundledId, { roomId = null, actor = user, wake = true } = {}) {
+  checkWorkEngine(engineId, { roomId = null, wake = true } = {}) {
     this.initializeDefaults();
-    const { bot, created } = this.manager.activateBundled(bundledId, { actor });
-    const view = this.manager.view(bot, actor);
-    if (created) this.emit('bot', view);
+    const engine = this.engines.get(engineId, { fresh: true });
     const targetRoomId = roomId || botMaintenanceRoomId;
     const targetRoom = this.store.get('rooms', targetRoomId);
-    if (targetRoom && !targetRoom.archivedAt) {
-      if (!targetRoom.members.includes(bot.id)) {
-        this.room.configureRoom(targetRoom.id, { revision: targetRoom.revision, add_members: [bot.id] }, 'user');
-      }
-      const catalog = this.models.catalog();
-      const hasActiveModel = Boolean(catalog.activeId && this.models.isConfigured(
-        catalog.connections.find(item => item.id === catalog.activeId),
-      ));
-      let wakeMessageId = null;
-      if (created && wake && hasActiveModel && bundledId !== 'eggbot') {
-        const sent = this.room.send(targetRoom.id, {
-          text: `@${bot.name} 请在后台自检本机环境、CLI 与桥接脚本（缺凭据用隐私输入窗向我获取，版本有变自行调整 scripts/）。每完成一步简短发一句进展；全部验证正常时只用一两句简洁自然的话告知用户已就绪，不要提及退出码、脚本路径或内部技术细节；若确实存在无法自愈的异常，再直接明确报错并说明原因。`,
-          mentions: [{ kind: 'bot', id: bot.id }],
-        }, 'user');
-        wakeMessageId = sent?.message?.id || sent?.id || null;
-        this.runtime?.wake?.();
-      }
-      return { bot: view, created, room_id: targetRoom.id, wake_message_id: wakeMessageId };
+    const leadId = targetRoom?.lead_bot_id || botMaintenanceLeadId;
+    const leadBot = this.store.get(botRecords, leadId);
+    let wakeMessageId = null;
+    const catalog = this.models.catalog();
+    const hasActiveModel = Boolean(catalog.activeId && this.models.isConfigured(
+      catalog.connections.find(item => item.id === catalog.activeId),
+    ));
+    if (wake && targetRoom && !targetRoom.archivedAt && leadBot && hasActiveModel) {
+      const sent = this.room.send(targetRoom.id, {
+        text: `@${leadBot.name} 请在后台自检工作引擎 ${engine.name}（id: ${engine.id}）：先读取其 guide.md，检查本机 CLI 安装、登录态与桥接脚本（缺凭据用隐私输入窗向我获取，协议有变自行调整 engines/${engine.id}/bridge.mjs 并更新 guide.md）。全部验证正常时只用一两句简洁自然的话告知已就绪，不要提及退出码、脚本路径或内部技术细节；若存在无法自愈的问题再明确报错并说明原因。`,
+        mentions: [{ kind: 'bot', id: leadBot.id }],
+      }, 'user');
+      wakeMessageId = sent?.message?.id || sent?.id || null;
+      this.runtime?.wake?.();
     }
-    return { bot: view, created, room_id: null, wake_message_id: null };
+    return { engine, room_id: targetRoom?.id || null, bot_id: leadBot?.id || null, bot_name: leadBot?.name || 'Summon', wake_message_id: wakeMessageId };
   }
 
   onboardingState() {
@@ -155,35 +152,39 @@ export class SummonPlatform {
     };
   }
 
-  startOnboarding({ activateBundled = null } = {}) {
+  startOnboarding({ checkEngine = null } = {}) {
     this.initializeDefaults();
     const catalog = this.models.catalog();
     const activeConn = catalog.connections.find(item => item.id === catalog.activeId);
     const hasActiveModel = Boolean(activeConn && this.models.isConfigured(activeConn));
-    const bundledId = activateBundled || (activeConn?.kind === 'codex' ? 'codex' : activeConn?.kind === 'grok' ? 'grok-build' : null);
+    const preferredEngineId = checkEngine
+      || (activeConn?.kind === 'codex' ? 'codex' : activeConn?.kind === 'grok' ? 'grok-build' : null)
+      || this.engines.available({ fresh: true })[0]?.id
+      || null;
     const nowIso = new Date().toISOString();
-    let activated = null;
-    if (bundledId) {
+    let checked = null;
+    if (preferredEngineId && hasActiveModel) {
       try {
-        activated = this.activateBundledBot(bundledId, { roomId: botMaintenanceRoomId, wake: true });
+        checked = this.checkWorkEngine(preferredEngineId, { roomId: botMaintenanceRoomId, wake: true });
       } catch {}
     }
-    const configuringBot = Boolean(activated?.bot && activated.created);
+    const configuringEngine = Boolean(checked?.engine && checked.wake_message_id);
     const next = {
       id: 'onboarding',
-      status: configuringBot ? 'configuring_bot' : 'completed',
+      status: configuringEngine ? 'configuring_bot' : 'completed',
       roomId: botMaintenanceRoomId,
-      ...(configuringBot ? {
-        bundledId,
-        botId: activated.bot.id,
-        botName: activated.bot.name,
-        wakeMessageId: activated.wake_message_id || null,
+      ...(configuringEngine ? {
+        engineId: checked.engine.id,
+        engineName: checked.engine.name,
+        botId: checked.bot_id,
+        botName: checked.bot_name,
+        wakeMessageId: checked.wake_message_id,
       } : { completedAt: nowIso }),
       startedAt: nowIso,
     };
     this.store.save('platform-settings', next);
     this.emit('onboarding', next);
-    return { ...next, hasActiveModel, activatedBot: activated?.bot || null };
+    return { ...next, hasActiveModel, engine: checked?.engine || null };
   }
 
   finishOnboarding() {
@@ -277,7 +278,6 @@ export class SummonPlatform {
       };
     }
     if (name === 'create_bot') {
-      if (args.bundled_id) return { summary: `激活预置 Bot「${args.bundled_id}」` };
       const role = args.role_id ? ` [${args.role_id}]` : '';
       return { summary: `创建 Bot「${args.name || '未命名'}」${role}` };
     }
@@ -341,10 +341,10 @@ export class SummonPlatform {
   getBot(id) { return this.manager.get(id); }
   listBots() { return this.manager.list(); }
 
-  workEngines() {
+  workEngines(options = {}) {
     let externalEngines = null;
     try { externalEngines = this.models.catalog()?.externalEngines || null; } catch {}
-    return this.manager.workEngines().map(engine => {
+    return this.engines.available(options).map(engine => {
       const rec = externalEngines?.[engine.id]?.recommended;
       const recommended_models = Array.isArray(rec) && rec.length
         ? rec.map(item => ({ model: item.model, efforts: Array.isArray(item.efforts) ? item.efforts : [] }))
@@ -354,6 +354,10 @@ export class SummonPlatform {
         ...(recommended_models ? { recommended_models } : {}),
       };
     });
+  }
+
+  canConfigureEngine(actor) {
+    return actor?.kind === 'user' || (actor?.kind === 'bot' && actor.id === botMaintenanceLeadId);
   }
 
   applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty } = {}) {
@@ -551,6 +555,7 @@ export class SummonPlatform {
         return Boolean(call && this.calls.canRead(actor, call, context));
       }
       case 'workspace': return this.workspaceAvailable(ref.id, actor, context);
+      case 'engine': return this.engines.list().some(item => item.id === ref.id);
       case 'wakeup': return this.deliveries.list(context).some(item => item.id === ref.id);
       default: return false;
     }
@@ -870,7 +875,7 @@ export class SummonPlatform {
         });
       }
       engine = matched.id;
-      work_engine = { bot_id: matched.bot_id, script: matched.script, env_slots: matched.env_slots };
+      work_engine = { id: matched.id, script: matched.script };
     }
     const space = args.space ?? context.session?.space ?? actor;
     const sharing = options.sharing(actor, space);
@@ -1118,6 +1123,20 @@ export class SummonPlatform {
         this.emit('bot', result);
         return { result, call_id: record.id };
       }
+      if (name === 'save_file' && args.space.kind === 'engine') {
+        if (!this.canConfigureEngine(context.actor)) {
+          reject('configuration_forbidden', 'Only the host or the Summon maintenance lead can modify work engine files', 403);
+        }
+        const content = typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
+        if (typeof content !== 'string') reject('invalid_content', 'Provide text content when saving into an engine folder');
+        const written = this.engines.writeFile(args.space.id, args.path, content);
+        this.emit('engine');
+        const result = this.store.transaction(() => {
+          this.calls.bind(record.id, { target: args.space });
+          return this.calls.finish(record.id, 'completed', { kind: 'engine_file', engine_id: args.space.id, ...written });
+        });
+        return { result, call_id: record.id };
+      }
       if (name === 'save_file' && args.space.kind === 'bot') {
         const targetBot = this.getBot(args.space.id);
         if (!this.manager.canConfigure(context.actor, targetBot)) {
@@ -1301,8 +1320,8 @@ export class SummonPlatform {
     if (scope && !this.canReadReference(scope, context)) reject('scope_unavailable', 'Search scope is unavailable', 404);
     let items;
     switch (kind) {
-      case 'bundled_bot': {
-        items = this.manager.bundledCatalog();
+      case 'engine': {
+        items = this.engines.list({ fresh: actor.kind === 'user' });
         break;
       }
       case 'bot': {
@@ -1390,6 +1409,12 @@ export class SummonPlatform {
         const view = this.manager.view(bot, context.actor, { details: !context.session });
         const memory_items = !context.session ? listBotMemoryItems(this.dataRoot, bot.id) : undefined;
         return memory_items !== undefined ? { ...view, memory_items } : view;
+      }
+      case 'engine': {
+        if (args.path !== undefined) {
+          return { ref, ...this.engines.readFile(ref.id, args.path) };
+        }
+        return this.engines.get(ref.id, { fresh: context.actor.kind === 'user' });
       }
       case 'room': return this.room.read(args, context.actor.id);
       case 'event': {

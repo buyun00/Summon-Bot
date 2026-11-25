@@ -1,5 +1,5 @@
 import { eggbotRole, defaultPublicDuty, groupLeadRole } from './roles.mjs';
-import { botRootDir, ensureBotFolder, hasBotScript, installBundledBotFiles, listBotFolderFiles, listBundledBots, readBotFolderMeta, readBotInstructions, syncBotMetaFiles } from './folders.mjs';
+import { botRootDir, ensureBotFolder, installBundledBotFiles, listBotFolderFiles, listBundledBots, readBotFolderMeta, readBotInstructions, syncBotMetaFiles } from './folders.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, user } from '../platform/contract.mjs';
 
@@ -51,7 +51,6 @@ export function directoryEntry(bot) {
     ...(role ? { role_id: role } : {}),
     ...(bot.bundled_id ? { bundled_id: bot.bundled_id } : {}),
     ...(bot.model_provider ? { model_provider: bot.model_provider } : {}),
-    ...(bot.engine_script ? { engine_script: bot.engine_script } : {}),
   };
 }
 
@@ -85,35 +84,6 @@ export class BotManager {
     return this.list().find(bot => !bot.archivedAt && bot.bundled_id === bundledId) || null;
   }
 
-  workEngines() {
-    return this.list()
-      .filter(bot => !bot.archivedAt && bot.enabled !== false)
-      .map(bot => {
-        const diskMeta = readBotFolderMeta(this.dataRoot, bot.id);
-        const script = typeof diskMeta?.engine_script === 'string' && diskMeta.engine_script.trim()
-          ? diskMeta.engine_script.trim()
-          : (typeof bot.engine_script === 'string' ? bot.engine_script.trim() : '');
-        if (!script || !hasBotScript(this.dataRoot, bot.id, script)) return null;
-        const name = typeof diskMeta?.name === 'string' && diskMeta.name.trim() ? diskMeta.name.trim() : bot.name;
-        const duty = typeof diskMeta?.public_duty === 'string' && diskMeta.public_duty.trim()
-          ? diskMeta.public_duty.trim()
-          : defaultPublicDuty(bot);
-        const envSlots = Array.isArray(diskMeta?.env_slots)
-          ? diskMeta.env_slots
-          : (Array.isArray(bot.env_slots) ? bot.env_slots : []);
-        return {
-          id: bot.bundled_id || bot.id,
-          bot_id: bot.id,
-          name,
-          script,
-          duty,
-          env_slots: envSlots,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.id.localeCompare(b.id));
-  }
-
   bundledCatalog() {
     const installed = this.list().filter(bot => !bot.archivedAt);
     return listBundledBots(this.releaseRoot).map(pkg => {
@@ -124,7 +94,6 @@ export class BotManager {
         role_id: pkg.role_id,
         public_duty: pkg.public_duty,
         model_provider: pkg.model_provider,
-        engine_script: pkg.engine_script,
         env_slots: pkg.env_slots,
         skills: pkg.skills,
         scripts: pkg.scripts,
@@ -233,7 +202,6 @@ export class BotManager {
       name: typeof diskMeta.name === 'string' && diskMeta.name.trim() ? diskMeta.name.trim() : bot.name,
       public_duty: typeof diskMeta.public_duty === 'string' ? diskMeta.public_duty : bot.public_duty,
       env_slots: Array.isArray(diskMeta.env_slots) ? diskMeta.env_slots : bot.env_slots,
-      ...(typeof diskMeta.engine_script === 'string' && diskMeta.engine_script.trim() ? { engine_script: diskMeta.engine_script.trim() } : {}),
     } : bot;
     const base = {
       ...directoryEntry(liveBot),
@@ -316,7 +284,6 @@ export class BotManager {
         public_duty: pkg.public_duty || '',
         bundled_id: pkg.id,
         model_provider: pkg.model_provider || null,
-        ...(pkg.engine_script ? { engine_script: pkg.engine_script } : {}),
         env_slots: pkg.env_slots || [],
         model,
         owner: context.actor,
@@ -327,10 +294,6 @@ export class BotManager {
   }
 
   create(id, args, context, beforeSave) {
-    if (args.bundled_id) {
-      const { bot } = this.activateBundled(args.bundled_id, context, beforeSave);
-      return bot;
-    }
     const { actor } = context;
     const name = cleanName(args.name);
     const instructions = instructionsOf(args.instructions ?? '');

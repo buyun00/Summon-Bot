@@ -9,7 +9,7 @@ const value = {};
 const oneOf = (...values) => ({ enum: values });
 const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace'];
+const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace', 'engine'];
 const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
 const workspaceFileRef = object({ kind: oneOf('workspace_file'), workspace_id: text, path: text }, ['kind', 'workspace_id', 'path']);
 const ref = { anyOf: [typedRef(...kinds, 'user'), workspaceFileRef] };
@@ -170,13 +170,13 @@ const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessi
 const configureSessionInput = object({ target: refOrId, work_summary: text }, ['target']);
 
 const definitions = [
-  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace) or bundled_bot templates.',
-    object({ kind: oneOf(...kinds, 'bundled_bot'), scope: ref, query: text, cursor: text }, ['kind'])],
-  ['read', 'Read an accessible object, its history/output, a workspace directory/file, or a file inside a Bot folder (pass {kind:"bot",id:"<bot-id>"} with path:"instructions.md" | "skills/..." | "scripts/..." | ".local/memory/...").',
+  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace, engine).',
+    object({ kind: oneOf(...kinds), scope: ref, query: text, cursor: text }, ['kind'])],
+  ['read', 'Read an accessible object, its history/output, a workspace directory/file, a file inside a Bot folder ({kind:"bot",id:"<bot-id>"} with path:"instructions.md"|"skills/..."|"scripts/..."|".local/memory/..."), or a work engine directory/file ({kind:"engine",id:"<engine-id>"} with optional path:"engine.json"|"bridge.mjs"|"guide.md").',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm"|"secret",title?,description?,submit_label?,secret_target?:{...},questions:[...]}). Whenever asking for passwords, API keys, or tokens, ALWAYS use prompt with kind:"secret" and an appropriate secret_target so secrets go directly to host storage without passing through chat history.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
-  ['save_file', 'Save text or a File source into a Room, Workspace directory, or Bot folder. For a Bot folder ({kind:"bot",id:"<bot-id>"}), write portable knowledge to skills/<name>.md, scripts to scripts/<name>.mjs, instructions to instructions.md, or private local notes to .local/memory/<name>.md.',
+  ['save_file', 'Save text or a File source into a Room, Workspace directory, Bot folder ({kind:"bot",id:"<bot-id>"}), or (for the Summon maintenance lead) a work engine folder ({kind:"engine",id:"<engine-id>"}, path:"bridge.mjs"|"guide.md"|"engine.json").',
     object({
       space: ref,
       path: text,
@@ -189,8 +189,8 @@ const definitions = [
       revision: integer,
       sources: array(ref),
     }, ['space', 'path', 'content_or_source'])],
-  ['create_bot', 'Create a standalone Bot folder (with name, public_duty, instructions, optional model, role_id, env_slots) OR activate a bundled Bot package directly via bundled_id (e.g. "codex", "grok-build", "claude-code").',
-    object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), bundled_id: text, env_slots: array(text) })],
+  ['create_bot', 'Create a standalone business-role Bot folder (with name, public_duty, instructions, optional model, role_id, env_slots).',
+    object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), env_slots: array(text) }, ['name'])],
   ['configure_bot', 'Update a Bot configuration at its current revision (name, public_duty, instructions, model, enabled, role_id, env_slots).',
     object({
       bot: refOrId,

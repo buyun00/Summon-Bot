@@ -10,7 +10,7 @@ export function protectedRuntimeDirs(dataRoot, releaseRoot) {
   const root = resolve(dataRoot);
   const rel = resolve(releaseRoot);
   const installRoot = basename(dirname(rel)) === 'releases' ? dirname(dirname(rel)) : rel;
-  const dataProtected = ['config', 'capabilities', 'bots', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json']
+  const dataProtected = ['config', 'capabilities', 'bots', 'engines', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json']
     .map(name => join(root, name));
   return [...dataProtected, installRoot];
 }
@@ -64,7 +64,6 @@ export function syncBotMetaFiles(dataRoot, bot) {
     ...(bot.model_provider ? { model_provider: bot.model_provider } : {}),
     ...(bot.avatar ? { avatar: bot.avatar } : {}),
     ...(bot.model ? { model: bot.model } : {}),
-    ...(bot.engine_script ? { engine_script: bot.engine_script } : {}),
     env_slots: Array.isArray(bot.env_slots) ? bot.env_slots : [],
   };
   writeFileSync(join(root, 'bot.json'), JSON.stringify(meta, null, 2) + '\n', 'utf8');
@@ -173,19 +172,6 @@ export function listBotMemoryItems(dataRoot, botId) {
   }));
 }
 
-export function hasBotScript(dataRoot, botId, relPath) {
-  if (typeof relPath !== 'string' || !relPath.trim()) return false;
-  try {
-    const clean = validateBotRelPath(relPath);
-    if (!clean.startsWith('scripts/')) return false;
-    const root = botRootDir(dataRoot, botId);
-    const abs = resolve(root, clean);
-    return abs.startsWith(join(root, 'scripts') + sep) && existsSync(abs) && statSync(abs).isFile();
-  } catch {
-    return false;
-  }
-}
-
 export function bundledBotsRoot(releaseRoot) {
   return join(resolve(releaseRoot), 'bundled-bots');
 }
@@ -210,7 +196,6 @@ export function listBundledBots(releaseRoot) {
         role_id: meta.role_id || 'default',
         public_duty: meta.public_duty || '',
         model_provider: meta.model_provider || null,
-        engine_script: typeof meta.engine_script === 'string' && meta.engine_script.trim() ? meta.engine_script.trim() : null,
         env_slots: Array.isArray(meta.env_slots) ? meta.env_slots : [],
         instructions,
         skills,
@@ -237,7 +222,6 @@ export function previewBundledBot(releaseRoot, bundledId) {
     role_id: pkg.role_id,
     public_duty: pkg.public_duty,
     model_provider: pkg.model_provider,
-    engine_script: pkg.engine_script,
     env_slots: pkg.env_slots,
     instructions: pkg.instructions,
     skills: readList(pkg.skills),

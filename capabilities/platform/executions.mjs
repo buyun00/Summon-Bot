@@ -308,13 +308,9 @@ export class Executions {
         const payload = typeof raw === 'string'
           ? { text: raw }
           : (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { text: String(raw ?? '') });
-        const configuredEnv = (session.work_engine.env_slots || []).filter(k => process.env[k] !== undefined);
         execInput = {
-          bot: session.work_engine.bot_id,
-          script: session.work_engine.script,
-          protocol: 'summon-jsonl',
+          engine: session.work_engine.id,
           payload,
-          ...(configuredEnv.length ? { env: configuredEnv } : {}),
         };
       }
       const options = { session, call: this.calls.get(call.id), input: execInput, beforeSubmit, signal: context.signal };

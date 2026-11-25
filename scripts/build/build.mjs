@@ -8,7 +8,7 @@ import { copyTree, readJson, writeJson, within, parseArgs } from './files.mjs';
 import { removeInside } from '../release/repository.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'bundled-bots', 'scripts/installation'];
+const directories = ['bot', 'web', 'capabilities', 'bundled-bots', 'bundled-engines', 'scripts/installation'];
 const rootFiles = ['package.json', 'release.json'];
 const launcherFiles = ['Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)

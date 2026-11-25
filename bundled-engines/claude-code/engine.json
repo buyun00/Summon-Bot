@@ -1,0 +1,8 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "summary": "Anthropic Claude Code CLI：多文件代码实现、架构重构与深度排障",
+  "command": "claude",
+  "script": "bridge.mjs",
+  "env_slots": ["ANTHROPIC_API_KEY"]
+}

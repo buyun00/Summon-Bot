@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, join, resolve, sep } from 'node:path';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createPathAccess, pathWithin } from '../../bot/src/capabilities/file-policy.mjs';
 import { attachWindowsJob, cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { botRootDir, protectedRuntimeDirs, validateBotRelPath } from '../bot-management/folders.mjs';
+import { engineRootDir, extraToolDirs, validateEngineRelPath } from '../engines/service.mjs';
 import { keyOf, reject } from '../platform/contract.mjs';
 import { pipeNativeText } from './windows-native-text.mjs';
 
@@ -20,21 +21,7 @@ const envNameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const validText = (v, max = 32_768) => typeof v === 'string' && v.length > 0 && v.length <= max && !v.includes('\0');
 const settled = s => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(s);
 
-function extraToolDirs() {
-  const home = homedir();
-  const dirs = windows
-    ? [
-        join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'npm'),
-        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links'),
-        join(home, '.grok', 'bin'), join(home, '.local', 'bin'),
-        join(home, '.cargo', 'bin'), join(home, '.bun', 'bin'), join(home, 'scoop', 'shims'),
-      ]
-    : ['/opt/homebrew/bin', '/usr/local/bin', join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'),
-       join(home, '.cargo', 'bin'), join(home, '.bun', 'bin'), join(home, '.grok', 'bin')];
-  return dirs.filter(d => existsSync(d));
-}
-
-function buildSafeEnv(rawEnv) {
+function buildSafeEnv(rawEnv, optionalEnv = null) {
   const env = cleanEnvironment();
   for (const key of ['CODEX_HOME', 'GROK_HOME', 'GROK_AUTH_PATH', 'CLAUDE_CONFIG_DIR']) {
     if (process.env[key]) env[key] = process.env[key];
@@ -44,6 +31,17 @@ function buildSafeEnv(rawEnv) {
   env[pathKey] = [...new Set([...existing, ...extraToolDirs()])].join(delimiter);
 
   const secrets = [];
+  if (Array.isArray(optionalEnv)) {
+    for (const rawName of optionalEnv) {
+      const name = String(rawName || '').trim();
+      if (!envNameRe.test(name)) continue;
+      const val = process.env[name];
+      if (val !== undefined) {
+        env[name] = val;
+        if (val) secrets.push(val);
+      }
+    }
+  }
   if (rawEnv == null) return { env, secrets };
   const pairs = Array.isArray(rawEnv)
     ? rawEnv.map(name => [String(name || '').trim(), String(name || '').trim()])
@@ -157,10 +155,53 @@ export class ExecRunner {
   async prepareLaunch(session, call, input, prior) {
     const cwd = await this.resolveCwd(session);
     const data = typeof input === 'string' ? { shell: input } : input;
-    if (!plain(data)) reject('invalid_exec_input', 'Exec input must be a shell string or { script | shell } object');
+    if (!plain(data)) reject('invalid_exec_input', 'Exec input must be a shell string or { engine | script | shell } object');
+    const hasEngine = data.engine !== undefined;
     const hasScript = data.script !== undefined;
     const hasShell = data.shell !== undefined;
-    if (hasScript === hasShell) reject('invalid_exec_input', 'Provide exactly one of script or shell');
+    if (Number(hasEngine) + Number(hasScript) + Number(hasShell) !== 1) {
+      reject('invalid_exec_input', 'Provide exactly one of engine, script, or shell');
+    }
+
+    if (hasEngine) {
+      const engineId = String(data.engine || '').trim();
+      const engineDir = engineRootDir(this.dataRoot, engineId);
+      let meta = {};
+      try { meta = JSON.parse(readFileSync(join(engineDir, 'engine.json'), 'utf8')); } catch {}
+      const relScript = validateEngineRelPath(typeof meta.script === 'string' && meta.script.trim() ? meta.script : 'bridge.mjs');
+      const scriptPath = resolve(engineDir, relScript);
+      if (!scriptPath.startsWith(engineDir + sep) || !existsSync(scriptPath)) {
+        reject('engine_script_not_found', `Engine script not found: ${engineId}/${relScript}`, 404);
+      }
+      const optionalSlots = Array.isArray(meta.env_slots) ? meta.env_slots : [];
+      const { env, secrets } = buildSafeEnv(data.env, optionalSlots);
+      const rejectInlineSecrets = values => {
+        if (secrets.length && values.some(v => typeof v === 'string' && secrets.some(s => v.includes(s)))) {
+          reject('inline_credential_forbidden', 'Pass secret env var names via env instead of inline values');
+        }
+      };
+      const scriptArgs = Array.isArray(data.args) ? data.args.map(String) : [];
+      const resumeSessionId = prior?.native_session_id ?? data.payload?.sessionId ?? null;
+      const initialInput = JSON.stringify({
+        summonStart: {
+          ...(plain(data.payload) ? data.payload : typeof data.payload === 'string' ? { text: data.payload } : {}),
+          ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+          callId: call.id, cwd, engineDir,
+        },
+      }) + '\n';
+      rejectInlineSecrets([...scriptArgs, initialInput]);
+      return {
+        file: process.execPath,
+        args: [scriptPath, ...scriptArgs],
+        cwd, env, secrets,
+        protocol: 'summon-jsonl',
+        keepInput: true,
+        initialInput,
+        programLabel: `engine/${engineId}`,
+        resumable: true,
+        originExecInput: { engine: engineId, args: scriptArgs, env: data.env },
+      };
+    }
 
     const { env, secrets } = buildSafeEnv(data.env);
     const rejectInlineSecrets = values => {

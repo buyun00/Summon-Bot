@@ -1,0 +1,9 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "summary": "OpenAI Codex CLI（app-server）：多文件编码、工程重构、构建排障与本机 ~/.codex/skills",
+  "command": "codex",
+  "script": "bridge.mjs",
+  "model_provider": "codex",
+  "env_slots": []
+}

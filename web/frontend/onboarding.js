@@ -33,17 +33,17 @@
     oauthConnId: null,
     oauthState: null,
     oauthTimer: null,
-    // Stage 2: single-step Bot onboarding state
+    // Stage 2: single-step work engine self-check state (handled by Summon maintenance lead)
     botId: null,
     botName: '',
-    bundledId: null,
+    engineId: null,
+    engineName: '',
     roomId: SUMMON_ROOM_ID,
     wakeMessageId: null,
     botStartedAt: 0,
     botMessages: [],
     botActivities: [],
     botExecutions: [],
-    botMilestones: [],
     botExecSeenAt: new Map(),
     botSending: false,
     botPollTimer: null,
@@ -345,7 +345,17 @@
     if (ob.wakeMessageId && msg.id === ob.wakeMessageId) return true;
     const sender = msg.senderId || msg.author?.id;
     const text = String(msg.content || '').trim();
-    return sender === 'user' && /^@[^\s]+\s+请在后台自检本机环境/.test(text);
+    return sender === 'user' && /^@[^\s]+\s+请在后台自检/.test(text);
+  }
+
+  function friendlyProgressText(raw, { hasAck = false, hasSessions = false } = {}) {
+    const text = String(raw || '').replace(/\s+/g, ' ').trim();
+    const fallback = hasSessions ? '正在整理自检结果…' : hasAck ? '正在检查本机环境与登录状态…' : '正在唤醒 Summon 自检工作引擎…';
+    if (!text) return fallback;
+    if (/正在查看消息|WindowsPowerShell|powershell\.exe|cmd\.exe|[A-Za-z]:\\|\/usr\/|["'`]|正在我会/.test(text)) {
+      return fallback;
+    }
+    return text.length > 32 ? fallback : text;
   }
 
   function botStageSnapshot() {
@@ -383,7 +393,7 @@
     const hasError = isReady && (hasFailedExec || replyReportsIssue);
     const progressText = pendingExec
       ? (pendingExec.pending_requests?.[0]?.question || '等待你的确认或输入')
-      : (activeActivity?.text || liveExec?.live_progress || liveExec?.work_summary || (hasAck ? '正在分析环境与执行自检…' : '正在唤醒专职 Bot…'));
+      : friendlyProgressText(activeActivity?.text, { hasAck, hasSessions: botSessions.length > 0 });
     return { wakeMsg, relevant, botSessions, activeActivity, liveExec, pendingExec, pendingPromptMsg, hasBotReply, hasAck, ackAt, isWorking, isReady, hasError, progressText };
   }
 
@@ -410,18 +420,6 @@
         ob.botExecSeenAt.set(exec.id, now + idx);
       }
     });
-    const execSummaries = new Set(
-      sessions.map(e => String(e.work_summary || '').trim()).filter(Boolean)
-    );
-    for (const act of (ob.botActivities || [])) {
-      if (botId && act.bot_id && act.bot_id !== botId) continue;
-      const text = String(act.text || '').trim();
-      if (!text || execSummaries.has(text)) continue;
-      const last = ob.botMilestones.at(-1);
-      if (!last || last.text !== text) {
-        ob.botMilestones.push({ id: `ms-${ob.botMilestones.length + 1}`, text, time: now });
-      }
-    }
   }
 
   function buildBotFeedItems(snap, label, avatarId) {
@@ -459,14 +457,11 @@
       });
     }
 
-    // 3. Chronological stream of exec step bubbles, activity milestones, and room messages
+    // 3. Chronological stream of real exec step cards and real room messages (no ephemeral activity duplicates)
     const timeline = [];
     for (const exec of snap.botSessions) {
       const ts = ob.botExecSeenAt.get(exec.id) || Date.parse(exec.started_at || exec.created_at || '') || startedTs + 1;
       timeline.push({ kind: 'exec', ts, id: exec.id, data: exec });
-    }
-    for (const ms of ob.botMilestones) {
-      timeline.push({ kind: 'milestone', ts: ms.time, id: ms.id, data: ms });
     }
     for (const msg of snap.relevant) {
       const ts = Date.parse(msg.createdAt || '') || Date.now();
@@ -483,10 +478,9 @@
         const stateLabel = isNeedsInput ? '等待确认' : isLive ? '执行中' : isFailed ? '异常' : '已完成';
         const stateClass = isNeedsInput ? 'is-warn' : isLive ? 'is-live' : isFailed ? 'is-err' : 'is-done';
         const title = exec.work_summary || '执行本机自检任务';
-        const detail = isLive && exec.live_progress && exec.live_progress !== title ? exec.live_progress : '';
         const reqs = isNeedsInput && exec.pending_requests?.length ? exec.pending_requests : [];
         const clock = formatClock(entry.ts);
-        const sig = `exec:${exec.id}:${exec.status}:${title}:${detail}:${reqs.length}:${clock}`;
+        const sig = `exec:${exec.id}:${exec.status}:${title}:${reqs.length}:${clock}`;
         items.push({
           key: `exec:${exec.id}`,
           sig,
@@ -502,7 +496,6 @@
                   </span>
                   <span class="ob-step-title">${esc(title)}</span>
                 </div>
-                ${detail ? `<div class="ob-step-detail">${esc(detail)}</div>` : ''}
                 ${reqs.map(req => `
                   <div class="ob-step-prompt">
                     ${req.question ? `<div>${esc(req.question)}</div>` : ''}
@@ -513,30 +506,6 @@
                       <button type="submit" class="ob-primary-btn">提交</button>
                     </form>` : ''}
                   </div>`).join('')}
-              </div>
-            </div>
-          </div>`,
-        });
-        continue;
-      }
-
-      if (entry.kind === 'milestone') {
-        const ms = entry.data;
-        const isCurrent = !snap.isReady && snap.activeActivity?.text === ms.text;
-        const clock = formatClock(entry.ts);
-        const sig = `ms:${ms.id}:${isCurrent ? 'live' : 'done'}:${ms.text}:${clock}`;
-        items.push({
-          key: `ms:${ms.id}`,
-          sig,
-          html: `<div class="ob-chat-row is-bot">
-            <div class="ob-chat-avatar">${makeBotAvatar()}</div>
-            <div class="ob-chat-col">
-              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(clock)}</span></div>
-              <div class="ob-step-bubble ${isCurrent ? 'is-live' : 'is-done'}">
-                <div class="ob-step-head">
-                  <span class="ob-step-pill ${isCurrent ? 'is-live' : 'is-done'}">${isCurrent ? '<span class="ob-spinner"></span>进展' : '✓ 已完成'}</span>
-                  <span class="ob-step-title">${esc(ms.text)}</span>
-                </div>
               </div>
             </div>
           </div>`,
@@ -636,13 +605,20 @@
     return items;
   }
 
+  function engineDisplayName() {
+    if (ob.engineName) return ob.engineName;
+    if (ob.engineId === 'grok-build') return 'Grok Build';
+    if (ob.engineId === 'claude-code') return 'Claude Code';
+    return 'Codex';
+  }
+
   function mountBotStage(stage) {
-    const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
-    const avatarId = ob.botId || 'bot-default-eggbot-local';
+    const engineLabel = engineDisplayName();
+    const avatarId = ob.botId || 'bot-lead-room-default-bot-maintenance';
     stage.dataset.mountedStage = 'bot';
     stage.innerHTML = `
       <div class="ob-window-bar">
-        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(label)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
+        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(engineLabel)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
         <div class="ob-window-controls">
           ${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}
         </div>
@@ -652,8 +628,8 @@
           <div class="ob-bot-identity">
             <div data-ob-bot-avatar>${avatarSvg(avatarId, 44, 'work', { key: `ob-header:${avatarId}` })}</div>
             <div class="ob-bot-titles">
-              <h2 data-ob-bot-title>正在对接 ${esc(label)}</h2>
-              <p data-ob-bot-subtitle>自动检测本机环境与登录状态，完成后即可建群开工</p>
+              <h2 data-ob-bot-title>正在对接 ${esc(engineLabel)} 工作引擎</h2>
+              <p data-ob-bot-subtitle>自动检测本机 CLI 环境与登录状态，完成后即可建群开工</p>
             </div>
           </div>
           <span class="ob-bot-badge is-live" data-ob-badge>
@@ -665,7 +641,7 @@
         <div class="ob-bot-live-bar" data-ob-live-bar>
           <span class="ob-bot-live-left">
             <span class="ob-spinner" style="color:var(--accent,#7d824b)"></span>
-            <span class="ob-bot-live-text" data-ob-live-text>正在唤醒专职 Bot…</span>
+            <span class="ob-bot-live-text" data-ob-live-text>正在唤醒 Summon 自检工作引擎…</span>
           </span>
           <span class="ob-bot-timer" data-ob-live-timer>00:00</span>
         </div>
@@ -679,16 +655,17 @@
       mountBotStage(stage);
     }
     const snap = botStageSnapshot();
-    const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
-    const avatarId = ob.botId || 'bot-default-eggbot-local';
+    const engineLabel = engineDisplayName();
+    const label = ob.botName || 'Summon';
+    const avatarId = ob.botId || 'bot-lead-room-default-bot-maintenance';
     const elapsed = formatElapsed(Date.now() - (ob.botStartedAt || Date.now()));
 
     const brandEl = stage.querySelector('[data-ob-brand-text]');
-    const nextBrand = `Summon Bot · 接入 ${label}`;
+    const nextBrand = `Summon Bot · 接入 ${engineLabel}`;
     if (brandEl && brandEl.textContent !== nextBrand) brandEl.textContent = nextBrand;
 
     const titleEl = stage.querySelector('[data-ob-bot-title]');
-    const nextTitle = snap.hasError ? `${label} 自检异常` : snap.isReady ? `${label} 已就绪` : `正在对接 ${label}`;
+    const nextTitle = snap.hasError ? `${engineLabel} 自检异常` : snap.isReady ? `${engineLabel} 工作引擎已就绪` : `正在对接 ${engineLabel} 工作引擎`;
     if (titleEl && titleEl.textContent !== nextTitle) titleEl.textContent = nextTitle;
 
     const subEl = stage.querySelector('[data-ob-bot-subtitle]');
@@ -729,7 +706,8 @@
     const liveBar = stage.querySelector('[data-ob-live-bar]');
     const liveTextEl = stage.querySelector('[data-ob-live-text]');
     const liveTimerEl = stage.querySelector('[data-ob-live-timer]');
-    const showLiveBar = !snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg;
+    // Only show bottom spinner bar when no exec step card is currently spinning in the feed (never two spinners at once).
+    const showLiveBar = !snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg && !snap.liveExec;
     if (liveBar) liveBar.hidden = !showLiveBar;
     if (liveTextEl && liveTextEl.textContent !== snap.progressText) liveTextEl.textContent = snap.progressText;
     if (liveTimerEl && liveTimerEl.textContent !== elapsed) liveTimerEl.textContent = elapsed;
@@ -835,27 +813,27 @@
     }, 1000);
   }
 
-  async function morphToBotStage({ botId, botName, bundledId, roomId, wakeMessageId, preview = false }) {
+  async function morphToBotStage({ botId, botName, engineId, engineName, roomId, wakeMessageId, preview = false }) {
     ob.stage = 'bot';
     ob.busy = false;
     ob.phase = 'idle';
     ob.statusText = '';
-    ob.botId = botId || null;
-    ob.botName = botName || (bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
-    ob.bundledId = bundledId || 'codex';
+    ob.botId = botId || 'bot-lead-room-default-bot-maintenance';
+    ob.botName = botName || 'Summon';
+    ob.engineId = engineId || 'codex';
+    ob.engineName = engineName || (ob.engineId === 'grok-build' ? 'Grok Build' : ob.engineId === 'claude-code' ? 'Claude Code' : 'Codex');
     ob.roomId = roomId || SUMMON_ROOM_ID;
     ob.wakeMessageId = wakeMessageId || null;
     ob.botStartedAt = Date.now();
-    ob.botMilestones = [];
     ob.botExecSeenAt = new Map();
     ob.botMessages = preview
-      ? [{ id: 'preview-reply', senderId: ob.botId || 'preview-codex', createdAt: new Date().toISOString(), content: '**自检完成**\n- Codex CLI 已就绪\n- 本机登录态与 `scripts/app-server.mjs` 桥接验证通过\n\n随时可以建群开始干活。' }]
+      ? [{ id: 'preview-reply', senderId: ob.botId, createdAt: new Date().toISOString(), content: `**自检完成**\n- ${ob.engineName} CLI 与本机登录态均已验证，所有群聊可直接调用。\n\n随时可以建群开始干活。` }]
       : [];
     ob.botActivities = [];
     ob.botExecutions = preview
       ? [
-          { kind: 'session', id: 'preview-exec-1', bot_id: 'preview-codex', status: 'completed', work_summary: '检查本机 Codex CLI 与 ChatGPT 登录态' },
-          { kind: 'session', id: 'preview-exec-2', bot_id: 'preview-codex', status: 'completed', work_summary: '验证桥接脚本 scripts/app-server.mjs 端到端响应' },
+          { kind: 'session', id: 'preview-exec-1', bot_id: ob.botId, status: 'completed', work_summary: `检查本机 ${ob.engineName} CLI 与登录态` },
+          { kind: 'session', id: 'preview-exec-2', bot_id: ob.botId, status: 'completed', work_summary: `验证 ${ob.engineName} 工作引擎端到端响应` },
         ]
       : [];
     const stageEl = document.querySelector('#ob-stage');
@@ -900,7 +878,7 @@
     setTimeout(() => document.body.classList.remove('ob-revealing-main'), 480);
   }
 
-  async function verifyAndContinue(connId, label, { activateBundled = null } = {}) {
+  async function verifyAndContinue(connId, label, { checkEngine = null } = {}) {
     const api = ob.callbacks?.api;
     if (!api) return;
     ob.busy = true;
@@ -914,8 +892,8 @@
       render();
       if (ob.preview) {
         await new Promise(r => setTimeout(r, 320));
-        if (activateBundled) {
-          await morphToBotStage({ botId: 'preview-codex', botName: activateBundled === 'grok-build' ? 'Grok Build' : 'Codex', bundledId: activateBundled, preview: true });
+        if (checkEngine) {
+          await morphToBotStage({ botId: 'bot-lead-room-default-bot-maintenance', botName: 'Summon', engineId: checkEngine, preview: true });
         } else {
           await transitionToMainNewGroup({ preview: true });
         }
@@ -924,13 +902,14 @@
       // Atomically activate model + start onboarding in a single request so SSE never transiently sees status='completed'.
       const started = await api('/api/onboarding/start', 'POST', {
         connectionId: connId,
-        ...(activateBundled ? { activateBundled } : {}),
+        ...(checkEngine ? { checkEngine } : {}),
       });
       if (started?.status === 'configuring_bot' && started.botId) {
         await morphToBotStage({
           botId: started.botId,
-          botName: started.botName || started.activatedBot?.name,
-          bundledId: started.bundledId || activateBundled,
+          botName: started.botName || 'Summon',
+          engineId: started.engineId || checkEngine,
+          engineName: started.engineName || started.engine?.name,
           roomId: started.roomId || SUMMON_ROOM_ID,
           wakeMessageId: started.wakeMessageId || null,
         });
@@ -956,8 +935,8 @@
     try {
       const res = await api('/api/model-settings/local/import', 'POST', { kind, activate: false });
       const connId = res.importedId || `${kind}-local`;
-      const activateBundled = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
-      await verifyAndContinue(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { activateBundled });
+      const checkEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+      await verifyAndContinue(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { checkEngine });
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
@@ -1010,8 +989,8 @@
         return;
       }
       if (status.status === 'completed') {
-        const activateBundled = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
-        await verifyAndContinue(connId, `${subLabel} 订阅`, { activateBundled });
+        const checkEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+        await verifyAndContinue(connId, `${subLabel} 订阅`, { checkEngine });
         return;
       }
       ob.phase = status.status === 'failed' ? 'error' : 'idle';
@@ -1112,7 +1091,8 @@
       await morphToBotStage({
         botId: onboarding?.botId || ob.botId,
         botName: onboarding?.botName || ob.botName,
-        bundledId: onboarding?.bundledId || ob.bundledId,
+        engineId: onboarding?.engineId || ob.engineId,
+        engineName: onboarding?.engineName || ob.engineName,
         roomId: onboarding?.roomId || SUMMON_ROOM_ID,
         wakeMessageId: onboarding?.wakeMessageId || null,
         preview,
@@ -1156,7 +1136,8 @@
         const prevWakeId = ob.wakeMessageId;
         if (onboarding.botId && !ob.botId) ob.botId = onboarding.botId;
         if (onboarding.botName && !ob.botName) ob.botName = onboarding.botName;
-        if (onboarding.bundledId && !ob.bundledId) ob.bundledId = onboarding.bundledId;
+        if (onboarding.engineId && !ob.engineId) ob.engineId = onboarding.engineId;
+        if (onboarding.engineName && !ob.engineName) ob.engineName = onboarding.engineName;
         if (onboarding.roomId) ob.roomId = onboarding.roomId;
         if (onboarding.wakeMessageId && !ob.wakeMessageId) ob.wakeMessageId = onboarding.wakeMessageId;
         if (ob.botId !== prevBotId || ob.wakeMessageId !== prevWakeId || !ob.botMessages.length) {
@@ -1186,11 +1167,12 @@
     if (action === 'start-sub-oauth' || action === 'start-codex-oauth') return void handleStartSubOAuth(btn.dataset.kind || 'codex');
     if (action === 'cancel-oauth') return void handleCancelOAuth();
     if (action === 'close-preview') return void closePreview();
-    if (action === 'preview-next') return void morphToBotStage({ botId: 'preview-codex', botName: 'Codex', bundledId: 'codex', preview: true });
+    if (action === 'preview-next') return void morphToBotStage({ botId: 'bot-lead-room-default-bot-maintenance', botName: 'Summon', engineId: 'codex', engineName: 'Codex', preview: true });
     if (action === 'finish-to-main') return void transitionToMainNewGroup({ preview: ob.preview });
     if (action === 'retry-bot-check') {
-      const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
-      return void sendBotReply(`@${label} 请重新自检一次本机环境与桥接；若全部正常请简洁告知已就绪，不要输出退出码或内部细节。`);
+      const botLabel = ob.botName || 'Summon';
+      const engineLabel = engineDisplayName();
+      return void sendBotReply(`@${botLabel} 请重新自检工作引擎 ${engineLabel}（id: ${ob.engineId || 'codex'}）；若全部正常请简洁告知已就绪，不要输出退出码或内部细节。`);
     }
     if (action === 'reply-prompt-opt') return void sendBotReply(btn.dataset.label || '');
     if (action === 'open-secret-prompt') {

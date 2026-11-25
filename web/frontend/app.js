@@ -270,7 +270,7 @@ function renderSettingsPanelBody(tab) {
     }
     const isDesktop = Boolean(window.SummonDesktop?.openConnectionSettings);
     const localInstance = document.documentElement.dataset.localInstance === 'true' || location.hostname === '127.0.0.1' || location.hostname === 'localhost';
-    const bundledBots = state.bundledBots || [];
+    const engines = state.engines || [];
     const workspaces = state.workspaces || [];
     const hubSection = window.SummonHub?.renderHubSettingsSection?.() || '';
     return `${renderSettingsNodeSelector()}${hubSection}<div class="settings-section">
@@ -320,22 +320,32 @@ function renderSettingsPanelBody(tab) {
     </div>
     <div class="settings-section">
       <div class="settings-group-head">
-        <h3 class="settings-group-label">预置专职 Bot 库</h3>
+        <h3 class="settings-group-label">工作引擎</h3>
       </div>
       <div class="settings-card">
-        ${bundledBots.length ? bundledBots.map(item => `<div class="settings-row">
-          <div class="settings-row-copy">
-            <strong>${esc(item.name)} ${item.installed ? '<span class="settings-pill">已激活</span>' : ''}</strong>
-            <small>${esc(item.public_duty || item.id)}${item.scripts?.length ? ` · ${item.scripts.length} 个脚本` : ''}${item.skills?.length ? ` · ${item.skills.length} 份技能` : ''}</small>
-          </div>
-          <div class="settings-row-actions">
-            ${item.installed && item.bot_id
-              ? `<button type="button" class="secondary-button small-button" data-action="open-bot-details" data-id="${esc(item.bot_id)}">查看 Bot</button>`
-              : `<button type="button" class="primary-button small-button" data-action="activate-bundled-bot" data-id="${esc(item.id)}">激活</button>`}
-          </div>
-        </div>`).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无预置 Bot</strong></div></div>'}
+        ${engines.length ? engines.map(item => {
+          const statusPill = item.available
+            ? '<span class="settings-pill">已就绪</span>'
+            : !item.enabled
+              ? '<span class="settings-pill">已停用</span>'
+              : '<span class="settings-pill">未检测到 CLI</span>';
+          const metaParts = [item.summary || item.id];
+          if (item.command) metaParts.push(`CLI: ${item.command}${item.installed ? '（已检测到）' : '（未检测到）'}`);
+          if (item.env_slots?.length) metaParts.push(`可选凭据: ${item.env_slots.join(', ')}`);
+          return `<div class="settings-row">
+            <div class="settings-row-copy">
+              <strong>${esc(item.name)} ${statusPill}</strong>
+              <small>${esc(metaParts.join(' · '))}</small>
+            </div>
+            <div class="settings-row-actions">
+              <button type="button" class="secondary-button small-button" data-action="check-work-engine" data-id="${esc(item.id)}">自检</button>
+              <button type="button" class="secondary-button small-button" data-action="open-engine-files" data-id="${esc(item.id)}">文件</button>
+              <button type="button" class="secondary-button small-button" data-action="toggle-work-engine" data-id="${esc(item.id)}" data-enabled="${item.enabled ? '0' : '1'}">${item.enabled ? '停用' : '启用'}</button>
+            </div>
+          </div>`;
+        }).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无工作引擎</strong></div></div>'}
       </div>
-      <p class="settings-footnote">每个 Bot 都是独立文件夹（含 instructions.md、skills/、scripts/），通过宿主内置 Node 与 exec 原语直接调用本机工具。</p>
+      <p class="settings-footnote">本机已检测到的工作引擎（engines/）对所有群聊 Bot 透明开放，无需拉入业务群；由 Summon 系统群主控统一负责自检与协议自愈。</p>
     </div>`;
   }
   return `<div class="settings-section">
@@ -407,8 +417,8 @@ async function loadSettingsTabData(tab) {
     } catch {}
   } else if (tab === 'connection') {
     try {
-      const [bundledRes, workspaces] = await Promise.allSettled([api('/api/bundled-bots'), readList('/api/workspaces')]);
-      if (bundledRes.status === 'fulfilled' && Array.isArray(bundledRes.value?.items)) state.bundledBots = bundledRes.value.items;
+      const [enginesRes, workspaces] = await Promise.allSettled([api('/api/engines'), readList('/api/workspaces')]);
+      if (enginesRes.status === 'fulfilled' && Array.isArray(enginesRes.value?.items)) state.engines = enginesRes.value.items;
       if (workspaces.status === 'fulfilled') state.workspaces = workspaces.value;
       refreshOpenSettingsBody();
     } catch {}
@@ -515,7 +525,7 @@ const NEW_GROUP_SUGGESTIONS = [
     prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
   },
 ];
-const state = { bots: [], archivedBots: [], bundledBots: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [] };
+const state = { bots: [], archivedBots: [], engines: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [] };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
@@ -1194,7 +1204,7 @@ async function handshake() {
       window.SummonOnboarding?.notifyUpdate?.();
     };
     stream.onmessage = onStream;
-    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace']) stream.addEventListener(type, onStream);
+    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace', 'engine']) stream.addEventListener(type, onStream);
     stream.onerror = () => { ui.streamConnected = false; scheduleRefresh(); };
   }
   return true;
@@ -1891,44 +1901,52 @@ function editWorkspace(item) {
   });
 }
 
-function openBotTrustModal(preview, onTrust) {
-  const renderFileGroup = (title, files) => files?.length
-    ? `<div style="margin-top:12px"><strong style="font-size:13px">${esc(title)}（${files.length}）</strong>${files.map(f => `
-        <details style="margin-top:6px;border:1px solid var(--border);border-radius:10px;padding:8px 10px">
-          <summary style="cursor:pointer;font-size:12.5px;font-weight:500">${esc(f.path)}</summary>
-          <pre style="margin:8px 0 0;max-height:220px;overflow:auto;font-size:11.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word">${esc(f.content || '')}</pre>
-        </details>`).join('')}</div>`
-    : '';
-  const envHtml = preview.env_slots?.length
-    ? `<p class="subtle" style="margin:6px 0 0;font-size:12.5px">声明环境变量：<code>${esc(preview.env_slots.join(', '))}</code>（通过宿主安全存储注入，绝不进聊天上下文）</p>`
-    : '';
-  const body = `<div style="display:flex;flex-direction:column;gap:8px">
-    ${preview.public_duty ? `<p style="margin:0;font-size:13.5px">${esc(preview.public_duty)}</p>` : ''}
-    ${envHtml}
-    ${preview.instructions ? `<details open style="margin-top:4px;border:1px solid var(--border);border-radius:10px;padding:8px 10px">
-      <summary style="cursor:pointer;font-size:12.5px;font-weight:500">instructions.md（行为说明）</summary>
-      <pre style="margin:8px 0 0;max-height:180px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(preview.instructions)}</pre>
-    </details>` : ''}
-    ${renderFileGroup('技能手册（skills/）', preview.skills)}
-    ${renderFileGroup('可执行脚本（scripts/，请审查后信任）', preview.scripts)}
-    <p class="subtle" style="margin:10px 0 0;font-size:12.5px">信任并激活后，将写入本机 Bot 文件夹、加入当前会话，并自动唤醒该 Bot 自检本机环境与登录态。</p>
-  </div>`;
-  openModal(`信任并激活 · ${preview.name || preview.id}`, '激活前可展开审查该 Bot 的说明与所有脚本内容', body, onTrust, '信任并激活');
+async function toggleWorkEngine(engineId, enabled) {
+  if (!engineId) return;
+  const updated = await api(`/api/engines/${encodeURIComponent(engineId)}`, 'PATCH', { enabled });
+  const list = (state.engines || []).filter(item => item.id !== engineId);
+  list.push(updated);
+  list.sort((a, b) => a.id.localeCompare(b.id));
+  state.engines = list;
+  toast(updated.enabled ? `已启用工作引擎「${updated.name}」` : `已停用工作引擎「${updated.name}」`);
+  refreshOpenSettingsBody();
 }
 
-async function activateBundledBot(bundledId) {
-  if (!bundledId) return;
-  const preview = await api(`/api/bundled-bots/${encodeURIComponent(bundledId)}`);
-  openBotTrustModal(preview, async () => {
-    const roomId = ui.roomId || 'room-default-bot-maintenance';
-    const result = await api('/api/bundled-bots/activate', 'POST', { id: bundledId, room_id: roomId, wake: true });
-    ui.returnToSettingsTab = null;
-    toast(`已信任并激活「${result?.bot?.name || bundledId}」，正在唤醒自检…`);
-    if (result?.room_id) {
-      ui.view = 'chat';
-      ui.roomId = result.room_id;
-    }
+async function checkWorkEngine(engineId) {
+  if (!engineId) return;
+  const result = await api(`/api/engines/${encodeURIComponent(engineId)}/check`, 'POST', { wake: true });
+  ui.returnToSettingsTab = null;
+  const modal = $('#modal');
+  if (modal?.open) await closeModal(modal);
+  toast(`已通知 Summon 主控自检「${result?.engine?.name || engineId}」`);
+  if (result?.room_id) {
+    ui.view = 'chat';
+    ui.roomId = result.room_id;
+    await loadCurrent();
+    render();
+  }
+}
+
+async function openEngineFileModal(engineId, relPath) {
+  const engine = (state.engines || []).find(item => item.id === engineId);
+  const file = await api(`/api/engines/${encodeURIComponent(engineId)}/file?path=${encodeURIComponent(relPath)}`);
+  const title = `${engine?.name || engineId} · ${relPath}`;
+  openModal(title, '', `<p class="subtle" style="margin:0 0 8px">${esc(relPath)}</p>` +
+    field('文件内容', 'content', file.content || '', { type: 'textarea', rows: 14 }), async data => {
+    await api(`/api/engines/${encodeURIComponent(engineId)}/file`, 'PUT', { path: relPath, content: data.get('content') });
+    toast(`已保存 ${relPath}`);
   });
+}
+
+async function openEngineFilesModal(engineId) {
+  const engine = await api(`/api/engines/${encodeURIComponent(engineId)}`);
+  const files = Array.isArray(engine.files) ? engine.files : [];
+  const metaHtml = `<p class="subtle" style="margin:0 0 10px;font-size:12.5px">CLI：<code>${esc(engine.command || '—')}</code>${engine.detected_path ? `（${esc(engine.detected_path)}）` : '（未检测到）'}</p>`;
+  const rows = files.map(file => `<div class="pin-row">
+    <button type="button" class="profile-record record-button" data-action="open-engine-file" data-engine-id="${esc(engine.id)}" data-path="${esc(file.path)}">
+      <strong>${esc(file.path)}</strong><small>${Math.max(1, Math.round((file.size || 0) / 1024 * 10) / 10)} KB</small>
+    </button></div>`).join('');
+  openModal(`工作引擎文件 · ${engine.name || engine.id}`, engine.summary || '', metaHtml + (rows || '<p class="panel-empty">暂无文件</p>'));
 }
 
 async function openBotFolderFileModal(botId, relPath = null) {
@@ -2743,7 +2761,10 @@ async function act(action, element) {
     if (navigation === ui.navigationSeq && ui.listPages[kind]?.next_cursor === page.next_cursor) { setListPage(kind,next,true); render(); }
     return;
   }
-  if (action === 'activate-bundled-bot') return activateBundledBot(id);
+  if (action === 'toggle-work-engine') return toggleWorkEngine(id, element.dataset.enabled === '1');
+  if (action === 'check-work-engine') return checkWorkEngine(id);
+  if (action === 'open-engine-files') return openEngineFilesModal(id);
+  if (action === 'open-engine-file') return openEngineFileModal(element.dataset.engineId, element.dataset.path);
   if (action === 'open-bot-folder-file') return openBotFolderFileModal(element.dataset.botId, element.dataset.path);
   if (action === 'new-bot-folder-file') return openBotFolderFileModal(element.dataset.botId, null);
   if (action === 'edit-workspace') return editWorkspace(state.workspaces.find(item => item.id === id));
@@ -4618,7 +4639,10 @@ function renderDetailPanel(room, bot) {
 
 const inputActions = { reply:'回答', steer:'追加输入', next:'继续输入' };
 const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', unsupported:'不支持取消' };
-const executionLabel = item => item.kind === 'conversation' ? '内部对话' : item.engine === 'pi' ? 'Pi 会话' : (item.engine || '执行会话');
+const ENGINE_DISPLAY_NAMES = { pi: 'Pi 会话', exec: '本机命令', codex: 'Codex', 'claude-code': 'Claude Code', 'grok-build': 'Grok Build' };
+const executionLabel = item => item.kind === 'conversation'
+  ? '内部对话'
+  : (ENGINE_DISPLAY_NAMES[item.engine] || (state.engines || []).find(e => e.id === item.engine)?.name || item.engine || '执行会话');
 const executionTitle = item => [executionLabel(item), item.space?.kind === 'room' ? roomById(item.space.id)?.name : null].filter(Boolean).join(' · ');
 const executionError = item => [item.last_error?.exit_code != null ? `退出码 ${item.last_error.exit_code}` : null, item.last_error?.code, item.last_error?.message].filter(Boolean).join(' · ');
 
