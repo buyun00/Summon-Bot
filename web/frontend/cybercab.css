@@ -867,18 +867,18 @@ html.dark .message-ack-pill {
   border-radius: 28px;
 }
 
-/* Integrated clickable work status band at top of unified shell */
+/* Integrated single-line clickable work status band at top of unified shell */
 .composer-work-band {
   position: relative;
-  display: flex; flex-direction: column;
+  display: flex; align-items: center;
   width: 100%;
-  padding: 12px 16px 13px;
+  padding: 9px 14px 11px;
   text-align: left;
   cursor: pointer;
   color: inherit;
   background: color-mix(in srgb, var(--hover) 48%, transparent);
   border-radius: 23px 23px 0 0;
-  transition: background 150ms ease, padding 200ms var(--spring);
+  transition: background 150ms ease;
 }
 .composer-shell.drawer-open .composer-work-band {
   border-radius: 0;
@@ -889,124 +889,58 @@ html.dark .message-ack-pill {
 .composer-work-band:active {
   background: var(--active);
 }
-.composer-shell.is-work-compact .composer-work-band {
-  padding: 8px 14px 10px;
-}
 
-.cwb-expanded {
-  display: flex; flex-direction: column; gap: 8px; min-width: 0;
-}
-.cwb-compact {
-  display: none; align-items: center; gap: 8px; min-width: 0; height: 24px;
-}
-.composer-shell.is-work-compact .cwb-expanded { display: none; }
-.composer-shell.is-work-compact .cwb-compact { display: flex; }
-
-.cwb-head {
-  display: flex; align-items: center; gap: 10px; min-width: 0;
+.cwb-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; min-width: 0; min-height: 24px;
 }
 .cwb-avatars {
   display: inline-flex; align-items: center; flex: none;
 }
+.cwb-avatars .summon-bot-face {
+  width: 24px !important; height: 24px !important; flex: none;
+}
 .cwb-avatars.is-multi .summon-bot-face + .summon-bot-face {
-  margin-left: -8px;
+  margin-left: -6px;
   box-shadow: 0 0 0 2px var(--composer-bg);
   border-radius: 50%;
 }
-.cwb-head-copy {
-  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-}
-.cwb-title-row {
-  display: flex; align-items: center; gap: 7px; min-width: 0;
-}
-.cwb-title {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(13.5px * var(--ui-font-scale, 1)); font-weight: 600; color: var(--ink);
-}
-.cwb-badge {
-  flex: none;
-  font-size: calc(11px * var(--ui-font-scale, 1)); font-weight: 500;
-  padding: 1px 7px; border-radius: 999px;
-  background: color-mix(in srgb, var(--ok) 13%, transparent);
-  color: var(--ok);
-}
-.cwb-badge.is-waiting,
-.cwb-badge.is-quiet {
-  background: color-mix(in srgb, var(--warn) 15%, transparent);
-  color: var(--warn);
-}
-.cwb-meta {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
-  font-size: calc(12px * var(--ui-font-scale, 1)); color: var(--muted);
+.cwb-name {
+  flex: none; white-space: nowrap;
+  font-size: calc(13px * var(--ui-font-scale, 1)); font-weight: 600; color: var(--ink-2);
 }
 .cwb-sep {
-  flex: none; color: var(--faint);
+  flex: none; color: var(--faint); font-size: calc(12px * var(--ui-font-scale, 1));
+}
+.cwb-step {
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13px * var(--ui-font-scale, 1));
+}
+.cwb-waiting,
+.cwb-quiet {
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13px * var(--ui-font-scale, 1)); color: var(--warn); font-weight: 500;
+}
+.cwb-batch {
+  flex: none; white-space: nowrap;
+  font-size: calc(12px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+  padding: 1px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--hover) 115%, transparent);
 }
 .cwb-timer {
   flex: none; font-variant-numeric: tabular-nums;
   font-size: calc(12px * var(--ui-font-scale, 1)); color: var(--muted);
 }
-.cwb-batch {
-  color: var(--ink-2); font-weight: 500; font-variant-numeric: tabular-nums;
-}
 .cwb-chevron {
   flex: none; font-size: 11px; line-height: 1; color: var(--muted);
-  padding: 2px 4px;
+  padding: 2px 2px;
   transition: color 140ms ease;
 }
 .composer-work-band:hover .cwb-chevron {
   color: var(--ink-2);
-}
-
-.cwb-step-row {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 5px 10px; border-radius: 10px;
-  background: color-mix(in srgb, var(--bg) 68%, transparent);
-}
-html.dark .cwb-step-row {
-  background: rgba(255, 255, 255, 0.045);
-}
-.cwb-pulse-dot {
-  width: 6.5px; height: 6.5px; border-radius: 50%; flex: none;
-  background: var(--ok);
-  animation: liveWorkPulse 1.7s ease-in-out infinite;
-}
-.composer-shell.is-waiting .cwb-pulse-dot,
-.composer-shell.is-quiet .cwb-pulse-dot {
-  background: var(--warn);
-}
-.composer-shell.is-quiet .cwb-pulse-dot {
-  animation-duration: 3.2s;
-}
-.cwb-step {
-  min-width: 0; flex: 1 1 auto;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(12.5px * var(--ui-font-scale, 1)); color: var(--ink-2);
-}
-.composer-shell.is-quiet .cwb-step {
-  white-space: normal; line-height: 1.45; color: var(--warn);
-}
-
-.cwb-compact-name {
-  flex: none; white-space: nowrap;
-  font-size: calc(12.5px * var(--ui-font-scale, 1)); font-weight: 600; color: var(--ink-2);
-}
-.cwb-compact-step {
-  min-width: 0; flex: 1 1 auto;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(12.5px * var(--ui-font-scale, 1));
-}
-.cwb-compact-quiet {
-  min-width: 0; flex: 1 1 auto;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: calc(12.5px * var(--ui-font-scale, 1)); color: var(--warn); font-weight: 500;
-}
-.cwb-compact-batch {
-  flex: none; white-space: nowrap;
-  font-size: calc(11.5px * var(--ui-font-scale, 1)); font-weight: 500;
-  color: var(--ink-2); font-variant-numeric: tabular-nums;
-  padding: 1px 7px; border-radius: 999px;
-  background: color-mix(in srgb, var(--hover) 110%, transparent);
 }
 
 .cwb-rail {
@@ -1060,8 +994,8 @@ html.dark .cwb-step-row {
 }
 
 @media (max-width: 640px) {
-  .composer-work-band { padding: 10px 12px 11px; }
-  .cwb-compact-batch { display: none; }
+  .composer-work-band { padding: 8px 12px 10px; }
+  .cwb-batch { display: none; }
 }
 .bot-execution-drawer-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;

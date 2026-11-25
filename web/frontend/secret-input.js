@@ -22,8 +22,6 @@
   let deps = {
     api: null,
     toast: null,
-    getCurrentRoom: null,
-    sendSafeRoomReceipt: null,
     onAfterChange: null,
   };
 
@@ -139,13 +137,6 @@
 
   function renderStandaloneBody(s) {
     const tab = s.tab || 'env';
-    const room = deps.getCurrentRoom?.();
-    const notifyToggle = room
-      ? `<label class="secret-notify-check">
-          <input type="checkbox" id="secret-notify-room" ${s.notifyRoom ? 'checked' : ''}>
-          <span>通知「${esc(room.name)}」</span>
-        </label>`
-      : '';
 
     if (tab === 'env') {
       const existing = s.envKeys || [];
@@ -174,7 +165,6 @@
               </div>`).join('')}
           </div>
           <button type="button" class="secret-add-row-btn" data-secret-action="add-kv">+ 添加</button>
-          ${notifyToggle}
           <div id="secret-modal-error" class="secret-error" hidden></div>
         </form>
         ${existingHtml}`;
@@ -199,7 +189,6 @@
             ${renderSecretField({ id: 'secret-hub-pass', label: '密码', name: 'password', isSecret: true, required: true, autocomplete: sub === 'register' ? 'new-password' : 'current-password' })}
             ${renderSecretField({ id: 'secret-hub-url', label: '中枢地址', name: 'hubUrl', isSecret: false, required: false, defaultValue: hubState.hubUrl || 'https://bot.lin0.org' })}
           `}
-          ${notifyToggle}
           <div id="secret-modal-error" class="secret-error" hidden></div>
         </form>`;
     }
@@ -224,7 +213,6 @@
             ${renderSecretField({ id: 'secret-model-id', label: '模型 ID', name: 'model', isSecret: false, required: true, defaultValue: preset.model })}
           ` : ''}
           ${renderSecretField({ id: 'secret-model-key', label: 'API Key', name: 'api_key', isSecret: true, required: true, placeholder: 'sk-...' })}
-          ${notifyToggle}
           <div id="secret-modal-error" class="secret-error" hidden></div>
         </form>`;
     }
@@ -242,7 +230,6 @@
         ${renderSecretField({ id: 'secret-file-path', label: '文件', name: 'path', isSecret: false, required: true, defaultValue: s.filePath || '.env', placeholder: '.env' })}
         ${renderSecretField({ id: 'secret-file-key', label: '变量名', name: 'env_name', isSecret: false, required: true })}
         ${renderSecretField({ id: 'secret-file-val', label: '值', name: 'env_value', isSecret: true, required: true })}
-        ${notifyToggle}
         <div id="secret-modal-error" class="secret-error" hidden></div>
       </form>`;
   }
@@ -415,7 +402,6 @@
 
   function collectStandaloneSubmission(root, form) {
     const tab = state.tab || 'env';
-    const notifyRoom = Boolean(root.querySelector('#secret-notify-room')?.checked);
     if (tab === 'env') {
       const entries = [];
       for (const row of root.querySelectorAll('.secret-kv-row')) {
@@ -426,16 +412,16 @@
         entries.push({ name, value });
       }
       if (!entries.length) throw new Error('请填写至少一项');
-      return { tab, notifyRoom, entries };
+      return { tab, entries };
     }
     const data = Object.fromEntries(new FormData(form).entries());
     if (tab === 'hub') {
       const hubState = window.SummonHub?.state || {};
       const sub = state.hubSub || (hubState.authenticated ? 'password' : 'login');
-      return { tab, notifyRoom, sub, data };
+      return { tab, sub, data };
     }
     if (tab === 'model') {
-      return { tab, notifyRoom, sel: String(data.modelTarget || state.modelTarget || ''), data };
+      return { tab, sel: String(data.modelTarget || state.modelTarget || ''), data };
     }
     const workspace = String(data.workspace || state.workspaceId || '').trim();
     const path = String(data.path || '.env').trim();
@@ -443,22 +429,19 @@
     const value = String(data.env_value || '');
     if (!workspace) throw new Error('请选择工作区');
     if (!name || !value) throw new Error('请填写变量名和值');
-    return { tab, notifyRoom, workspace, path, name, value };
+    return { tab, workspace, path, name, value };
   }
 
   async function executeStandaloneSubmission(collected) {
     try {
       let delivery;
-      let receiptText = '';
       if (collected.tab === 'env') {
         delivery = await callApi('/api/secrets/deliver', 'POST', { target: { kind: 'env' }, entries: collected.entries });
-        receiptText = `已配置：${delivery.configured_keys.join('、')}`;
       } else if (collected.tab === 'hub') {
         const { sub, data } = collected;
         if (sub === 'password') {
           await hubPost('/hub/auth/password', { currentPassword: data.currentPassword, newPassword: data.newPassword });
           delivery = { target_kind: 'hub_password', detail: '已修改密码' };
-          receiptText = '已修改云端中枢密码';
         } else if (sub === 'register') {
           const res = await hubPost('/hub/auth/register', {
             inviteCode: String(data.inviteCode || '').trim(),
@@ -467,9 +450,7 @@
             ...(String(data.hubUrl || '').trim() ? { hubUrl: String(data.hubUrl).trim() } : {}),
           });
           await window.SummonHub?.applyAuthResult?.(res);
-          const u = res?.user?.username || data.username;
-          delivery = { target_kind: 'hub_register', detail: `已登录 ${u}` };
-          receiptText = `已注册并登录云端中枢（${u}）`;
+          delivery = { target_kind: 'hub_register', detail: `已登录 ${res?.user?.username || data.username}` };
         } else {
           const res = await hubPost('/hub/auth/login', {
             username: String(data.username || '').trim(),
@@ -477,9 +458,7 @@
             ...(String(data.hubUrl || '').trim() ? { hubUrl: String(data.hubUrl).trim() } : {}),
           });
           await window.SummonHub?.applyAuthResult?.(res);
-          const u = res?.user?.username || data.username;
-          delivery = { target_kind: 'hub_login', detail: `已登录 ${u}` };
-          receiptText = `已登录云端中枢（${u}）`;
+          delivery = { target_kind: 'hub_login', detail: `已登录 ${res?.user?.username || data.username}` };
         }
       } else if (collected.tab === 'model') {
         const { sel, data } = collected;
@@ -493,19 +472,14 @@
           fields.model = String(data.model || '').trim();
         }
         delivery = await callApi('/api/secrets/deliver', 'POST', { target, fields });
-        receiptText = `已保存模型 Key（${delivery.target_label || 'API'}）`;
       } else {
         delivery = await callApi('/api/secrets/deliver', 'POST', {
           target: { kind: 'file_env', workspace: collected.workspace, path: collected.path },
           entries: [{ name: collected.name, value: collected.value }],
         });
-        receiptText = `已写入 ${collected.path}（${collected.name}）`;
       }
       deps.toast?.(delivery?.detail || '已保存');
       deps.onAfterChange?.(delivery);
-      if (collected.notifyRoom && receiptText && deps.sendSafeRoomReceipt) {
-        await deps.sendSafeRoomReceipt(receiptText);
-      }
     } catch (error) {
       deps.toast?.(error.message || '提交失败，请重试', true);
     }
@@ -583,10 +557,6 @@
     if (wsSelect && state) {
       wsSelect.onchange = () => { state.workspaceId = wsSelect.value; };
     }
-    const notifyBox = root.querySelector('#secret-notify-room');
-    if (notifyBox && state) {
-      notifyBox.onchange = () => { state.notifyRoom = notifyBox.checked; };
-    }
 
     const form = root.querySelector('#secret-modal-form');
     if (form) {
@@ -639,13 +609,12 @@
     render();
   }
 
-  async function openStandalone({ tab = 'env', hubSub = null, notifyRoom = false } = {}) {
+  async function openStandalone({ tab = 'env', hubSub = null } = {}) {
     wipeAndClose();
     state = {
       mode: 'standalone',
       tab,
       hubSub,
-      notifyRoom,
       kvRows: [{ name: '' }],
       envKeys: [],
       modelConnections: [],

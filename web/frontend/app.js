@@ -1001,7 +1001,6 @@ function installChatScrollTracking(messages, followBottom) {
     if (distance < 36) tracking.followBottom = true;
     else if (!scrollStarted && (draggingScrollbar || top < tracking.lastTop - 2)) tracking.followBottom = false;
     tracking.lastTop = top;
-    syncWorkDockVisibility(messages);
   };
   messages.addEventListener('scroll', onScroll, { passive: true });
   const pause = () => { tracking.followBottom = false; scrollStarted = 0; cancelAnimationFrame(frame); frame = 0; };
@@ -2502,10 +2501,8 @@ async function act(action, element) {
   }
   if (action === 'add-reference') return addReference();
   if (action === 'open-secret-input') {
-    const inActiveRoom = ui.view === 'chat' && Boolean(roomById(ui.roomId)) && !ui.creatingRoom;
     return window.SummonSecretInput?.openStandalone?.({
       tab: element.dataset.secretTab || 'env',
-      notifyRoom: inActiveRoom,
     });
   }
   if (action === 'remove-reference') { ui.draftReferences[ui.roomId] = ui.draftReferences[ui.roomId].filter(item => !sameRef(item,ref)); return render(); }
@@ -3680,18 +3677,6 @@ function openSecretPromptModal(msgId) {
   });
 }
 
-async function sendSafeSecretRoomReceipt(text) {
-  const room = roomById(ui.roomId);
-  if (!room || !text || !ui.protocolReady) return;
-  const leadId = room.lead_bot_id && room.members.includes(room.lead_bot_id) ? room.lead_bot_id : null;
-  const payload = {
-    text,
-    mentions: leadId ? [leadId] : [],
-  };
-  const entry = queueLocalMessage(room.id, payload, []);
-  await sendLocalMessage(entry, true);
-}
-
 async function submitPromptCard(msgId) {
   const room = roomById(ui.roomId);
   if (!room || !msgId || ui.promptSubmitting.has(msgId) || !ui.protocolReady) return;
@@ -3964,8 +3949,9 @@ function renderMessageAcks(message, timeline) {
 function renderChatMessage(message, timeline, grouped, isGroup, previous = null) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
   const senderLabel = message.senderName || nameOf(sender);
-  const showReplyQuote = Boolean(message.replyTo && message.replyTo !== previous?.id);
-  const parent = showReplyQuote ? timeline.find(item => item.id === message.replyTo) : null;
+  const rawParent = message.replyTo ? timeline.find(item => item.id === message.replyTo) : null;
+  const showReplyQuote = Boolean(message.replyTo && message.replyTo !== previous?.id && !rawParent?.promptResponse);
+  const parent = showReplyQuote ? rawParent : null;
   const pinned = roomById(ui.roomId)?.pins.some(ref => ref.kind === 'event' && ref.id === message.id);
   const mentions = message.mentions || [];
   const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(senderLabel)}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
@@ -4076,13 +4062,14 @@ function renderChat() {
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
   const title = room?.name || '消息';
   const timeline = mergedRoomMessages(ui.roomId, ui.messages);
+  const visibleTimeline = timeline.filter(message => !message.promptResponse);
   let previousDay = '';
-  const messages = timeline.map((message, index) => {
-    const previous = timeline[index - 1];
+  const messages = visibleTimeline.map((message, index) => {
+    const previous = visibleTimeline[index - 1];
     const elapsed = Date.parse(message.createdAt) - Date.parse(previous?.createdAt);
     const day = formatDay(message.createdAt);
     const divider = day !== previousDay ? `<div class="date-divider">${esc(day)}</div>` : '';
-    const grouped = day === previousDay && previous?.senderId === message.senderId && elapsed >= 0 && elapsed <= 120000;
+    const grouped = day === previousDay && previous?.senderId === message.senderId && !previous?.prompt && elapsed >= 0 && elapsed <= 120000;
     previousDay = day;
     return divider + renderChatMessage(message, timeline, grouped, isGroup, previous);
   }).join('');
@@ -4136,8 +4123,8 @@ function formatLiveStatusText(raw) {
   return `正在${sep}${cleaned}`;
 }
 
-const WORK_RICH_THRESHOLD_MS = 4500;
 const WORK_QUIET_THRESHOLD_MS = 75000;
+const WORK_PHASE_RANK = { waiting_input: 5, session: 4, tool: 3, thinking: 2, planned: 1, fast_read: 0 };
 
 function parseTimestampMs(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -4283,12 +4270,6 @@ function summarizeRoomWork(room, items) {
   const elapsedMs = Math.max(0, nowMs - startedAt);
   const quietMs = Math.max(0, nowMs - lastUpdateAt);
   const isQuiet = !hasWaitingInput && quietMs >= WORK_QUIET_THRESHOLD_MS;
-  const isRich = hasWaitingInput
-    || liveCount > 0
-    || totalCount >= 2
-    || items.length > 1
-    || elapsedMs >= WORK_RICH_THRESHOLD_MS
-    || items.some(it => ['session', 'tool'].includes(it.phase) || Boolean(it.workSummary));
 
   ui.roomWorkEpoch[room.id] = {
     startedAt,
@@ -4296,27 +4277,23 @@ function summarizeRoomWork(room, items) {
     signatureText,
     totalCount,
     doneCount,
-    wasRich: isRich,
     wasQuiet: isQuiet,
   };
 
-  const primary = items.find(it => it.phase === 'waiting_input')
-    || items.find(it => it.workSummary)
-    || items[0];
-  const title = primary.workSummary
-    || (items.length > 1 ? `${items.length} 位伙伴协同处理中` : `${primary.name} 正在处理`);
-  const actorLine = items.length > 1
-    ? `${items.slice(0, 3).map(it => it.name).join('、')}${items.length > 3 ? ` 等 ${items.length} 位` : ''}`
-    : primary.name;
+  const ranked = [...items].sort((a, b) => (WORK_PHASE_RANK[b.phase] ?? 1) - (WORK_PHASE_RANK[a.phase] ?? 1));
+  const primary = ranked[0];
+  const substantive = ranked.filter(it => it.phase !== 'fast_read');
+  const displayItems = substantive.length ? substantive : ranked;
+  const actorLabel = displayItems.length > 1 ? `${primary.name} 等 ${displayItems.length} 位` : primary.name;
   const headerText = hasWaitingInput
     ? '等待你的输入'
     : isQuiet
       ? `${primary.name} 等待响应`
-      : items.length > 1
-        ? `${items.length} 位伙伴工作中`
+      : displayItems.length > 1
+        ? `${displayItems.length} 位伙伴工作中`
         : `${primary.name} 工作中`;
   const batchText = totalCount >= 2
-    ? (doneCount > 0 ? `已完成 ${doneCount} / ${totalCount}` : `${liveCount} 项并行处理中`)
+    ? (doneCount > 0 ? `${doneCount} / ${totalCount}` : `${liveCount} 项并行`)
     : '';
   const progressPct = totalCount >= 3 && doneCount > 0
     ? Math.max(6, Math.min(96, Math.round((doneCount / totalCount) * 100)))
@@ -4324,16 +4301,14 @@ function summarizeRoomWork(room, items) {
 
   return {
     primary,
-    items,
+    items: displayItems,
     startedAt,
     lastUpdateAt,
     elapsedMs,
     quietMs,
     hasWaitingInput,
     isQuiet,
-    isRich,
-    title,
-    actorLine,
+    actorLabel,
     headerText,
     batchText,
     progressPct,
@@ -4403,51 +4378,23 @@ function renderRoomExecutionDrawer(room, liveItems) {
 function renderUnifiedWorkBand(room, items, work, drawerOpen) {
   if (!work || !items.length) return '';
   const { primary } = work;
-  const badgeLabel = work.hasWaitingInput ? '等待输入' : work.isQuiet ? '等待响应' : '进行中';
-  const stepText = items.length > 1 ? `${primary.name}：${primary.text}` : primary.text;
-  const expandedStepHtml = work.isQuiet
-    ? `<span>仍在等待后台响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）· 上一步：${esc(primary.text)}</span>`
-    : `<span class="${work.hasWaitingInput ? '' : 'shimmer-status'}">${esc(stepText)}</span>`;
-  const compactStepHtml = work.isQuiet
-    ? `<span class="cwb-compact-quiet">等待响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）</span>`
-    : `<span class="${work.hasWaitingInput ? '' : 'shimmer-status'} cwb-compact-step">${esc(primary.text)}</span>`;
+  const displayItems = work.items || items;
+  const stepHtml = work.isQuiet
+    ? `<span class="cwb-quiet">等待响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）</span>`
+    : `<span class="${work.hasWaitingInput ? 'cwb-waiting' : 'shimmer-status'} cwb-step">${esc(primary.text)}</span>`;
   const elapsedLabel = formatElapsedClock(work.elapsedMs);
 
-  return `<button type="button" class="composer-work-band ${work.isRich ? 'is-rich' : 'is-brief'} ${drawerOpen ? 'drawer-open' : ''}"
+  return `<button type="button" class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}"
       data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
-      title="${esc(work.title + ' · ' + primary.text)}（点击${drawerOpen ? '收起' : '查看'}执行过程）">
-    <div class="cwb-expanded">
-      <div class="cwb-head">
-        <div class="cwb-avatars ${items.length > 1 ? 'is-multi' : ''}">
-          ${items.slice(0, 3).map(item => face(botAvatar(item.botId), 28, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
-        </div>
-        <div class="cwb-head-copy">
-          <div class="cwb-title-row">
-            <strong class="cwb-title">${esc(work.title)}</strong>
-            <span class="cwb-badge ${work.hasWaitingInput ? 'is-waiting' : work.isQuiet ? 'is-quiet' : ''}">${esc(badgeLabel)}</span>
-          </div>
-          <div class="cwb-meta">
-            <span>${esc(work.actorLine)}</span>
-            <span class="cwb-sep">·</span>
-            <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
-            ${work.batchText ? `<span class="cwb-sep">·</span><span class="cwb-batch">${esc(work.batchText)}</span>` : ''}
-          </div>
-        </div>
-        <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+      title="${esc(work.actorLabel + ' · ' + primary.text)}（点击${drawerOpen ? '收起' : '查看'}执行过程）">
+    <div class="cwb-row">
+      <div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">
+        ${displayItems.slice(0, 2).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
       </div>
-      <div class="cwb-step-row">
-        <span class="cwb-pulse-dot" aria-hidden="true"></span>
-        <div class="cwb-step">${expandedStepHtml}</div>
-      </div>
-    </div>
-    <div class="cwb-compact">
-      <div class="cwb-avatars ${items.length > 1 ? 'is-multi' : ''}">
-        ${items.slice(0, 2).map(item => face(botAvatar(item.botId), 22, { key: `composer-work-compact:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
-      </div>
-      <span class="cwb-compact-name">${esc(primary.name)}</span>
+      <span class="cwb-name">${esc(work.actorLabel)}</span>
       <span class="cwb-sep">·</span>
-      ${compactStepHtml}
-      ${work.batchText ? `<span class="cwb-compact-batch">${esc(work.batchText)}</span>` : ''}
+      ${stepHtml}
+      ${work.batchText ? `<span class="cwb-batch">${esc(work.batchText)}</span>` : ''}
       <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
       <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
     </div>
@@ -4474,9 +4421,8 @@ function tickLiveWorkTimers() {
   if (ui.view !== 'chat' || !ui.roomId) return;
   const epoch = ui.roomWorkEpoch[ui.roomId];
   if (!epoch) { stopLiveWorkClock(); return; }
-  const shouldBeRich = (nowMs - epoch.startedAt) >= WORK_RICH_THRESHOLD_MS;
   const shouldBeQuiet = (nowMs - epoch.lastUpdateAt) >= WORK_QUIET_THRESHOLD_MS;
-  if ((!epoch.wasRich && shouldBeRich) || (!epoch.wasQuiet && shouldBeQuiet)) {
+  if (!epoch.wasQuiet && shouldBeQuiet) {
     render();
   }
 }
@@ -4492,28 +4438,8 @@ function ensureLiveWorkClock() {
     }, 1000);
   }
 }
-function syncWorkDockVisibility(messagesEl = $('.messages')) {
-  const shell = $('[data-composer-shell]');
-  if (!shell) return;
-  if (!shell.classList.contains('has-work') || shell.classList.contains('drawer-open')) {
-    shell.classList.remove('is-work-compact');
-    return;
-  }
-  const band = $('.composer-work-band', shell);
-  if (band?.classList.contains('is-brief')) {
-    shell.classList.add('is-work-compact');
-    return;
-  }
-  if (!messagesEl || !messagesEl.clientHeight) {
-    shell.classList.remove('is-work-compact');
-    return;
-  }
-  const distanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
-  shell.classList.toggle('is-work-compact', distanceFromBottom > 72);
-}
 function syncBotActivityDock() {
   ensureLiveWorkClock();
-  syncWorkDockVisibility($('.messages'));
 }
 
 function renderChatComposer(room, members, liveWorkItems, liveWork) {
@@ -4530,7 +4456,6 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
   const workBand = renderUnifiedWorkBand(room, items, work, drawerOpen);
   const hasWorkShell = Boolean(workBand || drawer);
   const workStateClass = work?.hasWaitingInput ? 'is-waiting' : work?.isQuiet ? 'is-quiet' : '';
-  const initialCompact = Boolean(workBand && !work?.isRich && !drawerOpen);
 
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"
@@ -4543,7 +4468,7 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
   return `<div class="composer-wrap">${suspendedBanner}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" ${ref.kind === 'workspace_file' ? `data-workspace-id="${esc(ref.workspace_id)}" data-path="${esc(ref.path)}"` : `data-id="${esc(ref.id)}"`}>${icon('close',14)}</button></span>`).join('')}</div>` : ''}
-    <div class="composer-shell ${hasWorkShell ? 'has-work' : ''} ${drawerOpen ? 'drawer-open' : ''} ${initialCompact ? 'is-work-compact' : ''} ${workStateClass}" data-composer-shell aria-live="polite">
+    <div class="composer-shell ${hasWorkShell ? 'has-work' : ''} ${drawerOpen ? 'drawer-open' : ''} ${workStateClass}" data-composer-shell aria-live="polite">
       ${drawer}${workBand}
       <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
         <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
@@ -5094,8 +5019,6 @@ renderTopbar();
   window.SummonSecretInput?.configure?.({
     api,
     toast,
-    getCurrentRoom: () => (ui.view === 'chat' && !ui.creatingRoom ? roomById(ui.roomId) : null),
-    sendSafeRoomReceipt: sendSafeSecretRoomReceipt,
     onAfterChange: () => void refresh(),
   });
   window.SummonOnboarding?.bind?.({

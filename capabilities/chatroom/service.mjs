@@ -314,7 +314,8 @@ export class ChatroomService {
     `);
     this.latestMessage = store.db.prepare(`
       SELECT rowid AS sequence,data FROM records
-      WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1
+      WHERE kind='messages' AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.promptResponse') IS NULL
+      ORDER BY created_at DESC,rowid DESC LIMIT 1
     `);
     this.messageRow = store.db.prepare("SELECT rowid AS sequence,created_at,data FROM records WHERE kind='messages' AND id=?");
     this.sentReply = store.db.prepare(`SELECT rowid AS sequence,data FROM records WHERE kind='messages'
