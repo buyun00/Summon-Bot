@@ -416,6 +416,30 @@ html.dark .quota-signal-value { color: var(--ink-2); }
 .chat-title-pill:active { transform: scale(0.97); }
 .chat-title-copy { flex-direction: row; align-items: baseline; gap: 8px; }
 .chat-title-copy small { color: var(--muted); font-size: calc(12px * var(--ui-font-scale, 1)); }
+.chat-title-pill.is-working {
+  border-color: color-mix(in srgb, var(--ok) 26%, var(--pill-border));
+}
+.chat-title-live {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ok) !important; font-weight: 500 !important;
+}
+.chat-title-live.is-waiting,
+.chat-title-live.is-quiet {
+  color: var(--warn) !important;
+}
+.chat-title-live-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: currentColor;
+  animation: liveWorkPulse 1.8s ease-in-out infinite;
+}
+.chat-title-live.is-quiet .chat-title-live-dot {
+  animation-duration: 3.4s;
+  opacity: 0.72;
+}
+.chat-title-live-timer {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.86;
+}
 
 .float-pill-btn {
   height: 36px; padding: 0 13px; border-radius: 999px;
@@ -700,20 +724,210 @@ html.dark .outgoing .bot-mention {
   mask-image: none;
 }
 
-/* Live Bot Activity Dock + Expandable Execution Process Drawer */
+/* ==================== IN-STREAM LIVE WORK ANCHOR & CARD ==================== */
+@keyframes liveWorkPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.36; transform: scale(0.76); }
+}
+@keyframes liveWorkGlow {
+  0%, 100% { box-shadow: var(--pill-specular), 0 6px 22px rgba(34, 30, 22, 0.05), 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent); }
+  50% { box-shadow: var(--pill-specular), 0 8px 26px rgba(34, 30, 22, 0.07), 0 0 0 3px color-mix(in srgb, var(--ok) 11%, transparent); }
+}
+@keyframes liveWorkRailSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+.chat-work-anchor {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin: 12px 0 18px;
+  max-width: min(88%, 640px);
+}
+.chat-work-anchor.is-compact {
+  align-items: center;
+}
+.chat-work-avatars {
+  display: inline-flex; align-items: center; flex: none;
+}
+.chat-work-avatars.is-multi .summon-bot-face + .summon-bot-face {
+  margin-left: -9px;
+  box-shadow: 0 0 0 2px var(--pill-bg);
+  border-radius: 50%;
+}
+.chat-work-compact-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  min-width: 0; max-width: 100%;
+  padding: 8px 14px;
+  border-radius: 20px;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  box-shadow: var(--pill-specular), 0 4px 16px rgba(34, 30, 22, 0.045);
+  font-size: calc(13px * var(--ui-font-scale, 1));
+}
+.chat-work-name {
+  flex: none; font-weight: 600; color: var(--ink-2); white-space: nowrap;
+}
+.chat-work-dot-sep {
+  flex: none; color: var(--faint);
+}
+.chat-work-timer {
+  flex: none; font-variant-numeric: tabular-nums;
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  color: var(--muted);
+}
+
+.chat-work-card {
+  width: 100%;
+  border-radius: 20px;
+  padding: 13px 15px 12px;
+  background: var(--pill-bg);
+  backdrop-filter: blur(var(--pill-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--pill-blur)) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--ok) 24%, var(--pill-border));
+  box-shadow: var(--pill-specular), 0 6px 22px rgba(34, 30, 22, 0.055);
+  animation: liveWorkGlow 3.2s ease-in-out infinite;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.chat-work-anchor.is-waiting .chat-work-card,
+.chat-work-anchor.is-quiet .chat-work-card {
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--pill-border));
+  animation: none;
+}
+.chat-work-card-head {
+  display: flex; align-items: center; gap: 11px; min-width: 0;
+}
+.chat-work-head-copy {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+}
+.chat-work-title-row {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+}
+.chat-work-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13.5px * var(--ui-font-scale, 1)); font-weight: 600; color: var(--ink);
+}
+.chat-work-badge {
+  flex: none;
+  font-size: calc(11px * var(--ui-font-scale, 1)); font-weight: 500;
+  padding: 1.5px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+  color: var(--ok);
+}
+.chat-work-badge.is-waiting,
+.chat-work-badge.is-quiet {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
+.chat-work-meta {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: calc(12px * var(--ui-font-scale, 1)); color: var(--muted);
+}
+.chat-work-batch {
+  color: var(--ink-2); font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.chat-work-head-actions {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+}
+.chat-work-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 27px; padding: 0 10px; border-radius: 999px;
+  font-size: calc(12px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--ink-2);
+  background: var(--hover);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.chat-work-btn:hover {
+  background: var(--active);
+  color: var(--ink);
+}
+.chat-work-btn.is-stop {
+  background: transparent; border-color: transparent; color: var(--muted);
+}
+.chat-work-btn.is-stop:hover {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border-color: color-mix(in srgb, var(--red) 28%, transparent);
+  color: var(--red);
+}
+.chat-work-status-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 6px 10px; border-radius: 12px;
+  background: color-mix(in srgb, var(--hover) 85%, transparent);
+}
+.chat-work-pulse-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--ok);
+  animation: liveWorkPulse 1.7s ease-in-out infinite;
+}
+.chat-work-anchor.is-waiting .chat-work-pulse-dot,
+.chat-work-anchor.is-quiet .chat-work-pulse-dot {
+  background: var(--warn);
+}
+.chat-work-anchor.is-quiet .chat-work-pulse-dot {
+  animation-duration: 3.2s;
+}
+.chat-work-step {
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(12.5px * var(--ui-font-scale, 1)); color: var(--ink-2);
+}
+.chat-work-anchor.is-quiet .chat-work-step {
+  white-space: normal; line-height: 1.45; color: var(--warn);
+}
+.chat-work-rail {
+  position: relative; height: 3px; width: 100%;
+  border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--line) 120%, transparent);
+}
+.chat-work-rail-fill {
+  position: absolute; inset: 0 auto 0 0;
+  width: 34%; border-radius: 999px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ok) 75%, transparent), transparent);
+  animation: liveWorkRailSlide 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.chat-work-rail.is-determinate .chat-work-rail-fill {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 65%, transparent), var(--ok));
+  animation: none;
+  transition: width 420ms var(--spring);
+}
+.chat-work-anchor.is-waiting .chat-work-rail-fill,
+.chat-work-anchor.is-quiet .chat-work-rail-fill {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--warn) 65%, transparent), transparent);
+  animation-duration: 4.5s;
+}
+.chat-work-anchor.is-waiting .chat-work-rail.is-determinate .chat-work-rail-fill,
+.chat-work-anchor.is-quiet .chat-work-rail.is-determinate .chat-work-rail-fill {
+  background: var(--warn);
+  animation: none;
+}
+
+/* Live Bot Activity Dock (shown when scrolled away or execution drawer open) + Drawer */
 .bot-activity-dock {
   display: flex; flex-direction: column; align-items: stretch; gap: 8px;
   width: 100%;
-  padding: 0 8px 8px;
+  padding: 0 4px 8px;
+}
+.bot-activity-dock.is-anchored-in-stream {
+  padding: 0;
+  gap: 0;
+}
+.bot-activity-dock.is-anchored-in-stream .bot-activity-bar {
+  display: none;
 }
 .bot-activity-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  width: 100%; min-height: 38px; padding: 0 2px;
-  animation: cybercabPeek 260ms var(--spring) both;
+  width: 100%; min-height: 40px; padding: 2px 8px 2px 4px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  backdrop-filter: blur(var(--pill-blur)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--pill-blur)) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--ok) 22%, var(--pill-border));
+  box-shadow: var(--pill-specular), var(--pill-shadow);
 }
-@keyframes cybercabPeek {
-  from { opacity: 0; transform: translateY(8px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+.bot-activity-dock.is-waiting .bot-activity-bar,
+.bot-activity-dock.is-quiet .bot-activity-bar {
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--pill-border));
 }
 .bot-activity-viewport {
   flex: 1 1 auto; min-width: 0; overflow: hidden;
@@ -728,7 +942,7 @@ html.dark .outgoing .bot-mention {
   flex: none; max-width: none;
 }
 .bot-activity-bar[data-layout="ticker"] .bot-activity-viewport {
-  height: 38px;
+  height: 36px;
 }
 .bot-activity-bar[data-layout="ticker"] .bot-activity-track {
   flex-direction: column; align-items: stretch; gap: 0;
@@ -740,8 +954,8 @@ html.dark .outgoing .bot-mention {
 }
 .activity-trigger {
   display: inline-flex; align-items: center; gap: 8px;
-  height: 38px; min-width: 0; max-width: 100%;
-  padding: 2px 8px 2px 7px;
+  height: 36px; min-width: 0; max-width: 100%;
+  padding: 2px 8px 2px 6px;
   border-radius: 999px; text-align: left; cursor: pointer;
   transition: background 140ms ease;
 }
@@ -758,8 +972,31 @@ html.dark .outgoing .bot-mention {
 .activity-summary {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.activity-summary.is-quiet {
+  font-size: calc(12.5px * var(--ui-font-scale, 1)); color: var(--warn); font-weight: 500;
+}
 .bot-activity-controls {
   flex: none; display: inline-flex; align-items: center; gap: 4px;
+}
+.activity-timer {
+  flex: none; padding: 0 5px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.activity-jump-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--ink-2); background: var(--hover);
+  border: 1px solid var(--line); cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+.activity-jump-btn:hover {
+  background: var(--active); color: var(--ink);
+}
+.bot-activity-dock.drawer-open .activity-jump-btn {
+  display: none;
 }
 .activity-stop-btn {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
@@ -801,7 +1038,13 @@ html.dark .outgoing .bot-mention {
   -webkit-backdrop-filter: blur(var(--pill-blur)) saturate(1.5);
   border: 1px solid var(--pill-border);
   box-shadow: var(--pill-specular), var(--composer-shadow);
-  animation: cybercabPeek 200ms var(--spring) both;
+}
+
+@media (max-width: 640px) {
+  .chat-work-anchor { max-width: 100%; }
+  .chat-work-card-head { flex-wrap: wrap; }
+  .chat-work-head-actions { width: 100%; justify-content: flex-end; }
+  .activity-jump-btn { display: none; }
 }
 .bot-execution-drawer-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
