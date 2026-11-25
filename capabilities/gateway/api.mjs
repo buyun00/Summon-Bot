@@ -318,6 +318,9 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
     if (path === '/api/onboarding/start' && method === 'POST') {
       return platform.startOnboarding({ activateBundled: args.activateBundled || args.activate_bundled || null });
     }
+    if (path === '/api/onboarding/finish' && method === 'POST') {
+      return platform.finishOnboarding();
+    }
     if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
     if (path === preservedModelSettings + '/local/import' && method === 'POST') {

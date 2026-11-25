@@ -15,10 +15,10 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
   }));
 } else if (location.pathname === '/') {
   const params = new URLSearchParams(location.search);
-  const introMode = params.get('desktop_intro');
+  const onboardingWindow = params.get('onboarding_window');
   contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
-    isIntroWindow: Boolean(introMode),
-    introMode: introMode || null,
+    isOnboardingWindow: Boolean(onboardingWindow),
+    initialOnboardingStage: onboardingWindow || null,
     getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
     getPathForFile: file => {
       try { return webUtils?.getPathForFile ? (webUtils.getPathForFile(file) || '') : ''; }
@@ -26,12 +26,8 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
     },
     pickDirectory: () => ipcRenderer.invoke('summon:pick-directory'),
     openAttachment: options => ipcRenderer.invoke('summon:open-attachment', options || {}),
+    morphWindow: (stage, options) => ipcRenderer.invoke('summon:morph-window', { stage, ...(options || {}) }),
     previewDesktopIntro: () => ipcRenderer.invoke('summon:preview-desktop-intro'),
-    settleIntroWindow: size => ipcRenderer.invoke('summon:intro-settle-window', size || {}),
-    prepareIntroHandoff: options => ipcRenderer.invoke('summon:intro-prepare-handoff', options || {}),
-    expandIntroHandoff: () => ipcRenderer.invoke('summon:intro-expand-handoff'),
-    finishIntroHandoff: () => ipcRenderer.invoke('summon:intro-finish-handoff'),
-    closeIntroWindow: () => ipcRenderer.invoke('summon:intro-close'),
     setTheme: dark => ipcRenderer.invoke('summon:set-theme', Boolean(dark)),
     checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
     installUpdate: () => ipcRenderer.invoke('summon:install-update'),
@@ -57,11 +53,11 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
       ipcRenderer.on('summon:window-active', listener);
       return () => ipcRenderer.removeListener('summon:window-active', listener);
     },
-    onStartOnboardingFocus: callback => {
+    onPreviewOnboarding: callback => {
       if (typeof callback !== 'function') return () => {};
-      const listener = (_event, detail) => callback(detail);
-      ipcRenderer.on('summon:start-onboarding-focus', listener);
-      return () => ipcRenderer.removeListener('summon:start-onboarding-focus', listener);
+      const listener = () => callback();
+      ipcRenderer.on('summon:preview-onboarding', listener);
+      return () => ipcRenderer.removeListener('summon:preview-onboarding', listener);
     },
   }));
 }

@@ -1170,8 +1170,12 @@ async function handshake() {
   } else if (!stream) {
     stream = new EventSource('/api/stream?protocol=' + protocolVersion);
     stream.onopen = () => { ui.streamConnected = true; scheduleRefresh(); };
-    stream.onmessage = scheduleRefresh;
-    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace']) stream.addEventListener(type, scheduleRefresh);
+    const onStream = () => {
+      scheduleRefresh();
+      window.SummonOnboarding?.notifyUpdate?.();
+    };
+    stream.onmessage = onStream;
+    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace']) stream.addEventListener(type, onStream);
     stream.onerror = () => { ui.streamConnected = false; scheduleRefresh(); };
   }
   return true;
@@ -4979,33 +4983,18 @@ renderTopbar();
     toast,
     refresh,
     onRender: render,
-    onEnterOnboardingChat: async roomId => {
-      ui.view = 'chat';
-      ui.creatingRoom = false;
-      ui.detailOpen = false;
-      ui.mobileRoom = true;
+    onEnterNewGroup: async ({ preview = false } = {}) => {
+      if (preview) return;
       await refresh(true);
-      const target = roomById(roomId) ? roomId : defaultGroupRoom()?.id;
-      if (target) {
-        ui.roomId = target;
-        await restoreRoomMessages(target);
-        render();
-        await loadCurrent();
-      }
+      await openNewGroupDraft();
     },
   });
-  if (window.SummonDesktop?.isIntroWindow) {
-    ui.loading = false;
-    await handshake().catch(() => {});
-    window.SummonOnboarding?.startDesktopIntro?.({
-      preview: window.SummonDesktop.introMode === 'preview',
-      skipBloom: window.SummonDesktop.introMode === 'ready',
-    });
-    return;
-  }
-  window.SummonDesktop?.onStartOnboardingFocus?.(detail => {
-    window.SummonOnboarding?.enterFocusFromDesktop?.({ preview: Boolean(detail?.preview) });
+  window.SummonDesktop?.onPreviewOnboarding?.(() => {
+    window.SummonOnboarding?.startPreview?.();
   });
+  if (window.SummonDesktop?.isOnboardingWindow) {
+    window.SummonOnboarding?.preopen?.(window.SummonDesktop.initialOnboardingStage || 'model');
+  }
   await restoreCachedState();
   await refresh();
   if (new URLSearchParams(location.search).get('onboarding') === 'preview') {

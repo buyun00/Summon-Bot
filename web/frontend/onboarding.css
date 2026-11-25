@@ -1,12 +1,9 @@
-/* Arc / Dia-inspired Full-Screen Onboarding & Focus Mode */
+/* 3-Stage Single-Window Morphing Onboarding (Model -> Bot Setup -> Main Workspace) */
 :root {
-  --ob-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --ob-aura-1: rgba(232, 214, 180, 0.34);
-  --ob-aura-2: rgba(212, 224, 232, 0.24);
-  --ob-aura-3: rgba(238, 220, 198, 0.28);
+  --ob-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --ob-card-bg: #fbf9f4;
   --ob-card-border: #e5e0d5;
-  --ob-card-shadow: 0 16px 36px -8px rgba(31, 29, 24, 0.14), 0 4px 12px rgba(31, 29, 24, 0.06);
+  --ob-card-shadow: 0 20px 44px -10px rgba(31, 29, 24, 0.16), 0 4px 14px rgba(31, 29, 24, 0.06);
   --ob-tile-bg: #f1eee6;
   --ob-tile-hover: #e8e4da;
   --ob-ok: #266b43;
@@ -16,12 +13,9 @@
 }
 
 html.dark {
-  --ob-aura-1: rgba(186, 170, 138, 0.16);
-  --ob-aura-2: rgba(128, 162, 194, 0.14);
-  --ob-aura-3: rgba(154, 140, 186, 0.14);
   --ob-card-bg: #151822;
   --ob-card-border: #2a3040;
-  --ob-card-shadow: 0 20px 44px -8px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  --ob-card-shadow: 0 24px 52px -10px rgba(0, 0, 0, 0.54), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   --ob-tile-bg: #1e2331;
   --ob-tile-hover: #262c3d;
   --ob-ok: #5cd38c;
@@ -30,16 +24,20 @@ html.dark {
   --ob-err-soft: #311a1b;
 }
 
-/* True OS-level transparent full-screen desktop intro window */
-html.desktop-intro-window,
-html.desktop-intro-window body {
-  background: transparent !important;
-  overflow: hidden !important;
+/* Hide main app-shell cleanly before first paint when desktop opens in compact onboarding window */
+html.desktop-onboarding-window .app-shell {
+  opacity: 0;
+  pointer-events: none;
 }
 
-html.desktop-intro-window .app-shell,
-html.desktop-intro-window #toasts {
-  display: none !important;
+/* Smooth glide-in of sidebar + workspace when morphing into Stage 3 */
+body.ob-revealing-main #contact-sidebar {
+  animation: ob-sidebar-in 440ms var(--ob-ease) both;
+}
+
+@keyframes ob-sidebar-in {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .ob-root {
@@ -48,262 +46,127 @@ html.desktop-intro-window #toasts {
   z-index: 920;
   display: grid;
   place-items: center;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: max(28px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
-  background: var(--bg, #f8f6f1);
+  overflow: hidden;
+  padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg, #f8f6f1) 92%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   color: var(--ink, #1f1e1b);
   isolation: isolate;
-  clip-path: inset(0px 0px 0px 0px round 0px);
-  transition: opacity 420ms var(--ob-ease), transform 520ms var(--ob-ease), clip-path 560ms var(--ob-ease);
-}
-
-html.desktop-intro-window .ob-root {
-  background: transparent !important;
-  /* Generous outer breathing room inside the 700x760 transparent window so card elevation shadow never clips! */
-  padding: 46px 58px;
-  overflow: hidden;
-  transition: padding 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 320ms ease;
-}
-
-html.desktop-intro-window .ob-root.is-expanding-to-main {
-  padding: 0;
-  pointer-events: none;
-}
-
-.ob-root.is-expanding-to-main .ob-stage {
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
-  border-radius: 10px;
-  background: var(--bg, #f8f6f1);
-  border-color: transparent;
-  box-shadow: none;
-  overflow: hidden;
-  transition:
-    width 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    background 320ms ease,
-    border-color 240ms ease,
-    box-shadow 240ms ease;
-}
-
-.ob-root.is-expanding-to-main .ob-stage > * {
-  opacity: 0;
-  transform: scale(0.97);
-  transition: opacity 200ms ease, transform 240ms var(--ob-ease);
-}
-
-.ob-root.is-morphing {
-  clip-path: inset(var(--ob-morph-top, 0px) var(--ob-morph-right, 0px) var(--ob-morph-bottom, 0px) var(--ob-morph-left, 0px) round 14px);
-  pointer-events: none;
-}
-
-.ob-root.is-morphing .ob-stage,
-.ob-root.is-morphing .ob-topbar {
-  opacity: 0 !important;
-  transform: scale(0.95);
-  transition: opacity 240ms ease, transform 320ms var(--ob-ease);
-}
-
-.ob-root.is-exiting {
-  opacity: 0;
-  transform: scale(1.02);
-  pointer-events: none;
-}
-
-.ob-root.is-morphing.is-exiting {
-  transform: none;
-  transition: opacity 180ms ease;
-}
-
-/* Act 1: Full-screen warm paper diffusion wave */
-.ob-portal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: -2;
-  background:
-    radial-gradient(78vw 78vw at 50% 48%, var(--ob-aura-1), transparent 72%),
-    radial-gradient(70vw 70vw at 26% 24%, var(--ob-aura-2), transparent 70%),
-    radial-gradient(72vw 72vw at 76% 78%, var(--ob-aura-3), transparent 72%),
-    color-mix(in srgb, var(--bg, #f8f6f1) 88%, transparent);
-  clip-path: circle(0% at 50% 50%);
-  opacity: 0;
-  transition: clip-path 1600ms cubic-bezier(0.22, 1, 0.36, 1), opacity 700ms ease;
-}
-
-.ob-root.is-expanded .ob-portal-backdrop {
-  clip-path: circle(150% at 50% 50%);
   opacity: 1;
+  transition: opacity 340ms var(--ob-ease), background 340ms var(--ob-ease);
 }
 
-/* Once the full-screen bloom finishes, recede the backdrop so only the floating setup window remains */
-html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
+/* In Electron single-window onboarding, the OS window itself IS the morphing card */
+html.desktop-onboarding-window .ob-root {
+  padding: 0;
+  background: var(--ob-card-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.ob-root.is-morphing-to-main {
   opacity: 0;
-  transition: opacity 720ms ease;
-}
-
-.ob-portal-ring {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  width: 148px;
-  height: 148px;
-  margin: -74px 0 0 -74px;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--ob-card-border) 85%, transparent);
-  box-shadow: 0 0 64px 10px var(--ob-aura-1), inset 0 0 36px var(--ob-aura-3);
-  z-index: -1;
   pointer-events: none;
+}
+
+.ob-root.is-morphing-to-main .ob-stage {
+  transform: scale(1.03);
   opacity: 0;
-  transform: scale(0.3);
 }
 
-.ob-root.is-expanding .ob-portal-ring {
-  animation: ob-ring-expand 1850ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-
-@keyframes ob-ring-expand {
-  0% { opacity: 0; transform: scale(0.25); }
-  20% { opacity: 0.95; transform: scale(1.15); }
-  75% { opacity: 0.45; transform: scale(13); }
-  100% { opacity: 0; transform: scale(20); }
-}
-
-.ob-intro-center {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-  z-index: 2;
-  transition: opacity 580ms ease, transform 680ms var(--ob-ease);
-}
-
-.ob-intro-center.is-settled {
-  opacity: 0;
-  transform: translateY(-42px) scale(0.86);
-}
-
-.ob-intro-orb {
+/* Stage card: smoothly morphs width/height between Stage 1 (model) and Stage 2 (bot) */
+.ob-stage {
+  width: min(560px, 100%);
+  max-height: min(740px, 100%);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 18px;
-  animation: ob-orb-rise 820ms var(--ob-ease) both;
-}
-
-.ob-intro-orb-badge {
-  width: 104px;
-  height: 104px;
-  border-radius: 32px;
-  display: grid;
-  place-items: center;
-  background: var(--ob-card-bg);
-  border: 1px solid var(--ob-card-border);
-  box-shadow: var(--ob-card-shadow);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
-}
-
-.ob-intro-orb-title {
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  color: var(--ink);
-  opacity: 0;
-  transform: translateY(10px);
-  animation: ob-fade-up 620ms var(--ob-ease) 260ms forwards;
-}
-
-@keyframes ob-orb-rise {
-  0% { opacity: 0; transform: scale(0.62) translateY(20px); }
-  100% { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-@keyframes ob-fade-up {
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Desktop drag bar & preview escape */
-.ob-topbar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0 18px;
-  z-index: 5;
-  -webkit-app-region: drag;
-}
-
-.ob-topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  -webkit-app-region: no-drag;
-}
-
-.ob-ghost-pill {
-  appearance: none;
-  border: 1px solid var(--ob-card-border);
-  background: var(--ob-card-bg);
-  color: var(--ink-2, var(--muted));
-  border-radius: 999px;
-  padding: 6px 14px;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  transition: background 180ms ease, color 180ms ease, transform 180ms ease;
-}
-
-.ob-ghost-pill:hover {
-  background: var(--ob-tile-hover);
-  color: var(--ink);
-}
-
-/* Act 2: Compact Floating Setup Window (non-fullscreen!) */
-.ob-stage {
-  width: min(580px, 100%);
-  max-height: 100%;
-  overflow-y: auto;
-  border-radius: 26px;
+  overflow: hidden;
+  border-radius: 24px;
   background: var(--ob-card-bg);
   color: var(--ink, #1f1e1b);
   border: 1px solid var(--ob-card-border);
   box-shadow: var(--ob-card-shadow);
   opacity: 0;
-  transform: translateY(18px) scale(0.95);
-  pointer-events: none;
-  transition: opacity 380ms var(--ob-ease), transform 440ms var(--ob-ease);
+  transform: translateY(10px) scale(0.97);
+  transition:
+    width 420ms var(--ob-ease),
+    height 420ms var(--ob-ease),
+    max-height 420ms var(--ob-ease),
+    opacity 320ms var(--ob-ease),
+    transform 380ms var(--ob-ease),
+    border-radius 320ms var(--ob-ease);
 }
 
 .ob-root.is-ready .ob-stage {
   opacity: 1;
   transform: translateY(0) scale(1);
-  pointer-events: auto;
 }
 
+.ob-root.is-stage-bot .ob-stage {
+  width: min(740px, 100%);
+  height: min(680px, 88vh);
+  max-height: min(720px, 90vh);
+}
+
+html.desktop-onboarding-window .ob-stage,
+html.desktop-onboarding-window .ob-root.is-stage-bot .ob-stage {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+/* Top draggable window bar */
 .ob-window-bar {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px 4px 20px;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 18px 6px 20px;
   -webkit-app-region: drag;
 }
 
+/* Reserve right space for Windows native titleBarOverlay min/max/close controls */
+html.desktop-onboarding-window.is-win .ob-window-bar {
+  padding-right: 146px;
+}
+
 .ob-window-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   font-weight: 640;
   color: var(--muted);
   letter-spacing: -0.01em;
+}
+
+.ob-step-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ob-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ob-card-border);
+  transition: width 280ms var(--ob-ease), background 240ms ease;
+}
+
+.ob-step-dot.is-active {
+  width: 18px;
+  background: var(--accent, #7d824b);
+}
+
+.ob-step-dot.is-done {
+  background: var(--ob-ok);
 }
 
 .ob-window-controls {
@@ -313,21 +176,55 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   -webkit-app-region: no-drag;
 }
 
+.ob-ghost-pill {
+  appearance: none;
+  border: 1px solid var(--ob-card-border);
+  background: transparent;
+  color: var(--ink-2, var(--muted));
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.ob-ghost-pill:hover {
+  background: var(--ob-tile-hover);
+  color: var(--ink);
+}
+
+/* Stage 1 body */
+.ob-model-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: ob-fade-slide 280ms var(--ob-ease) both;
+}
+
+@keyframes ob-fade-slide {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .ob-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 8px;
-  padding: 6px 24px 16px;
+  gap: 7px;
+  padding: 4px 12px 4px;
 }
 
 .ob-hero-face {
-  width: 66px;
-  height: 66px;
+  width: 64px;
+  height: 64px;
   display: grid;
   place-items: center;
-  transition: transform 360ms var(--ob-ease);
+  transition: transform 320ms var(--ob-ease);
 }
 
 .ob-hero-face.is-testing {
@@ -335,7 +232,7 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 }
 
 .ob-hero-face.is-success {
-  transform: scale(1.1);
+  transform: scale(1.08);
 }
 
 @keyframes ob-pulse {
@@ -345,27 +242,20 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 
 .ob-hero h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 760;
   letter-spacing: -0.035em;
-  line-height: 1.2;
+  line-height: 1.22;
 }
 
 .ob-hero p {
   margin: 0;
   max-width: 440px;
-  font-size: 13.5px;
-  line-height: 1.58;
+  font-size: 13px;
+  line-height: 1.55;
   color: var(--ink-2, var(--muted));
 }
 
-.ob-card {
-  padding: 0 22px 22px;
-  display: grid;
-  gap: 14px;
-}
-
-/* Local auto-detected subscription banner */
 .ob-local-list {
   display: grid;
   gap: 10px;
@@ -376,8 +266,8 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  padding: 13px 15px;
+  border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--accent, #7d824b) 35%, var(--ob-card-border));
   background: color-mix(in srgb, var(--accent, #7d824b) 9%, var(--ob-tile-bg));
 }
@@ -389,12 +279,12 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 }
 
 .ob-local-copy strong {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 650;
 }
 
 .ob-local-copy small {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--ink-2, var(--muted));
 }
 
@@ -414,7 +304,6 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   background: var(--ob-card-border);
 }
 
-/* Provider tiles */
 .ob-provider-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -426,9 +315,9 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 12px 13px;
-  border-radius: 16px;
+  gap: 5px;
+  padding: 11px 12px;
+  border-radius: 15px;
   border: 1px solid var(--ob-card-border);
   background: var(--ob-tile-bg);
   color: var(--ink);
@@ -451,12 +340,12 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 .ob-provider-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
 }
 
 .ob-provider-tile strong {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 620;
 }
 
@@ -465,11 +354,10 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   color: var(--muted);
 }
 
-/* Minimal setup form */
 .ob-form {
   display: grid;
-  gap: 12px;
-  padding-top: 4px;
+  gap: 11px;
+  padding-top: 2px;
 }
 
 .ob-field {
@@ -486,13 +374,13 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 .ob-field input,
 .ob-field select {
   width: 100%;
-  padding: 11px 14px;
-  border-radius: 13px;
+  padding: 10px 13px;
+  border-radius: 12px;
   border: 1px solid var(--ob-card-border);
   background: var(--ob-tile-bg);
   color: var(--ink);
   font: inherit;
-  font-size: 14px;
+  font-size: 13.5px;
   outline: none;
   transition: border-color 160ms ease, background 160ms ease;
 }
@@ -504,37 +392,36 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 }
 
 .ob-advanced {
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--ink-2, var(--muted));
 }
 
 .ob-advanced summary {
   cursor: pointer;
   user-select: none;
-  padding: 4px 0;
+  padding: 3px 0;
 }
 
 .ob-advanced-body {
   display: grid;
   gap: 10px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .ob-checkbox {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--ink-2, var(--muted));
   cursor: pointer;
 }
 
-/* OAuth box */
 .ob-oauth-box {
   display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 18px;
+  gap: 11px;
+  padding: 15px;
+  border-radius: 16px;
   background: var(--ob-tile-bg);
   border: 1px solid var(--ob-card-border);
   text-align: center;
@@ -542,11 +429,11 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 
 .ob-device-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 750;
   letter-spacing: 0.14em;
   color: var(--ink);
-  padding: 8px 0;
+  padding: 6px 0;
   user-select: all;
 }
 
@@ -557,14 +444,273 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   flex-wrap: wrap;
 }
 
-/* Status & actions */
+/* Stage 2: Focused Single-Step Bot Onboarding View */
+.ob-bot-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 22px 18px;
+  gap: 12px;
+  animation: ob-fade-slide 320ms var(--ob-ease) both;
+}
+
+.ob-bot-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 15px;
+  border-radius: 18px;
+  background: var(--ob-tile-bg);
+  border: 1px solid var(--ob-card-border);
+}
+
+.ob-bot-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ob-bot-titles {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ob-bot-titles h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.ob-bot-titles p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-2, var(--muted));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-bot-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--ob-card-bg);
+  border: 1px solid var(--ob-card-border);
+  color: var(--ink-2, var(--muted));
+}
+
+.ob-bot-badge.is-live {
+  color: var(--accent, #7d824b);
+  border-color: color-mix(in srgb, var(--accent, #7d824b) 40%, var(--ob-card-border));
+}
+
+.ob-bot-badge.is-done {
+  background: var(--ob-ok-soft);
+  border-color: transparent;
+  color: var(--ob-ok);
+}
+
+.ob-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ob-dot-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes ob-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
+.ob-bot-progress {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--accent, #7d824b) 10%, var(--ob-tile-bg));
+  border: 1px solid color-mix(in srgb, var(--accent, #7d824b) 25%, var(--ob-card-border));
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.ob-bot-progress-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ob-bot-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-bot-timer {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ob-bot-feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 4px;
+}
+
+.ob-bot-empty {
+  margin: auto;
+  max-width: 380px;
+  text-align: center;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  color: var(--ink-2, var(--muted));
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.ob-bubble {
+  max-width: 88%;
+  padding: 11px 14px;
+  border-radius: 16px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.ob-bubble.is-bot {
+  align-self: flex-start;
+  background: var(--ob-tile-bg);
+  border: 1px solid var(--ob-card-border);
+  color: var(--ink);
+  border-top-left-radius: 6px;
+}
+
+.ob-bubble.is-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent, #7d824b) 16%, var(--ob-tile-bg));
+  border: 1px solid color-mix(in srgb, var(--accent, #7d824b) 32%, var(--ob-card-border));
+  color: var(--ink);
+  border-top-right-radius: 6px;
+}
+
+.ob-bubble pre {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ob-card-bg);
+  border: 1px solid var(--ob-card-border);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ob-bubble code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.ob-bubble pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.ob-prompt-card {
+  align-self: stretch;
+  padding: 13px 15px;
+  border-radius: 16px;
+  background: var(--ob-card-bg);
+  border: 1px solid color-mix(in srgb, var(--accent, #7d824b) 45%, var(--ob-card-border));
+  display: grid;
+  gap: 10px;
+}
+
+.ob-prompt-card strong {
+  font-size: 13.5px;
+}
+
+.ob-prompt-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ob-ready-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 15px;
+  border-radius: 16px;
+  background: var(--ob-ok-soft);
+  color: var(--ob-ok);
+  font-size: 13.5px;
+  font-weight: 560;
+  animation: ob-fade-slide 280ms var(--ob-ease) both;
+}
+
+.ob-bot-composer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 14px;
+  border-radius: 999px;
+  background: var(--ob-tile-bg);
+  border: 1px solid var(--ob-card-border);
+}
+
+.ob-bot-composer input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.ob-bot-composer button {
+  flex: none;
+  padding: 7px 15px;
+  font-size: 13px;
+}
+
+/* Status & Buttons */
 .ob-status {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 11px 14px;
-  border-radius: 14px;
-  font-size: 13.5px;
+  padding: 10px 14px;
+  border-radius: 13px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -585,8 +731,8 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 }
 
 .ob-spinner {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   border: 2px solid currentColor;
   border-right-color: transparent;
@@ -604,24 +750,23 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
-  margin-top: 2px;
 }
 
 .ob-primary-btn {
   appearance: none;
   border: 0;
   border-radius: 999px;
-  padding: 11px 22px;
+  padding: 10px 20px;
   background: var(--ink, #1f1e1b);
   color: var(--bg, #f8f6f1);
   font: inherit;
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 620;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 7px;
   text-decoration: none;
   transition: opacity 160ms ease, transform 180ms var(--ob-ease);
 }
@@ -632,7 +777,7 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 }
 
 .ob-primary-btn:disabled {
-  opacity: 0.52;
+  opacity: 0.5;
   cursor: wait;
 }
 
@@ -640,11 +785,11 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   appearance: none;
   border: 1px solid var(--ob-card-border);
   border-radius: 999px;
-  padding: 9px 16px;
-  background: transparent;
+  padding: 8px 15px;
+  background: var(--ob-card-bg);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   cursor: pointer;
   text-decoration: none;
   transition: background 160ms ease;
@@ -659,40 +804,29 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 15px;
-  border-radius: 16px;
+  padding: 11px 14px;
+  border-radius: 15px;
   background: var(--ob-ok-soft);
   color: var(--ob-ok);
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
 @media (max-width: 560px) {
   .ob-provider-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .ob-card {
-    padding: 18px 16px;
-    border-radius: 22px;
-  }
-  .ob-local-card {
+  .ob-local-card,
+  .ob-ready-bar {
     flex-direction: column;
     align-items: stretch;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ob-portal-backdrop,
   .ob-stage,
-  .ob-intro-center,
-  .ob-root {
+  .ob-root,
+  body.ob-revealing-main #contact-sidebar {
     transition: none !important;
     animation: none !important;
-  }
-  .ob-portal-ring {
-    display: none;
-  }
-  .ob-portal-backdrop {
-    clip-path: none;
-    opacity: 1;
   }
 }

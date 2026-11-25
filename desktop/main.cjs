@@ -31,6 +31,7 @@ let mainWindow = null;
 let introWindow = null;
 let introDisplayBounds = null;
 let resolveIntroAnim = null;
+let morphTimer = null;
 let installerHandedOff = false;
 let timer, checking, booting = false;
 let connection = null;
@@ -126,6 +127,51 @@ function computeCenteredMainBounds(display) {
   return { x, y, width, height };
 }
 
+function computeStageBounds(stage, display = targetDisplayForMain()) {
+  if (stage === 'main') return computeCenteredMainBounds(display);
+  const area = display.workArea;
+  const spec = stage === 'bot' ? { w: 780, h: 740 } : { w: 620, h: 700 };
+  const width = Math.min(spec.w, Math.max(480, area.width - 40));
+  const height = Math.min(spec.h, Math.max(560, area.height - 40));
+  const x = Math.round(area.x + (area.width - width) / 2);
+  const y = Math.round(area.y + (area.height - height) / 2);
+  return { x, y, width, height };
+}
+
+function animateMainWindowTo(stage, duration = 420) {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  if (morphTimer) { clearTimeout(morphTimer); morphTimer = null; }
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  const display = targetDisplayForMain();
+  const target = computeStageBounds(stage, display);
+  const start = mainWindow.getBounds();
+  if (Math.abs(start.width - target.width) <= 2 && Math.abs(start.height - target.height) <= 2
+      && Math.abs(start.x - target.x) <= 2 && Math.abs(start.y - target.y) <= 2) {
+    mainWindow.setBounds(target);
+    return Promise.resolve(true);
+  }
+  const ms = Math.max(120, Math.min(800, Number(duration) || 420));
+  const startedAt = Date.now();
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+  return new Promise(resolve => {
+    const tick = () => {
+      morphTimer = null;
+      if (!mainWindow || mainWindow.isDestroyed()) return resolve(false);
+      const raw = Math.min(1, (Date.now() - startedAt) / ms);
+      const p = easeOutCubic(raw);
+      mainWindow.setBounds({
+        x: Math.round(start.x + (target.x - start.x) * p),
+        y: Math.round(start.y + (target.y - start.y) * p),
+        width: Math.round(start.width + (target.width - start.width) * p),
+        height: Math.round(start.height + (target.height - start.height) * p),
+      });
+      if (raw >= 1) return resolve(true);
+      morphTimer = setTimeout(tick, 12);
+    };
+    tick();
+  });
+}
+
 function attachWebGuards(target) {
   target.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) {
@@ -206,8 +252,9 @@ function createIntroOverlayWindow(display = targetDisplayForMain()) {
   return target;
 }
 
-function createMainWindow({ showImmediately = true, display = targetDisplayForMain() } = {}) {
+function createMainWindow({ showImmediately = true, display = targetDisplayForMain(), initialBounds = null } = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
+    if (initialBounds) mainWindow.setBounds(initialBounds);
     if (showImmediately) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -216,7 +263,7 @@ function createMainWindow({ showImmediately = true, display = targetDisplayForMa
     return mainWindow;
   }
   const initialDark = nativeTheme.shouldUseDarkColors;
-  const bounds = computeCenteredMainBounds(display);
+  const bounds = initialBounds || computeCenteredMainBounds(display);
   const target = mainWindow = new BrowserWindow({
     title: 'Summon Bot',
     x: bounds.x,
@@ -265,23 +312,6 @@ function createMainWindow({ showImmediately = true, display = targetDisplayForMa
     });
   }
   return target;
-}
-
-function settleIntroOverlayWindow(width = 700, height = 760) {
-  if (!introWindow || introWindow.isDestroyed()) return null;
-  const display = introDisplayBounds
-    ? screen.getDisplayMatching(introDisplayBounds)
-    : targetDisplayForMain();
-  const area = display.workArea;
-  const w = Math.min(Math.max(540, Math.round(Number(width) || 700)), area.width - 24);
-  const h = Math.min(Math.max(580, Math.round(Number(height) || 760)), area.height - 24);
-  const x = Math.round(area.x + (area.width - w) / 2);
-  const y = Math.round(area.y + (area.height - h) / 2);
-  try { introWindow.setAlwaysOnTop(false); } catch {}
-  try { introWindow.setMovable(true); } catch {}
-  introWindow.setBounds({ x, y, width: w, height: h });
-  introWindow.focus();
-  return { x, y, width: w, height: h };
 }
 
 async function bootLocalInstance({ retryCount = 0 } = {}) {
@@ -334,7 +364,18 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
     }
     connection = ready;
 
+    const display = introDisplayBounds
+      ? screen.getDisplayMatching(introDisplayBounds)
+      : targetDisplayForMain();
+    const initialStage = ready.needsIntro ? (ready.onboardingStage || 'model') : 'main';
+    const initialBounds = computeStageBounds(initialStage, display);
+    const initialUrl = new URL(ready.needsIntro ? `/?onboarding_window=${initialStage}` : '/', ready.origin).href;
     const shouldUnbox = Boolean(ready.needsIntro || (fromInstaller && introWindow && !introWindow.isDestroyed()));
+
+    // Preload the single mainWindow in parallel with the unboxing splash so handoff has 0ms blank delay.
+    const main = createMainWindow({ showImmediately: !shouldUnbox, display, initialBounds });
+    const mainLoaded = main.loadURL(initialUrl);
+
     if (shouldUnbox) {
       const overlay = await ensureBootSplash();
       revealIntroAndHandoff();
@@ -343,17 +384,30 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
         setTimeout(() => { resolveIntroAnim = null; done(); }, 3800);
       });
       setBootState({ status: 'ready_to_unbox', percent: 100, stage: '准备就绪，开箱！', error: '' });
-      await animDone;
-      if (ready.needsIntro) {
-        settleIntroOverlayWindow(700, 760);
-        await overlay.loadURL(new URL('/?desktop_intro=ready', ready.origin).href);
-        return;
+      await Promise.all([animDone, mainLoaded]);
+      await new Promise(resolve => setTimeout(resolve, 60));
+      main.setBounds(initialBounds);
+      main.show();
+      main.focus();
+      if (overlay && !overlay.isDestroyed()) {
+        const fadeStart = Date.now();
+        await new Promise(resolve => {
+          const fade = () => {
+            if (!overlay || overlay.isDestroyed()) return resolve();
+            const raw = Math.min(1, (Date.now() - fadeStart) / 160);
+            try { overlay.setOpacity(Math.max(0, 1 - raw)); } catch {}
+            if (raw >= 1) return resolve();
+            setTimeout(fade, 14);
+          };
+          fade();
+        });
+        if (!overlay.isDestroyed()) overlay.close();
       }
+      return;
     }
 
     signalInstallerHandoff();
-    const main = createMainWindow({ showImmediately: true });
-    await main.loadURL(new URL('/', ready.origin).href);
+    await mainLoaded;
     if (introWindow && !introWindow.isDestroyed()) {
       introWindow.close();
     }
@@ -530,18 +584,18 @@ ipcMain.handle('summon:open-attachment', async (event, { url, name } = {}) => {
   return { ok: true, path: filePath };
 });
 
-ipcMain.handle('summon:preview-desktop-intro', async event => {
+ipcMain.handle('summon:morph-window', async (event, { stage = 'main', duration = 420 } = {}) => {
   trusted(event, { allowMainWeb: true });
-  if (!connection?.origin) return false;
-  const display = targetDisplayForMain();
-  const overlay = createIntroOverlayWindow(display);
-  await overlay.loadURL(new URL('/?desktop_intro=preview', connection.origin).href);
-  return true;
+  const targetStage = ['model', 'bot', 'main'].includes(stage) ? stage : 'main';
+  return animateMainWindowTo(targetStage, duration);
 });
 
-ipcMain.handle('summon:intro-settle-window', (event, { width = 700, height = 760 } = {}) => {
-  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
-  return settleIntroOverlayWindow(width, height) || false;
+ipcMain.handle('summon:preview-desktop-intro', async event => {
+  trusted(event, { allowMainWeb: true });
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  await animateMainWindowTo('model', 380);
+  mainWindow.webContents.send('summon:preview-onboarding');
+  return true;
 });
 
 ipcMain.handle('summon:boot-ready', event => {
@@ -556,110 +610,6 @@ ipcMain.handle('summon:boot-intro-done', event => {
     const fn = resolveIntroAnim;
     resolveIntroAnim = null;
     fn();
-  }
-  return true;
-});
-
-ipcMain.handle('summon:intro-prepare-handoff', async (event, { preview = false } = {}) => {
-  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
-  if (!connection?.origin) return null;
-  const display = introDisplayBounds
-    ? screen.getDisplayMatching(introDisplayBounds)
-    : targetDisplayForMain();
-  const existed = Boolean(mainWindow && !mainWindow.isDestroyed());
-  const main = createMainWindow({ showImmediately: false, display });
-  const targetUrl = new URL('/', connection.origin).href;
-  if (!existed || !isWeb(main.webContents.getURL())) {
-    await main.loadURL(targetUrl);
-  }
-  main.webContents.send('summon:start-onboarding-focus', { preview: Boolean(preview) });
-  // Keep mainWindow hidden while pre-rendered so introWindow can smoothly morph-expand into it!
-  await new Promise(resolve => setTimeout(resolve, 140));
-  return { ready: true, targetBounds: main.getBounds() };
-});
-
-ipcMain.handle('summon:intro-expand-handoff', async event => {
-  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
-  if (!introWindow || introWindow.isDestroyed()) return false;
-  const display = introDisplayBounds
-    ? screen.getDisplayMatching(introDisplayBounds)
-    : targetDisplayForMain();
-  const target = (mainWindow && !mainWindow.isDestroyed())
-    ? mainWindow.getBounds()
-    : computeCenteredMainBounds(display);
-  const start = introWindow.getBounds();
-  try { introWindow.setResizable(true); } catch {}
-  try { introWindow.setAlwaysOnTop(true, 'floating'); } catch {}
-
-  const duration = 420;
-  const startedAt = Date.now();
-  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
-  await new Promise(resolve => {
-    const tick = () => {
-      if (!introWindow || introWindow.isDestroyed()) return resolve();
-      const raw = Math.min(1, (Date.now() - startedAt) / duration);
-      const p = easeOutCubic(raw);
-      introWindow.setBounds({
-        x: Math.round(start.x + (target.x - start.x) * p),
-        y: Math.round(start.y + (target.y - start.y) * p),
-        width: Math.round(start.width + (target.width - start.width) * p),
-        height: Math.round(start.height + (target.height - start.height) * p),
-      });
-      if (raw >= 1) return resolve();
-      setTimeout(tick, 14);
-    };
-    tick();
-  });
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setBounds(target);
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-  }
-  await new Promise(resolve => setTimeout(resolve, 40));
-  if (introWindow && !introWindow.isDestroyed()) {
-    const fadeStart = Date.now();
-    const fadeDur = 190;
-    await new Promise(resolve => {
-      const fade = () => {
-        if (!introWindow || introWindow.isDestroyed()) return resolve();
-        const raw = Math.min(1, (Date.now() - fadeStart) / fadeDur);
-        try { introWindow.setOpacity(Math.max(0, 1 - raw)); } catch {}
-        if (raw >= 1) return resolve();
-        setTimeout(fade, 14);
-      };
-      fade();
-    });
-    if (introWindow && !introWindow.isDestroyed()) introWindow.close();
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.focus();
-  }
-  return true;
-});
-
-ipcMain.handle('summon:intro-finish-handoff', event => {
-  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
-  }
-  if (introWindow && !introWindow.isDestroyed()) {
-    introWindow.close();
-  }
-  return true;
-});
-
-ipcMain.handle('summon:intro-close', event => {
-  trusted(event, { allowBoot: true, allowIntroWeb: true, allowMainWeb: false });
-  if (introWindow && !introWindow.isDestroyed()) {
-    introWindow.close();
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
-  } else if (process.platform !== 'darwin') {
-    app.quit();
   }
   return true;
 });

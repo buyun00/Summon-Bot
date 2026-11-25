@@ -128,8 +128,12 @@ async function prepareLocalConnection(session, profileRoot, onProgress) {
     bootstrap = await checkLogin(session, origin);
   }
   const onboarding = await fetchOnboardingState(origin, config.web.accessToken, bootstrap?.protocolVersion || 3);
-  const needsIntro = Boolean(onboarding && onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel);
-  return { mode: 'local', origin, dataRoot: config.dataRoot, onboarding, needsIntro };
+  const needsIntro = Boolean(onboarding && (
+    onboarding.status === 'configuring_bot' ||
+    (onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel)
+  ));
+  const onboardingStage = onboarding?.status === 'configuring_bot' ? 'bot' : (needsIntro ? 'model' : 'main');
+  return { mode: 'local', origin, dataRoot: config.dataRoot, onboarding, needsIntro, onboardingStage };
 }
 
 async function resolveLogsRoot(profileRoot) {

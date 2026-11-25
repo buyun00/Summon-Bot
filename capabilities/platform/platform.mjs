@@ -116,15 +116,18 @@ export class SummonPlatform {
       const hasActiveModel = Boolean(catalog.activeId && this.models.isConfigured(
         catalog.connections.find(item => item.id === catalog.activeId),
       ));
+      let wakeMessageId = null;
       if (created && wake && hasActiveModel && bundledId !== 'eggbot') {
-        this.room.send(targetRoom.id, {
-          text: `@${bot.name} 你刚被安装并激活到这台电脑上。请按你的说明（instructions.md 和 skills/）在后台自检本机环境与所需工具/登录态；缺工具路径自行定位、缺凭据用隐私输入窗向我获取、若版本参数有变自行调整 scripts/，就绪后简明汇报。`,
+        const sent = this.room.send(targetRoom.id, {
+          text: `@${bot.name} 请在后台自检本机环境、CLI 与桥接脚本（缺凭据用隐私输入窗向我获取，版本有变自行调整 scripts/），就绪后简明汇报。`,
           mentions: [{ kind: 'bot', id: bot.id }],
         }, 'user');
+        wakeMessageId = sent?.id || null;
         this.runtime?.wake?.();
       }
+      return { bot: view, created, room_id: targetRoom.id, wake_message_id: wakeMessageId };
     }
-    return { bot: view, created, room_id: targetRoom && !targetRoom.archivedAt ? targetRoom.id : null };
+    return { bot: view, created, room_id: null, wake_message_id: null };
   }
 
   onboardingState() {
@@ -133,14 +136,22 @@ export class SummonPlatform {
     const hasActiveModel = Boolean(catalog.activeId && this.models.isConfigured(
       catalog.connections.find(item => item.id === catalog.activeId),
     ));
+    if (!hasActiveModel) {
+      return {
+        id: 'onboarding',
+        status: 'awaiting_model',
+        roomId: botMaintenanceRoomId,
+        hasActiveModel: false,
+      };
+    }
     if (saved) {
-      return { ...saved, roomId: saved.roomId || botMaintenanceRoomId, hasActiveModel };
+      return { ...saved, roomId: saved.roomId || botMaintenanceRoomId, hasActiveModel: true };
     }
     return {
       id: 'onboarding',
-      status: hasActiveModel ? 'completed' : 'awaiting_model',
+      status: 'completed',
       roomId: botMaintenanceRoomId,
-      hasActiveModel,
+      hasActiveModel: true,
     };
   }
 
@@ -148,48 +159,46 @@ export class SummonPlatform {
     this.initializeDefaults();
     const catalog = this.models.catalog();
     const activeConn = catalog.connections.find(item => item.id === catalog.activeId);
+    const hasActiveModel = Boolean(activeConn && this.models.isConfigured(activeConn));
     const bundledId = activateBundled || (activeConn?.kind === 'codex' ? 'codex' : activeConn?.kind === 'grok' ? 'grok-build' : null);
     const nowIso = new Date().toISOString();
+    let activated = null;
+    if (bundledId) {
+      try {
+        activated = this.activateBundledBot(bundledId, { roomId: botMaintenanceRoomId, wake: true });
+      } catch {}
+    }
+    const configuringBot = Boolean(activated?.bot && activated.created);
     const next = {
       id: 'onboarding',
-      status: 'completed',
+      status: configuringBot ? 'configuring_bot' : 'completed',
       roomId: botMaintenanceRoomId,
+      ...(configuringBot ? {
+        bundledId,
+        botId: activated.bot.id,
+        botName: activated.bot.name,
+        wakeMessageId: activated.wake_message_id || null,
+      } : { completedAt: nowIso }),
       startedAt: nowIso,
+    };
+    this.store.save('platform-settings', next);
+    this.emit('onboarding', next);
+    return { ...next, hasActiveModel, activatedBot: activated?.bot || null };
+  }
+
+  finishOnboarding() {
+    const current = this.onboardingState();
+    const nowIso = new Date().toISOString();
+    const next = {
+      ...current,
+      id: 'onboarding',
+      status: 'completed',
+      roomId: current.roomId || botMaintenanceRoomId,
       completedAt: nowIso,
     };
     this.store.save('platform-settings', next);
-    const roomRecord = this.store.get('rooms', botMaintenanceRoomId);
-    const leadBotId = roomRecord?.lead_bot_id ||
-      roomRecord?.members?.find(member => member !== 'user' && this.store.get(botRecords, member)?.built_in_role?.id === groupLeadRole);
-    const existingMsgs = this.room.messages(botMaintenanceRoomId, 'user');
-    if (roomRecord && leadBotId && !existingMsgs.length) {
-      const leadRecord = this.store.get(botRecords, leadBotId);
-      const extraNote = bundledId ? `，并正在唤醒预置专职 Bot（${bundledId}）进行本机自检` : '';
-      const welcomeId = randomUUID();
-      this.store.save('messages', {
-        id: welcomeId,
-        kind: 'message',
-        roomId: botMaintenanceRoomId,
-        senderId: leadBotId,
-        ...(leadRecord?.name ? { senderName: leadRecord.name } : {}),
-        author: identity(leadBotId),
-        content: `你好，大脑已就绪${extraNote}。默认工作区与 EggBot 已准备好了，直接说你想做什么就行；需要其他预置或自定义专职 Bot 随时告诉我。`,
-        attachments: [],
-        references: [],
-        mentions: [],
-        replyTo: null,
-      });
-      const projected = this.room.projectMessage(this.room.messageRow.get(welcomeId));
-      this.emit('message', projected);
-    }
-    let activatedBot = null;
-    if (bundledId) {
-      try {
-        activatedBot = this.activateBundledBot(bundledId, { roomId: botMaintenanceRoomId, wake: true }).bot;
-      } catch {}
-    }
     this.emit('onboarding', next);
-    return { ...next, hasActiveModel: Boolean(activeConn && this.models.isConfigured(activeConn)), activatedBot };
+    return next;
   }
 
   currentRoomActivitySeq(roomId) {
