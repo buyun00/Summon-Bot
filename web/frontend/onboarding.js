@@ -143,7 +143,7 @@
     if (reduced) {
       root.classList.add('is-expanded', 'is-ready', 'is-settled');
       intro?.classList.add('is-settled');
-      if (desktop?.isIntroWindow) void desktop.settleIntroWindow?.({ width: 620, height: 700 });
+      if (desktop?.isIntroWindow) void desktop.settleIntroWindow?.({ width: 700, height: 760 });
       return;
     }
     void root.offsetWidth;
@@ -166,7 +166,7 @@
       if (desktop?.isIntroWindow && desktop.settleIntroWindow) {
         setTimeout(() => {
           if (document.body.contains(root)) {
-            void desktop.settleIntroWindow({ width: 620, height: 700 });
+            void desktop.settleIntroWindow({ width: 700, height: 760 });
           }
         }, 560);
       }
@@ -225,14 +225,8 @@
     let formBody = '';
     if (def.kind === 'codex') {
       if (hasLocalCodex) {
-        formBody = `<div class="ob-oauth-box">
-          <small>已检测到这台电脑的本地 Codex 订阅登录，直接复用即可，无需任何设备码。</small>
-          <div class="ob-oauth-actions">
-            <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="codex" ${ob.busy ? 'disabled' : ''}>
-              ${ob.phase === 'testing' ? '<span class="ob-spinner"></span>正在检测可用性…' : ob.phase === 'saving' ? '<span class="ob-spinner"></span>正在导入…' : '直接复用本机 Codex 并检测'}
-            </button>
-          </div>
-        </div>`;
+        // Local Codex already has the prominent one-click reuse card right above — no redundant big duplicate box!
+        formBody = '';
       } else {
         const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
         formBody = `<div class="ob-oauth-box">
@@ -354,13 +348,21 @@
     stopOAuthPoll();
     const root = document.getElementById('summon-onboarding-root');
     const desktop = window.SummonDesktop;
-    if (desktop?.isIntroWindow && desktop.prepareIntroHandoff && desktop.finishIntroHandoff) {
+    if (desktop?.isIntroWindow && desktop.prepareIntroHandoff) {
       await desktop.prepareIntroHandoff({ preview }).catch(() => null);
+      if (desktop.expandIntroHandoff) {
+        if (root) {
+          root.classList.add('is-expanding-to-main');
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+        await desktop.expandIntroHandoff().catch(() => {});
+        return;
+      }
       if (root) {
         root.classList.add('is-exiting');
         await new Promise(resolve => setTimeout(resolve, 260));
       }
-      await desktop.finishIntroHandoff().catch(() => {});
+      await desktop.finishIntroHandoff?.().catch(() => {});
       return;
     }
     if (root) {

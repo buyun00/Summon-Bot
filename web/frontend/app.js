@@ -3867,18 +3867,34 @@ async function skipExecPromptCard(key) {
   return submitExecPromptCard(key, skipId);
 }
 
+const MESSAGE_ACK_DELAY_MS = 1000;
+let ackRevealTimer = null;
+let ackRevealTargetAt = 0;
+
+function scheduleAckReveal(targetAt) {
+  const delay = Math.max(20, targetAt - Date.now() + 20);
+  if (ackRevealTimer && ackRevealTargetAt && ackRevealTargetAt <= targetAt + 10) return;
+  if (ackRevealTimer) clearTimeout(ackRevealTimer);
+  ackRevealTargetAt = targetAt;
+  ackRevealTimer = setTimeout(() => {
+    ackRevealTimer = null;
+    ackRevealTargetAt = 0;
+    if (ui.view === 'chat') render();
+  }, delay);
+}
+
 function resolveMessageAcks(message, timeline) {
-  const list = [];
+  const candidates = [];
   const seen = new Set();
   for (const item of message.acks || []) {
     if (!item?.botId || seen.has(item.botId)) continue;
     seen.add(item.botId);
-    list.push({ botId: item.botId, label: item.label || '收到' });
+    candidates.push({ botId: item.botId, label: item.label || '收到', at: parseTimestampMs(item.at) });
   }
   const mentions = message.mentions || [];
   if (mentions.length && !message._delivery) {
     const activeBots = new Set([
-      ...(ui.roomActivities || []).map(a => a.bot_id),
+      ...(ui.roomActivities || []).filter(a => a.phase && a.phase !== 'fast_read').map(a => a.bot_id),
       ...(ui.roomExecutions || []).filter(e => LIVE_EXEC_STATUSES.has(e.status)).map(e => e.execution_actor?.id || e.bot_id),
     ].filter(Boolean));
     for (const botId of mentions) {
@@ -3886,11 +3902,25 @@ function resolveMessageAcks(message, timeline) {
       const latestForBot = [...timeline].reverse().find(m => !m._delivery && (m.mentions || []).includes(botId));
       if (latestForBot?.id === message.id) {
         seen.add(botId);
-        list.push({ botId, label: '收到' });
+        candidates.push({ botId, label: '收到', at: 0 });
       }
     }
   }
-  return list;
+  if (!candidates.length) return [];
+  const nowMs = Date.now();
+  const msgAt = parseTimestampMs(message.createdAt);
+  const minRevealAt = msgAt > 0 ? msgAt + MESSAGE_ACK_DELAY_MS : 0;
+  const visible = [];
+  for (const item of candidates) {
+    const revealAt = Math.max(minRevealAt, item.at || 0);
+    if (revealAt > nowMs) {
+      scheduleAckReveal(revealAt);
+      continue;
+    }
+    const fresh = revealAt > 0 && (nowMs - revealAt) < 550;
+    visible.push({ botId: item.botId, label: item.label, fresh });
+  }
+  return visible;
 }
 
 function renderMessageAcks(message, timeline) {
@@ -3898,7 +3928,7 @@ function renderMessageAcks(message, timeline) {
   if (!acks.length) return '';
   return `<div class="message-acks" aria-label="快捷确认">${acks.map(ack => {
     const appearance = botAvatar(ack.botId);
-    return `<span class="message-ack-pill" style="--ack-color:${esc(appearance.color || 'var(--ok)')}">
+    return `<span class="message-ack-pill ${ack.fresh ? 'is-fresh' : ''}" style="--ack-color:${esc(appearance.color || 'var(--ok)')}">
       <span class="message-ack-badge">${icon('check', 11)}<span>${esc(ack.label)}</span></span>
       <span class="message-ack-sep" aria-hidden="true"></span>
       ${face(appearance, 15, { static: true })}

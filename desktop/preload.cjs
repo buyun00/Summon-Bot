@@ -28,6 +28,7 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
     previewDesktopIntro: () => ipcRenderer.invoke('summon:preview-desktop-intro'),
     settleIntroWindow: size => ipcRenderer.invoke('summon:intro-settle-window', size || {}),
     prepareIntroHandoff: options => ipcRenderer.invoke('summon:intro-prepare-handoff', options || {}),
+    expandIntroHandoff: () => ipcRenderer.invoke('summon:intro-expand-handoff'),
     finishIntroHandoff: () => ipcRenderer.invoke('summon:intro-finish-handoff'),
     closeIntroWindow: () => ipcRenderer.invoke('summon:intro-close'),
     setTheme: dark => ipcRenderer.invoke('summon:set-theme', Boolean(dark)),

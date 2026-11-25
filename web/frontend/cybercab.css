@@ -740,6 +740,14 @@ html.dark .outgoing .bot-mention {
   line-height: 1.3;
   color: var(--ink-2);
   user-select: none;
+  transform-origin: left center;
+}
+.message-ack-pill.is-fresh {
+  animation: ackPillPop 240ms var(--spring-pop) both;
+}
+@keyframes ackPillPop {
+  from { opacity: 0.25; transform: translateY(3px) scale(0.9); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 html.dark .message-ack-pill {
   background: rgba(255, 255, 255, 0.08);

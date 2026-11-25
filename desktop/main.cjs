@@ -266,14 +266,14 @@ function createMainWindow({ showImmediately = true, display = targetDisplayForMa
   return target;
 }
 
-function settleIntroOverlayWindow(width = 620, height = 700) {
+function settleIntroOverlayWindow(width = 700, height = 760) {
   if (!introWindow || introWindow.isDestroyed()) return null;
   const display = introDisplayBounds
     ? screen.getDisplayMatching(introDisplayBounds)
     : targetDisplayForMain();
   const area = display.workArea;
-  const w = Math.min(Math.max(480, Math.round(Number(width) || 620)), area.width - 32);
-  const h = Math.min(Math.max(520, Math.round(Number(height) || 700)), area.height - 32);
+  const w = Math.min(Math.max(540, Math.round(Number(width) || 700)), area.width - 24);
+  const h = Math.min(Math.max(580, Math.round(Number(height) || 760)), area.height - 24);
   const x = Math.round(area.x + (area.width - w) / 2);
   const y = Math.round(area.y + (area.height - h) / 2);
   try { introWindow.setAlwaysOnTop(false); } catch {}
@@ -344,7 +344,7 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
       setBootState({ status: 'ready_to_unbox', percent: 100, stage: '准备就绪，开箱！', error: '' });
       await animDone;
       if (ready.needsIntro) {
-        settleIntroOverlayWindow(620, 700);
+        settleIntroOverlayWindow(700, 760);
         await overlay.loadURL(new URL('/?desktop_intro=ready', ready.origin).href);
         return;
       }
@@ -509,7 +509,7 @@ ipcMain.handle('summon:preview-desktop-intro', async event => {
   return true;
 });
 
-ipcMain.handle('summon:intro-settle-window', (event, { width = 620, height = 700 } = {}) => {
+ipcMain.handle('summon:intro-settle-window', (event, { width = 700, height = 760 } = {}) => {
   trusted(event, { allowIntroWeb: true, allowMainWeb: false });
   return settleIntroOverlayWindow(width, height) || false;
 });
@@ -543,10 +543,69 @@ ipcMain.handle('summon:intro-prepare-handoff', async (event, { preview = false }
     await main.loadURL(targetUrl);
   }
   main.webContents.send('summon:start-onboarding-focus', { preview: Boolean(preview) });
-  if (main.isMinimized()) main.restore();
-  main.show();
-  main.focus();
-  return { ready: true };
+  // Keep mainWindow hidden while pre-rendered so introWindow can smoothly morph-expand into it!
+  await new Promise(resolve => setTimeout(resolve, 140));
+  return { ready: true, targetBounds: main.getBounds() };
+});
+
+ipcMain.handle('summon:intro-expand-handoff', async event => {
+  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
+  if (!introWindow || introWindow.isDestroyed()) return false;
+  const display = introDisplayBounds
+    ? screen.getDisplayMatching(introDisplayBounds)
+    : targetDisplayForMain();
+  const target = (mainWindow && !mainWindow.isDestroyed())
+    ? mainWindow.getBounds()
+    : computeCenteredMainBounds(display);
+  const start = introWindow.getBounds();
+  try { introWindow.setResizable(true); } catch {}
+  try { introWindow.setAlwaysOnTop(true, 'floating'); } catch {}
+
+  const duration = 420;
+  const startedAt = Date.now();
+  const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+  await new Promise(resolve => {
+    const tick = () => {
+      if (!introWindow || introWindow.isDestroyed()) return resolve();
+      const raw = Math.min(1, (Date.now() - startedAt) / duration);
+      const p = easeOutCubic(raw);
+      introWindow.setBounds({
+        x: Math.round(start.x + (target.x - start.x) * p),
+        y: Math.round(start.y + (target.y - start.y) * p),
+        width: Math.round(start.width + (target.width - start.width) * p),
+        height: Math.round(start.height + (target.height - start.height) * p),
+      });
+      if (raw >= 1) return resolve();
+      setTimeout(tick, 14);
+    };
+    tick();
+  });
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBounds(target);
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+  }
+  await new Promise(resolve => setTimeout(resolve, 40));
+  if (introWindow && !introWindow.isDestroyed()) {
+    const fadeStart = Date.now();
+    const fadeDur = 190;
+    await new Promise(resolve => {
+      const fade = () => {
+        if (!introWindow || introWindow.isDestroyed()) return resolve();
+        const raw = Math.min(1, (Date.now() - fadeStart) / fadeDur);
+        try { introWindow.setOpacity(Math.max(0, 1 - raw)); } catch {}
+        if (raw >= 1) return resolve();
+        setTimeout(fade, 14);
+      };
+      fade();
+    });
+    if (introWindow && !introWindow.isDestroyed()) introWindow.close();
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus();
+  }
+  return true;
 });
 
 ipcMain.handle('summon:intro-finish-handoff', event => {
