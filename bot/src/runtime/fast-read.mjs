@@ -512,6 +512,9 @@ export class FastReadRuntime {
     });
 
     if (mainEventIds.length) {
+      for (const eventId of mainEventIds) {
+        this.platform.room?.ackMentionedMessage?.(roomId, eventId, bot.id, '收到');
+      }
       this.runtime.setLiveActivity?.(bot.id, roomId, {
         phase: 'planned',
         text: plannedActivity || '正在分析需求',

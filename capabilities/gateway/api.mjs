@@ -26,7 +26,7 @@ function callResponse(result, callId) {
   return callId ? { ...result, call_id: callId } : result;
 }
 
-export function createApi({ platform, room, attachments, models, connections, push, sync, historyEpoch, emit, getUsage }) {
+export function createApi({ platform, room, attachments, models, connections, secrets, push, sync, historyEpoch, emit, getUsage }) {
   return async function route(method, path, params, body, clientHeader) {
     const userContext = { actor: user };
     const list = (kind, params) => platform.find({ kind, scope: scopeOf(params), query: params.get('query') || undefined,
@@ -343,6 +343,11 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (action === 'login' && method === 'DELETE') { models.cancelLogin(id); return models.loginStatus(id); }
       if (action === 'test' && method === 'POST') return models.testConnection(id);
     }
+    if (path === '/api/secrets/env' && method === 'GET') return secrets.listEnvKeys();
+    if ((match = path.match(/^\/api\/secrets\/env\/([^/]+)$/)) && method === 'DELETE') {
+      return secrets.deleteEnvSecret(decodeURIComponent(match[1]));
+    }
+    if (path === '/api/secrets/deliver' && method === 'POST') return secrets.deliver(args, clientId);
     if (method === 'GET' && (match = path.match(/^\/api\/calls\/([^/]+)$/))) return read(routeRef('call', match[1]), params);
     return undefined;
 

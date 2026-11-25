@@ -14,6 +14,7 @@ import { ModelConnections } from '../models/service.mjs';
 import { protocolVersion, reject, user } from '../platform/contract.mjs';
 import { SummonPlatform } from '../platform/platform.mjs';
 import { SummonConnections, connectionRecords } from '../services/connections.mjs';
+import { SecretService } from '../services/secrets.mjs';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync, syncPages } from '../shared/sync.mjs';
 import { PushService } from './push.mjs';
@@ -181,12 +182,16 @@ export async function startGateway(options = {}) {
     const sync = new IncrementalSync(store('gateway'));
     const attachments = new AttachmentStore(join(dataRoot, 'capabilities', 'chatroom'));
     models = await new ModelConnections({ dataRoot, model: options.model, emit }).initialize();
+    const secrets = new SecretService({ dataRoot, models, emit });
+    await secrets.hydrate();
     const model = { connectionStore: models.path };
-    const clean = createRedactor({ model });
+    const clean = createRedactor({ model, extraSecrets: () => secrets.secrets() });
     platform = new SummonPlatform({ store: records, dataRoot, releaseRoot, models, attachments, emit,
       workspaces: options.workspaces });
+    secrets.attach({ platform, models });
     const room = new ChatroomService({ store: records, manager: platform.manager, attachments, platform, emit });
     connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
+      extraSecrets: () => secrets.secrets(),
       assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),
       onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
       onProgressChange: () => emit('execution'),
@@ -200,7 +205,7 @@ export async function startGateway(options = {}) {
     await runtime.initialize();
     push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch,
       onNotify: item => emit('push.notify', item) }).initialize();
-    const api = createApi({ platform, room, attachments, models, connections, push, sync, historyEpoch, emit,
+    const api = createApi({ platform, room, attachments, models, connections, secrets, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
         if (!runtime.usage || runtime.usageRecoveryFailed) reject('usage_unavailable', 'The local usage report is unavailable', 503);
         const bots = platform.listBots().filter(bot => platform.visibleBot(bot, context));

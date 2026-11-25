@@ -41,32 +41,106 @@ function normalizeRoomNameKey(name) {
   return String(name ?? '').trim().toLowerCase();
 }
 
+const SECRET_TARGET_KINDS = new Set(['hub_login', 'hub_register', 'hub_password', 'env', 'model_api_key', 'file_env', 'session_input']);
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function defaultSecretQuestions(targetKind) {
+  switch (targetKind) {
+    case 'hub_login':
+      return [
+        { id: 'username', label: '用户名', mode: 'text', required: true, field: 'username', custom_placeholder: '输入云端中枢用户名' },
+        { id: 'password', label: '密码', mode: 'secret', required: true, secret: true, field: 'password', custom_placeholder: '输入登录密码' },
+      ];
+    case 'hub_register':
+      return [
+        { id: 'invite_code', label: '邀请码', mode: 'text', required: true, field: 'invite_code', custom_placeholder: '输入中枢邀请码' },
+        { id: 'username', label: '用户名', mode: 'text', required: true, field: 'username', custom_placeholder: '设置登录用户名' },
+        { id: 'password', label: '密码', mode: 'secret', required: true, secret: true, field: 'password', custom_placeholder: '设置登录密码' },
+      ];
+    case 'hub_password':
+      return [
+        { id: 'current_password', label: '当前密码', mode: 'secret', required: true, secret: true, field: 'current_password', custom_placeholder: '输入当前密码' },
+        { id: 'new_password', label: '新密码', mode: 'secret', required: true, secret: true, field: 'new_password', custom_placeholder: '输入新密码' },
+      ];
+    case 'model_api_key':
+      return [
+        { id: 'api_key', label: 'API Key', mode: 'secret', required: true, secret: true, field: 'api_key', custom_placeholder: '输入模型 API Key' },
+      ];
+    case 'session_input':
+      return [
+        { id: 'input', label: '敏感输入', mode: 'secret', required: true, secret: true, field: 'input', custom_placeholder: '输入将直接送达执行会话的凭据' },
+      ];
+    default:
+      return [];
+  }
+}
+
+function normalizeSecretTarget(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { kind: 'env', label: '本机凭据库 (runtime.env)' };
+  }
+  const kind = SECRET_TARGET_KINDS.has(raw.kind) ? raw.kind : fail('隐私输入投递目标类型无效');
+  const out = { kind };
+  const copyStr = (key, max = 240) => {
+    if (typeof raw[key] === 'string' && raw[key].trim()) out[key] = raw[key].trim().slice(0, max);
+  };
+  copyStr('label', 120);
+  copyStr('hub_url', 240);
+  copyStr('connection_id', 160);
+  copyStr('provider', 80);
+  copyStr('base_url', 240);
+  copyStr('model', 160);
+  copyStr('name', 80);
+  copyStr('workspace', 500);
+  copyStr('path', 240);
+  copyStr('session_id', 160);
+  if (raw.activate === true) out.activate = true;
+  if (Number.isSafeInteger(raw.control_version) && raw.control_version >= 0) out.control_version = raw.control_version;
+  if (raw.input_target && typeof raw.input_target === 'object' && !Array.isArray(raw.input_target)) {
+    out.input_target = raw.input_target;
+  }
+  return out;
+}
+
 function normalizePrompt(raw) {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) fail('选择框格式无效');
-  const kind = ['question', 'permission', 'confirm'].includes(raw.kind) ? raw.kind : 'question';
+  const kind = ['question', 'permission', 'confirm', 'secret'].includes(raw.kind) ? raw.kind : 'question';
   const title = typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim().slice(0, 120) : undefined;
+  const description = typeof raw.description === 'string' && raw.description.trim() ? raw.description.trim().slice(0, 400) : undefined;
   const submit_label = typeof raw.submit_label === 'string' && raw.submit_label.trim() ? raw.submit_label.trim().slice(0, 40) : undefined;
-  if (!Array.isArray(raw.questions) || !raw.questions.length || raw.questions.length > 12) {
-    fail('选择框须包含 1 至 12 个问题');
+  const secret_target = kind === 'secret' ? normalizeSecretTarget(raw.secret_target) : undefined;
+  const rawQuestions = Array.isArray(raw.questions) && raw.questions.length
+    ? raw.questions
+    : (kind === 'secret' ? defaultSecretQuestions(secret_target.kind) : []);
+  if (!Array.isArray(rawQuestions) || !rawQuestions.length || rawQuestions.length > 12) {
+    fail(kind === 'secret' ? '隐私输入窗须包含 1 至 12 个输入项' : '选择框须包含 1 至 12 个问题');
   }
   const seenQ = new Set();
-  const questions = raw.questions.map((item, idx) => {
+  const questions = rawQuestions.map((item, idx) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('选择框问题格式无效');
     const qid = typeof item.id === 'string' && item.id.trim() ? item.id.trim().slice(0, 80) : `q${idx + 1}`;
     if (seenQ.has(qid)) fail('选择框问题 ID 不能重复');
     seenQ.add(qid);
     const label = typeof item.label === 'string' && item.label.trim() ? item.label.trim().slice(0, 300) : '';
     if (!label) fail('选择框问题标题不能为空');
-    const mode = ['single', 'multi', 'text'].includes(item.mode) ? item.mode : 'single';
+    const fallbackMode = kind === 'secret' ? 'secret' : 'single';
+    const mode = ['single', 'multi', 'text', 'secret'].includes(item.mode) ? item.mode : fallbackMode;
+    const isSecret = mode === 'secret' || item.secret === true;
     const required = item.required !== false;
-    const allow_custom = mode === 'text' ? false
+    const allow_custom = (mode === 'text' || mode === 'secret') ? false
       : item.allow_custom !== undefined ? Boolean(item.allow_custom)
       : kind !== 'permission';
     const custom_placeholder = typeof item.custom_placeholder === 'string' && item.custom_placeholder.trim()
       ? item.custom_placeholder.trim().slice(0, 160) : undefined;
+    const field = typeof item.field === 'string' && item.field.trim() ? item.field.trim().slice(0, 80) : undefined;
+    const env_name = typeof item.env_name === 'string' && item.env_name.trim() ? item.env_name.trim().slice(0, 128) : undefined;
+    if (env_name && !ENV_KEY_RE.test(env_name)) fail('环境变量名格式无效');
+    const default_value = !isSecret && typeof item.default_value === 'string' && item.default_value.trim()
+      ? item.default_value.trim().slice(0, 300) : undefined;
+    const hint = typeof item.hint === 'string' && item.hint.trim() ? item.hint.trim().slice(0, 240) : undefined;
     let options = [];
-    if (mode !== 'text') {
+    if (mode !== 'text' && mode !== 'secret') {
       if (!Array.isArray(item.options) || !item.options.length || item.options.length > 20) {
         fail('单选或多选问题须包含 1 至 20 个选项');
       }
@@ -96,6 +170,11 @@ function normalizePrompt(raw) {
       mode,
       required,
       allow_custom,
+      ...(isSecret ? { secret: true } : {}),
+      ...(field ? { field } : {}),
+      ...(env_name ? { env_name } : {}),
+      ...(default_value ? { default_value } : {}),
+      ...(hint ? { hint } : {}),
       ...(custom_placeholder ? { custom_placeholder } : {}),
       ...(options.length ? { options } : {}),
     };
@@ -103,7 +182,9 @@ function normalizePrompt(raw) {
   return {
     kind,
     ...(title ? { title } : {}),
+    ...(description ? { description } : {}),
     ...(submit_label ? { submit_label } : {}),
+    ...(secret_target ? { secret_target } : {}),
     questions,
   };
 }
@@ -126,30 +207,50 @@ function normalizePromptResponse(raw, room, lookupMessage) {
   if (!Array.isArray(raw.answers) || !raw.answers.length || raw.answers.length > 12) {
     fail('请至少填写一项选择结果');
   }
+  const isSecretPrompt = promptMsg.prompt.kind === 'secret';
   const byId = new Map(promptMsg.prompt.questions.map(q => [q.id, q]));
   const answers = raw.answers.map(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('回答条目格式无效');
     const question_id = identifier(item.question_id, '问题 ID');
     const q = byId.get(question_id);
     if (!q) fail('回答对应的问题 ID 不存在');
+    const isSecretField = q.mode === 'secret' || q.secret === true;
     const optMap = new Map((q.options || []).map(o => [o.id, o.label]));
     const selected_ids = Array.isArray(item.selected_ids)
       ? [...new Set(item.selected_ids.filter(v => typeof v === 'string' && optMap.has(v)))]
       : [];
     const selected_labels = selected_ids.map(oid => optMap.get(oid));
-    const custom_text = typeof item.custom_text === 'string' ? item.custom_text.trim().slice(0, 4000) : '';
+    // Never persist raw values of secret fields in chat history or Bot context.
+    const custom_text = isSecretField
+      ? ''
+      : (typeof item.custom_text === 'string' ? item.custom_text.trim().slice(0, 4000) : '');
     if (q.mode === 'single' && selected_ids.length > 1) fail('单选题只能选择一个选项');
     return {
       question_id,
       label: q.label,
       selected_ids,
       selected_labels,
+      ...(isSecretField ? { redacted: true } : {}),
       ...(custom_text ? { custom_text } : {}),
     };
   });
+  let secret_delivery;
+  if (isSecretPrompt && raw.secret_delivery && typeof raw.secret_delivery === 'object' && !Array.isArray(raw.secret_delivery)) {
+    const d = raw.secret_delivery;
+    secret_delivery = {
+      ...(typeof d.target_kind === 'string' && d.target_kind.trim() ? { target_kind: d.target_kind.trim().slice(0, 60) } : {}),
+      ...(typeof d.target_label === 'string' && d.target_label.trim() ? { target_label: d.target_label.trim().slice(0, 160) } : {}),
+      ...(Array.isArray(d.configured_keys) ? { configured_keys: d.configured_keys.filter(k => typeof k === 'string' && k.trim()).slice(0, 20).map(k => k.trim().slice(0, 128)) } : {}),
+      ...(typeof d.detail === 'string' && d.detail.trim() ? { detail: d.detail.trim().slice(0, 240) } : {}),
+    };
+  }
   return {
     promptMsg,
-    value: { prompt_message_id, answers },
+    value: {
+      prompt_message_id,
+      answers,
+      ...(secret_delivery && Object.keys(secret_delivery).length ? { secret_delivery } : {}),
+    },
   };
 }
 
@@ -172,6 +273,7 @@ function rowMessage(row) {
     ...(prompt ? { prompt } : {}),
     ...(promptResponse ? { promptResponse } : {}),
     ...(promptAnswer ? { promptAnswer } : {}),
+    ...(Array.isArray(message.acks) && message.acks.length ? { acks: message.acks } : {}),
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, revision, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, ...(revision !== undefined ? { revision } : {}), url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
@@ -841,6 +943,7 @@ export class ChatroomService {
             messageId: eventId,
             answeredAt: new Date().toISOString(),
             ...(promptRes.value.skipped ? { skipped: true } : {}),
+            ...(promptRes.value.secret_delivery ? { secret_delivery: promptRes.value.secret_delivery } : {}),
             answers: promptRes.value.answers,
           },
         });
@@ -855,6 +958,26 @@ export class ChatroomService {
     if (updatedPromptMessage) this.emit('message', updatedPromptMessage);
     if (inserted) this.emit('message', result.message);
     return result;
+  }
+
+  ackMentionedMessage(roomId, messageId, botId, label = '收到') {
+    if (!roomId || !messageId || !botId) return null;
+    let updated = null;
+    this.store.transaction(() => {
+      const row = this.messageRow.get(messageId);
+      if (!row) return;
+      const msg = JSON.parse(row.data);
+      if (msg.roomId !== roomId || msg.senderId === botId) return;
+      const mentions = Array.isArray(msg.mentions) ? msg.mentions : [];
+      if (!mentions.includes(botId)) return;
+      const current = Array.isArray(msg.acks) ? msg.acks : [];
+      if (current.some(item => item && item.botId === botId)) return;
+      const nextAcks = [...current, { botId, label: String(label || '收到').slice(0, 16), at: new Date().toISOString() }];
+      this.store.save('messages', { id: messageId, acks: nextAcks });
+      updated = this.projectMessage(this.messageRow.get(messageId));
+    });
+    if (updated) this.emit('message', updated);
+    return updated;
   }
 
   messageReceipt(message) {

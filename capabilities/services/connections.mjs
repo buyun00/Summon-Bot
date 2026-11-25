@@ -39,9 +39,9 @@ function bindingConfig(entry) {
 }
 
 export class SummonConnections {
-  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent, onWorkEvent, onProgressChange }) {
+  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent, onWorkEvent, onProgressChange, extraSecrets }) {
     if (!store || !dataRoot) throw new Error('Connection storage and data root are required');
-    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent, onWorkEvent, onProgressChange });
+    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent, onWorkEvent, onProgressChange, extraSecrets });
     this.processes = new SessionProcesses({ store, dataRoot, clean: value => this.clean(value) });
     this.services = new ServiceConnections(this);
     this.active = new Map();
@@ -49,7 +49,8 @@ export class SummonConnections {
   }
 
   clean(value, connections = this.store.list(connectionRecords)) {
-    const secrets = [...new Set(connections.flatMap(credentialNames).map(name => process.env[name]).filter(Boolean))]
+    const runtimeExtra = typeof this.extraSecrets === 'function' ? [...this.extraSecrets()] : [];
+    const secrets = [...new Set([...connections.flatMap(credentialNames).map(name => process.env[name]), ...runtimeExtra].filter(Boolean))]
       .flatMap(value => {
         const authorization = value.match(/^(?:Bearer|Basic)\s+(.+)$/i);
         return authorization ? [value, authorization[1]] : [value];

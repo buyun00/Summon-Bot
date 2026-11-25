@@ -236,7 +236,7 @@ var xt=class{
   }
 },K=new Map,q=matchMedia(`(prefers-reduced-motion: reduce)`),J=null,Y=0,X=0,Z=0,sleepTimer=0,lastPointerMove=0,windowActive=!document.hidden;
 function canRun(){
-  return windowActive&&!document.hidden&&!q.matches&&!document.documentElement.classList.contains(`summon-resizing`)&&!document.documentElement.classList.contains(`summon-inactive`);
+  return windowActive&&!document.hidden&&!q.matches&&!document.documentElement.classList.contains(`summon-resizing`);
 }
 function stopLoop(){
   if(Y){cancelAnimationFrame(Y);Y=0;}
@@ -366,11 +366,11 @@ window.addEventListener(`pointermove`,e=>{
 window.addEventListener(`pointerdown`,e=>{e.pointerType===`touch`&&$();},{passive:!0});
 document.addEventListener(`pointerleave`,$);
 window.addEventListener(`pointercancel`,$);
-window.addEventListener(`blur`,()=>{windowActive=!1;J=null;stopLoop();});
+window.addEventListener(`blur`,()=>{J=null;});
 window.addEventListener(`focus`,()=>{windowActive=!0;Q();});
 document.addEventListener(`visibilitychange`,()=>{
-  if(document.hidden){J=null;stopLoop();}
-  else{windowActive=typeof document.hasFocus===`function`?document.hasFocus():!0;Q();}
+  if(document.hidden){windowActive=!1;J=null;stopLoop();}
+  else{windowActive=!0;Q();}
 });
 document.addEventListener(`scroll`,()=>{if(K.size&&!Y&&canRun())Q();},{passive:!0,capture:!0});
 q.addEventListener(`change`,()=>{

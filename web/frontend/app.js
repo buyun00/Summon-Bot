@@ -271,6 +271,22 @@ function renderSettingsPanelBody(tab) {
     </div>
     <div class="settings-section">
       <div class="settings-group-head">
+        <h3 class="settings-group-label">本机凭据与隐私输入</h3>
+      </div>
+      <div class="settings-card">
+        <div class="settings-row">
+          <div class="settings-row-copy">
+            <strong>独立隐私输入窗（不经过 AI）</strong>
+            <small>直接向本机 runtime.env、云端中枢、模型凭据库或工作区 .env 安全写入密码、Token 与 API Key</small>
+          </div>
+          <div class="settings-row-actions">
+            <button type="button" class="secondary-button small-button" data-action="open-secret-input" data-secret-tab="env">${icon('shield', 14)} 管理凭据 / 隐私输入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-group-head">
         <h3 class="settings-group-label">执行目录（Workspace）</h3>
         <button type="button" class="secondary-button small-button" data-action="edit-workspace">${icon('plus', 14)}登记目录</button>
       </div>
@@ -443,6 +459,8 @@ const icons = {
   archiveRestore: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M12 17v-5m-2.5 2.5L12 12l2.5 2.5"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
   check: '<path d="m5 12 5 5L20 7"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 1 1 8 0v4"/>',
 };
 const icon = (name, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const labels = {
@@ -498,7 +516,7 @@ const ui = {
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', archiveDrawerOpen:false, menu:null, sendingRooms:new Set(), navigationSeq:0,
   messageCache:new Map(), roomReadSeq:{}, executionInputs:new Map(), loadingExecutions:new Map(),
-  promptDrafts:new Map(), promptSubmitting:new Set(), execPromptDrafts:new Map(), execPromptBusy:new Set(),
+  promptDrafts:new Map(), promptSubmitting:new Set(), execPromptDrafts:new Map(), execPromptBusy:new Set(), execPromptMasked:new Map(),
   historyEpoch:null, historyGeneration:0, retiredHistoryEpochs:new Set(),
 };
 const attachmentLimit = 8, attachmentMaxBytes = 20 * 1024 * 1024;
@@ -2471,6 +2489,13 @@ async function act(action, element) {
     ui.menu = null; render(); $('#message-input')?.focus(); return;
   }
   if (action === 'add-reference') return addReference();
+  if (action === 'open-secret-input') {
+    const inActiveRoom = ui.view === 'chat' && Boolean(roomById(ui.roomId)) && !ui.creatingRoom;
+    return window.SummonSecretInput?.openStandalone?.({
+      tab: element.dataset.secretTab || 'env',
+      notifyRoom: inActiveRoom,
+    });
+  }
   if (action === 'remove-reference') { ui.draftReferences[ui.roomId] = ui.draftReferences[ui.roomId].filter(item => !sameRef(item,ref)); return render(); }
   if (action === 'open-reference') return openReference(ref);
   if (action === 'reply-message') {
@@ -2642,11 +2667,21 @@ async function act(action, element) {
     ui.activePromptMsgId = msgId;
     return render();
   }
+  if (action === 'prompt-secret-open') {
+    return openSecretPromptModal(element.dataset.msgId);
+  }
   if (action === 'prompt-submit') {
     return submitPromptCard(element.dataset.msgId);
   }
   if (action === 'prompt-skip') {
     return skipPromptCard(element.dataset.msgId);
+  }
+  if (action === 'exec-prompt-toggle-secret') {
+    const key = element.dataset.execKey;
+    if (!key) return;
+    const next = !isExecPromptSecret(key, element.dataset.question || '');
+    ui.execPromptMasked.set(key, next);
+    return render();
   }
   if (action === 'exec-prompt-select') {
     const key = element.dataset.execKey, choiceId = element.dataset.choiceId;
@@ -2787,6 +2822,7 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
+    if (window.SummonSecretInput?.isOpen?.()) return;
     closeFloatingMenus();
     const lb = $('#lightbox'); if (lb && !lb.hidden) { lb.hidden = true; lb.innerHTML = ''; }
     if (ui.view === 'overview' && !$('#modal')?.open && globalThis.SummonCanvasOverview?.closeInspectorIfOpen()) return;
@@ -2835,6 +2871,7 @@ document.addEventListener('input', event => {
 });
 document.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (window.SummonSecretInput?.isOpen?.()) return;
   const target = event.target;
   if (target.id === 'message-input') {
     event.preventDefault();
@@ -3475,7 +3512,9 @@ function findPromptAnswer(message, timeline) {
   const reply = (timeline || []).find(item => item.promptResponse?.prompt_message_id === message.id);
   if (reply?.promptResponse && (reply.promptResponse.skipped || reply.promptResponse.answers?.length)) {
     return { by: reply.senderId, messageId: reply.id, answeredAt: reply.createdAt,
-      ...(reply.promptResponse.skipped ? { skipped: true } : {}), answers: reply.promptResponse.answers || [] };
+      ...(reply.promptResponse.skipped ? { skipped: true } : {}),
+      ...(reply.promptResponse.secret_delivery ? { secret_delivery: reply.promptResponse.secret_delivery } : {}),
+      answers: reply.promptResponse.answers || [] };
   }
   return null;
 }
@@ -3484,28 +3523,56 @@ function renderMessagePrompt(message, timeline) {
   const prompt = message?.prompt;
   if (!prompt?.questions?.length) return '';
   const kind = prompt.kind || 'question';
-  const kindLabel = kind === 'permission' ? '权限确认' : kind === 'confirm' ? '操作确认' : '待你选择';
+  const kindLabel = kind === 'secret' ? '隐私输入' : kind === 'permission' ? '权限确认' : kind === 'confirm' ? '操作确认' : '待你选择';
   const answered = findPromptAnswer(message, timeline);
   if (answered) {
     if (answered.skipped) {
       return `<div class="prompt-card is-${esc(kind)} is-answered is-skipped" data-prompt-msg="${esc(message.id)}">
-        <div class="prompt-card-head"><span class="prompt-kind-badge is-skipped">已跳过</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
-        <div class="prompt-answer-row"><span class="prompt-answer-q">已跳过本次选择，由 Bot 自行处理</span></div>
+        <div class="prompt-card-head"><span class="prompt-kind-badge is-skipped">${kind === 'secret' ? '已取消' : '已跳过'}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+        <div class="prompt-answer-row"><span class="prompt-answer-q">${kind === 'secret' ? '已取消本次隐私输入' : '已跳过本次选择，由 Bot 自行处理'}</span></div>
       </div>`;
     }
-    const doneLabel = kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
+    const doneLabel = kind === 'secret' ? '已安全直达' : kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
+    const deliveryMeta = answered.secret_delivery;
     const rows = answered.answers.map(ans => {
+      if (ans.redacted) {
+        return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-redacted">${icon('lock', 12)} 已安全直达（未经过 AI）</span></div>`;
+      }
       const parts = [...(ans.selected_labels || [])];
       if (ans.custom_text) parts.push(ans.custom_text);
       return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-v">${esc(parts.join(' · ') || '—')}</span></div>`;
     }).join('');
+    const deliveryRow = kind === 'secret' && deliveryMeta?.target_label
+      ? `<div class="prompt-answer-row"><span class="prompt-answer-q">直达目标</span><span class="prompt-answer-v">${esc(deliveryMeta.target_label)}</span></div>`
+      : '';
     return `<div class="prompt-card is-${esc(kind)} is-answered" data-prompt-msg="${esc(message.id)}">
-      <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon('check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
-      <div class="prompt-answer-list">${rows}</div>
+      <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon(kind === 'secret' ? 'shield' : 'check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+      <div class="prompt-answer-list">${deliveryRow}${rows}</div>
+    </div>`;
+  }
+  const busy = ui.promptSubmitting.has(message.id);
+  if (kind === 'secret') {
+    const destText = window.SummonSecretInput?.targetDestinationText?.(prompt.secret_target) || prompt.secret_target?.label || '本机凭据库 (runtime.env)';
+    const fieldsHtml = prompt.questions.map(q => {
+      const isSecret = q.mode === 'secret' || q.secret === true;
+      return `<span class="prompt-secret-field-pill ${isSecret ? 'is-masked' : ''}">${isSecret ? icon('lock', 12) : ''}${esc(q.label)}${q.env_name ? ` · ${esc(q.env_name)}` : ''}${!isSecret && q.default_value ? ` (${esc(q.default_value)})` : ''}</span>`;
+    }).join('');
+    return `<div class="prompt-card is-secret" data-prompt-msg="${esc(message.id)}">
+      <div class="prompt-card-head">
+        <span class="prompt-kind-badge">${icon('shield', 13)} 隐私输入</span>
+        ${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}
+      </div>
+      ${prompt.description ? `<p class="prompt-secret-desc">${esc(prompt.description)}</p>` : ''}
+      <div class="prompt-secret-route">${icon('lock', 13)} <span>直达目标：</span><strong>${esc(destText)}</strong><span>· 不经过 AI</span></div>
+      <div class="prompt-secret-fields">${fieldsHtml}</div>
+      <div class="prompt-card-foot">
+        <span class="prompt-enter-hint">独立窗口 · 提交即清空</span>
+        <button type="button" class="secondary-button prompt-skip-btn" data-action="prompt-skip" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>取消</button>
+        <button type="button" class="primary-button prompt-submit-btn prompt-secret-open-btn" data-action="prompt-secret-open" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>${icon('shield', 14)} ${busy ? '提交中…' : '打开隐私输入窗'}</button>
+      </div>
     </div>`;
   }
   const draft = ui.promptDrafts.get(message.id) || {};
-  const busy = ui.promptSubmitting.has(message.id);
   const ready = isPromptReady(prompt, draft);
   const submitLabel = prompt.submit_label || (kind === 'permission' ? '确认授权' : kind === 'confirm' ? '确认' : '提交选择');
   const questionsHtml = prompt.questions.map((q, qIndex) => {
@@ -3553,6 +3620,52 @@ function renderMessagePrompt(message, timeline) {
       <button type="button" class="primary-button prompt-submit-btn" data-action="prompt-submit" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy || !ready ? 'disabled' : ''}>${busy ? '提交中…' : esc(submitLabel)}</button>
     </div>
   </div>`;
+}
+
+function openSecretPromptModal(msgId) {
+  const room = roomById(ui.roomId);
+  if (!room || !msgId || ui.promptSubmitting.has(msgId) || !ui.protocolReady) return;
+  const timeline = mergedRoomMessages(room.id, ui.messages);
+  const message = timeline.find(item => item.id === msgId);
+  const prompt = message?.prompt;
+  if (!prompt || prompt.kind !== 'secret') return;
+  window.SummonSecretInput?.openForPrompt?.(message, {
+    onSubmitted: async ({ answers, secret_delivery, summaryText }) => {
+      const mentions = message.senderId && message.senderId !== 'user' && message.senderId !== 'system' && room.members.includes(message.senderId)
+        ? [message.senderId] : [];
+      const payload = {
+        text: summaryText,
+        mentions,
+        reply_to: messageRef(message.id),
+        prompt_response: {
+          prompt_message_id: message.id,
+          answers,
+          ...(secret_delivery ? { secret_delivery } : {}),
+        },
+      };
+      ui.promptSubmitting.add(msgId);
+      render();
+      try {
+        const entry = queueLocalMessage(room.id, payload, []);
+        await sendLocalMessage(entry, true);
+      } finally {
+        ui.promptSubmitting.delete(msgId);
+        render();
+      }
+    },
+  });
+}
+
+async function sendSafeSecretRoomReceipt(text) {
+  const room = roomById(ui.roomId);
+  if (!room || !text || !ui.protocolReady) return;
+  const leadId = room.lead_bot_id && room.members.includes(room.lead_bot_id) ? room.lead_bot_id : null;
+  const payload = {
+    text,
+    mentions: leadId ? [leadId] : [],
+  };
+  const entry = queueLocalMessage(room.id, payload, []);
+  await sendLocalMessage(entry, true);
 }
 
 async function submitPromptCard(msgId) {
@@ -3620,7 +3733,7 @@ async function skipPromptCard(msgId) {
     ? [message.senderId] : [];
   const kind = prompt.kind || 'question';
   const payload = {
-    text: kind === 'permission' ? '已跳过权限确认' : '已跳过选择，由你自行处理',
+    text: kind === 'secret' ? '已取消本次隐私输入' : kind === 'permission' ? '已跳过权限确认' : '已跳过选择，由你自行处理',
     mentions,
     reply_to: messageRef(message.id),
     prompt_response: { prompt_message_id: message.id, skipped: true, answers: [] },
@@ -3654,6 +3767,13 @@ function execSkipChoiceId(choices = []) {
   return choices.find(c => ['cancel', 'decline', 'deny'].includes(c.id))?.id || null;
 }
 
+const EXEC_SECRET_HINT_RE = /password|passwd|passphrase|token|secret|api[_\s-]?key|credential|otp|2fa|\bpin\b|密码|口令|密钥|令牌|验证码/i;
+
+function isExecPromptSecret(key, question = '') {
+  if (ui.execPromptMasked.has(key)) return ui.execPromptMasked.get(key);
+  return EXEC_SECRET_HINT_RE.test(String(question || ''));
+}
+
 function renderRoomPendingPrompts() {
   const items = activeRoomPendingRequests();
   if (!items.length) return '';
@@ -3662,6 +3782,7 @@ function renderRoomPendingPrompts() {
     const busy = ui.execPromptBusy.has(key);
     const currentVal = ui.execPromptDrafts.get(key) ?? '';
     const choices = req.choices || [];
+    const isSecretText = !choices.length && isExecPromptSecret(key, req.question);
     const skipId = execSkipChoiceId(choices);
     const actorLabel = nameOf(exec.execution_actor?.id || exec.bot_id);
     const keySlug = key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
@@ -3677,19 +3798,24 @@ function renderRoomPendingPrompts() {
             <span class="prompt-option-copy"><span class="prompt-option-label">${esc(choice.label || cid)}</span></span>
           </button>`;
         }).join('')}</div>`
-      : `<div class="prompt-custom-wrap"><input type="text" id="${esc(inputId)}" class="exec-prompt-input prompt-custom-input"
-          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="输入回答，按 Enter 提交…" ${busy ? 'disabled' : ''}></div>`;
-    return `<div class="prompt-card exec-pending-card ${isApproval ? 'is-permission' : 'is-question'}" data-exec-key="${esc(key)}">
+      : `<div class="prompt-custom-wrap"><input type="${isSecretText ? 'password' : 'text'}" id="${esc(inputId)}" class="exec-prompt-input prompt-custom-input"
+          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="${isSecretText ? '隐私直达目标会话，不入聊天（Enter 提交）…' : '输入回答，按 Enter 提交…'}"
+          ${isSecretText ? 'autocomplete="off" spellcheck="false"' : ''} ${busy ? 'disabled' : ''}></div>`;
+    const secretToggleBtn = !choices.length
+      ? `<button type="button" class="exec-secret-toggle ${isSecretText ? 'active' : ''}" data-action="exec-prompt-toggle-secret" data-exec-key="${esc(key)}" data-question="${esc(req.question || '')}" title="切换隐藏隐私输入" ${busy ? 'disabled' : ''}>${icon('lock', 12)} ${isSecretText ? '隐私输入中' : '隐私模式'}</button>`
+      : '';
+    return `<div class="prompt-card exec-pending-card ${isSecretText ? 'is-secret' : isApproval ? 'is-permission' : 'is-question'}" data-exec-key="${esc(key)}">
       <div class="prompt-card-head">
-        <span class="prompt-kind-badge">${isApproval ? '执行权限审批' : '执行会话提问'}</span>
+        <span class="prompt-kind-badge">${isSecretText ? `${icon('shield', 12)} 隐私会话输入` : isApproval ? '执行权限审批' : '执行会话提问'}</span>
         <strong class="prompt-title">${esc(actorLabel)}${exec.engine ? ` · ${esc(exec.engine)}` : ''}</strong>
+        ${secretToggleBtn}
       </div>
       ${req.question ? `<p class="exec-pending-question">${esc(req.question)}</p>` : ''}
       ${body}
       <div class="prompt-card-foot">
-        <span class="prompt-enter-hint">Enter 提交</span>
+        <span class="prompt-enter-hint">${isSecretText ? '直达会话 · 自动脱敏' : 'Enter 提交'}</span>
         ${skipId ? `<button type="button" class="secondary-button prompt-skip-btn" data-action="exec-prompt-skip" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>跳过</button>` : ''}
-        <button type="button" class="primary-button prompt-submit-btn" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isApproval ? '确认审批' : '提交回答'}</button>
+        <button type="button" class="primary-button prompt-submit-btn ${isSecretText ? 'prompt-secret-open-btn' : ''}" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isSecretText ? '隐私提交' : isApproval ? '确认审批' : '提交回答'}</button>
       </div>
     </div>`;
   }).join('')}</div>`;
@@ -3700,18 +3826,32 @@ async function submitExecPromptCard(key, overrideValue = null) {
   if (!item || ui.execPromptBusy.has(key) || !ui.protocolReady) return;
   const val = String(overrideValue ?? ui.execPromptDrafts.get(key) ?? '').trim();
   if (!val) return;
+  const isSecretText = !overrideValue && !(item.req.choices || []).length && isExecPromptSecret(key, item.req.question);
   ui.execPromptBusy.add(key);
   render();
   try {
-    await api('/api/executions/input', 'POST', {
-      target: item.exec.execution_ref,
-      kind: 'reply',
-      control_version: item.exec.control_version,
-      input_target: item.req.input_target,
-      input: val,
-    }, { clientId: newClientId() });
+    if (isSecretText && item.exec.execution_ref?.kind === 'session') {
+      await api('/api/secrets/deliver', 'POST', {
+        target: {
+          kind: 'session_input',
+          session_id: item.exec.execution_ref.id,
+          control_version: item.exec.control_version,
+          input_target: item.req.input_target,
+        },
+        fields: { input: val },
+      }, { clientId: newClientId() });
+    } else {
+      await api('/api/executions/input', 'POST', {
+        target: item.exec.execution_ref,
+        kind: 'reply',
+        control_version: item.exec.control_version,
+        input_target: item.req.input_target,
+        input: val,
+      }, { clientId: newClientId() });
+    }
     ui.execPromptDrafts.delete(key);
-    toast(overrideValue ? '已跳过该执行请求' : item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
+    ui.execPromptMasked.delete(key);
+    toast(overrideValue ? '已跳过该执行请求' : isSecretText ? '已通过隐私通道直达执行会话' : item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
     await refresh();
   } finally {
     ui.execPromptBusy.delete(key);
@@ -3725,6 +3865,46 @@ async function skipExecPromptCard(key) {
   const skipId = execSkipChoiceId(item.req.choices || []);
   if (!skipId) return;
   return submitExecPromptCard(key, skipId);
+}
+
+function resolveMessageAcks(message, timeline) {
+  const list = [];
+  const seen = new Set();
+  for (const item of message.acks || []) {
+    if (!item?.botId || seen.has(item.botId)) continue;
+    seen.add(item.botId);
+    list.push({ botId: item.botId, label: item.label || '收到' });
+  }
+  const mentions = message.mentions || [];
+  if (mentions.length && !message._delivery) {
+    const activeBots = new Set([
+      ...(ui.roomActivities || []).map(a => a.bot_id),
+      ...(ui.roomExecutions || []).filter(e => LIVE_EXEC_STATUSES.has(e.status)).map(e => e.execution_actor?.id || e.bot_id),
+    ].filter(Boolean));
+    for (const botId of mentions) {
+      if (botId === 'user' || seen.has(botId) || !activeBots.has(botId)) continue;
+      const latestForBot = [...timeline].reverse().find(m => !m._delivery && (m.mentions || []).includes(botId));
+      if (latestForBot?.id === message.id) {
+        seen.add(botId);
+        list.push({ botId, label: '收到' });
+      }
+    }
+  }
+  return list;
+}
+
+function renderMessageAcks(message, timeline) {
+  const acks = resolveMessageAcks(message, timeline);
+  if (!acks.length) return '';
+  return `<div class="message-acks" aria-label="快捷确认">${acks.map(ack => {
+    const appearance = botAvatar(ack.botId);
+    return `<span class="message-ack-pill" style="--ack-color:${esc(appearance.color || 'var(--ok)')}">
+      <span class="message-ack-badge">${icon('check', 11)}<span>${esc(ack.label)}</span></span>
+      <span class="message-ack-sep" aria-hidden="true"></span>
+      ${face(appearance, 15, { static: true })}
+      <span class="message-ack-name">${esc(nameOf(ack.botId))}</span>
+    </span>`;
+  }).join('')}</div>`;
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup, previous = null) {
@@ -3757,6 +3937,7 @@ function renderChatMessage(message, timeline, grouped, isGroup, previous = null)
       ${promptHtml}
       ${renderMessageAttachments(message.attachments)}
       ${message.references?.length ? `<div class="reference-list">${message.references.map(ref => renderReference(ref)).join('')}</div>` : ''}
+      ${renderMessageAcks(message, timeline)}
       ${ownTime}
     </div>${renderDelivery(message)}${actions}</div></article>`;
 }
@@ -3877,11 +4058,9 @@ function renderChat() {
     ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
         <button type="button" class="text-button" data-action="open-settings" data-tab="models">配置模型</button></div>`
     : '';
-  const inStreamWork = archived ? '' : renderInStreamWorkCard(room, liveWorkItems, liveWork);
   const body = `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
-      ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}
-      ${inStreamWork}</div>
+      ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}</div>
       ${archived ? '' : renderRoomPendingPrompts()}
       ${renderChatComposer(room, members, liveWorkItems, liveWork)}`;
   return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}"
@@ -4110,63 +4289,6 @@ function summarizeRoomWork(room, items) {
   };
 }
 
-function renderInStreamWorkCard(room, items, work) {
-  if (!work || !items.length) return '';
-  const drawerOpen = ui.openRoomExecution === room.id;
-  const { primary } = work;
-  if (!work.isRich) {
-    return `<div class="chat-work-anchor is-compact" data-live-work-card data-room-id="${esc(room.id)}" aria-live="polite">
-      <div class="chat-work-avatars">
-        ${face(botAvatar(primary.botId), 28, { key: `stream-work:${room.id}:${primary.botId}`, identity: `bot:${primary.botId}`, state: 'work' })}
-      </div>
-      <div class="chat-work-compact-pill">
-        <span class="chat-work-name">${esc(primary.name)}</span>
-        <span class="chat-work-dot-sep">·</span>
-        <span class="shimmer-status chat-work-step" data-live-step>${esc(primary.text)}</span>
-        <span class="chat-work-timer" data-live-timer data-started-at="${work.startedAt}">${esc(formatElapsedClock(work.elapsedMs))}</span>
-      </div>
-    </div>`;
-  }
-
-  const badgeLabel = work.hasWaitingInput ? '等待输入' : work.isQuiet ? '等待响应' : '进行中';
-  const stepHtml = work.isQuiet
-    ? `<span>仍在等待后台响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）· 上一步：${esc(primary.text)}</span>`
-    : `<span class="${work.hasWaitingInput ? '' : 'shimmer-status'}">${esc(items.length > 1 ? `${primary.name}：${primary.text}` : primary.text)}</span>`;
-
-  return `<div class="chat-work-anchor is-rich ${work.hasWaitingInput ? 'is-waiting' : work.isQuiet ? 'is-quiet' : ''}" data-live-work-card data-room-id="${esc(room.id)}" aria-live="polite">
-    <div class="chat-work-card">
-      <div class="chat-work-card-head">
-        <div class="chat-work-avatars ${items.length > 1 ? 'is-multi' : ''}">
-          ${items.slice(0, 3).map(item => face(botAvatar(item.botId), 30, { key: `stream-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
-        </div>
-        <div class="chat-work-head-copy">
-          <div class="chat-work-title-row">
-            <strong class="chat-work-title">${esc(work.title)}</strong>
-            <span class="chat-work-badge ${work.hasWaitingInput ? 'is-waiting' : work.isQuiet ? 'is-quiet' : ''}">${esc(badgeLabel)}</span>
-          </div>
-          <div class="chat-work-meta">
-            <span>${esc(work.actorLine)}</span>
-            <span class="chat-work-dot-sep">·</span>
-            <span class="chat-work-timer" data-live-timer data-started-at="${work.startedAt}">${esc(formatElapsedClock(work.elapsedMs))}</span>
-            ${work.batchText ? `<span class="chat-work-dot-sep">·</span><span class="chat-work-batch">${esc(work.batchText)}</span>` : ''}
-          </div>
-        </div>
-        <div class="chat-work-head-actions">
-          <button type="button" class="chat-work-btn" data-action="toggle-room-executions" aria-expanded="${drawerOpen}">${drawerOpen ? '收起过程' : '查看过程'}</button>
-          <button type="button" class="chat-work-btn is-stop" data-action="stop-room" title="停止本群在途工作">停止</button>
-        </div>
-      </div>
-      <div class="chat-work-status-row">
-        <span class="chat-work-pulse-dot" aria-hidden="true"></span>
-        <div class="chat-work-step" data-live-step>${stepHtml}</div>
-      </div>
-      <div class="chat-work-rail ${work.progressPct != null ? 'is-determinate' : ''}" aria-hidden="true">
-        <span class="chat-work-rail-fill" ${work.progressPct != null ? `style="width:${work.progressPct}%"` : ''}></span>
-      </div>
-    </div>
-  </div>`;
-}
-
 function renderRoomExecutionDrawer(room, liveItems) {
   if (ui.openRoomExecution !== room.id) return '';
   const allExecutions = [...(ui.roomExecutions || [])].sort((a, b) => {
@@ -4215,6 +4337,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
     <div class="bot-execution-drawer-head">
       <strong>${activeCount ? `进行中（${activeCount}）` : '最近执行'}</strong>
       <div class="bot-execution-drawer-actions">
+        ${activeCount ? '<button type="button" class="drawer-stop-btn" data-action="stop-room" title="停止本群在途工作">停止工作</button>' : ''}
         <button type="button" class="text-button" data-action="open-panel-room" data-room="${esc(room.id)}">全部记录</button>
         <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起执行过程">${icon('close', 15)}</button>
       </div>
@@ -4223,47 +4346,64 @@ function renderRoomExecutionDrawer(room, liveItems) {
   </section>`;
 }
 
-function renderFloatingBotActivity(room, members, precomputedItems, precomputedWork) {
-  const items = precomputedItems ?? collectRoomActivityItems(room, members);
-  const work = precomputedWork !== undefined ? precomputedWork : summarizeRoomWork(room, items);
-  const drawerOpen = ui.openRoomExecution === room.id;
-  if (!items.length && !drawerOpen) return '';
-  const drawer = renderRoomExecutionDrawer(room, items);
-  if (!items.length) return `<div class="bot-activity-dock" data-work-dock aria-live="polite">${drawer}</div>`;
-  const startedAt = work?.startedAt || Date.now();
-  const elapsedLabel = formatElapsedClock(work?.elapsedMs || 0);
-  const stateClass = work?.hasWaitingInput ? 'is-waiting' : work?.isQuiet ? 'is-quiet' : '';
-  return `<div class="bot-activity-dock ${drawerOpen ? 'drawer-open' : 'is-anchored-in-stream'} ${stateClass}" data-work-dock aria-live="polite">${drawer}
-    <div class="bot-activity-bar ${drawerOpen ? 'drawer-open' : ''}" data-activity-bar data-count="${items.length}" data-layout="inline">
-      <div class="bot-activity-viewport" data-activity-viewport>
-        <div class="bot-activity-track" data-activity-track>
-          ${items.map((item, idx) => `<button type="button" class="activity-trigger" data-action="toggle-room-executions" data-activity-index="${idx}"
-              aria-expanded="${drawerOpen}" title="${esc(item.name + ' · ' + item.text)}（点击${drawerOpen ? '收起' : '展开'}执行过程）">
-            ${face(botAvatar(item.botId), 24, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
-            <span class="activity-bot-name">${esc(item.name)}</span>
-            <span class="activity-sep">·</span>
-            <span class="${work?.isQuiet ? 'activity-summary is-quiet' : 'shimmer-status activity-summary'}">${esc(work?.isQuiet ? `等待响应 · ${item.text}` : item.text)}</span>
-          </button>`).join('')}
+function renderUnifiedWorkBand(room, items, work, drawerOpen) {
+  if (!work || !items.length) return '';
+  const { primary } = work;
+  const badgeLabel = work.hasWaitingInput ? '等待输入' : work.isQuiet ? '等待响应' : '进行中';
+  const stepText = items.length > 1 ? `${primary.name}：${primary.text}` : primary.text;
+  const expandedStepHtml = work.isQuiet
+    ? `<span>仍在等待后台响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）· 上一步：${esc(primary.text)}</span>`
+    : `<span class="${work.hasWaitingInput ? '' : 'shimmer-status'}">${esc(stepText)}</span>`;
+  const compactStepHtml = work.isQuiet
+    ? `<span class="cwb-compact-quiet">等待响应（已静默 <span data-live-quiet-duration data-updated-at="${work.lastUpdateAt}">${esc(formatQuietDuration(work.quietMs))}</span>）</span>`
+    : `<span class="${work.hasWaitingInput ? '' : 'shimmer-status'} cwb-compact-step">${esc(primary.text)}</span>`;
+  const elapsedLabel = formatElapsedClock(work.elapsedMs);
+
+  return `<button type="button" class="composer-work-band ${work.isRich ? 'is-rich' : 'is-brief'} ${drawerOpen ? 'drawer-open' : ''}"
+      data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
+      title="${esc(work.title + ' · ' + primary.text)}（点击${drawerOpen ? '收起' : '查看'}执行过程）">
+    <div class="cwb-expanded">
+      <div class="cwb-head">
+        <div class="cwb-avatars ${items.length > 1 ? 'is-multi' : ''}">
+          ${items.slice(0, 3).map(item => face(botAvatar(item.botId), 28, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
         </div>
+        <div class="cwb-head-copy">
+          <div class="cwb-title-row">
+            <strong class="cwb-title">${esc(work.title)}</strong>
+            <span class="cwb-badge ${work.hasWaitingInput ? 'is-waiting' : work.isQuiet ? 'is-quiet' : ''}">${esc(badgeLabel)}</span>
+          </div>
+          <div class="cwb-meta">
+            <span>${esc(work.actorLine)}</span>
+            <span class="cwb-sep">·</span>
+            <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
+            ${work.batchText ? `<span class="cwb-sep">·</span><span class="cwb-batch">${esc(work.batchText)}</span>` : ''}
+          </div>
+        </div>
+        <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
       </div>
-      <div class="bot-activity-controls">
-        <span class="activity-timer" data-live-timer data-started-at="${startedAt}">${esc(elapsedLabel)}</span>
-        <button type="button" class="activity-jump-btn" data-action="scroll-to-work" title="回到底部查看工作卡片">回到底部</button>
-        <button type="button" class="activity-stop-btn" data-action="stop-room" title="停止本群在途工作">停止</button>
-        <button type="button" class="activity-expand-pill" data-action="toggle-room-executions" aria-expanded="${drawerOpen}" title="${drawerOpen ? '收起执行过程' : '展开执行过程'}">
-          <span class="activity-ticker-badge" data-activity-badge hidden></span>
-          <span class="activity-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
-        </button>
+      <div class="cwb-step-row">
+        <span class="cwb-pulse-dot" aria-hidden="true"></span>
+        <div class="cwb-step">${expandedStepHtml}</div>
       </div>
     </div>
-  </div>`;
+    <div class="cwb-compact">
+      <div class="cwb-avatars ${items.length > 1 ? 'is-multi' : ''}">
+        ${items.slice(0, 2).map(item => face(botAvatar(item.botId), 22, { key: `composer-work-compact:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
+      </div>
+      <span class="cwb-compact-name">${esc(primary.name)}</span>
+      <span class="cwb-sep">·</span>
+      ${compactStepHtml}
+      ${work.batchText ? `<span class="cwb-compact-batch">${esc(work.batchText)}</span>` : ''}
+      <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
+      <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+    </div>
+    <div class="cwb-rail ${work.progressPct != null ? 'is-determinate' : ''}" aria-hidden="true">
+      <span class="cwb-rail-fill" ${work.progressPct != null ? `style="width:${work.progressPct}%"` : ''}></span>
+    </div>
+  </button>`;
 }
 
-let activityTickerTimer = null;
 let liveWorkClockTimer = null;
-function stopBotActivityTicker() {
-  if (activityTickerTimer) { clearInterval(activityTickerTimer); activityTickerTimer = null; }
-}
 function stopLiveWorkClock() {
   if (liveWorkClockTimer) { clearInterval(liveWorkClockTimer); liveWorkClockTimer = null; }
 }
@@ -4299,80 +4439,27 @@ function ensureLiveWorkClock() {
   }
 }
 function syncWorkDockVisibility(messagesEl = $('.messages')) {
-  const dock = $('[data-work-dock]');
-  if (!dock) return;
-  if (dock.classList.contains('drawer-open')) {
-    dock.classList.remove('is-anchored-in-stream');
+  const shell = $('[data-composer-shell]');
+  if (!shell) return;
+  if (!shell.classList.contains('has-work') || shell.classList.contains('drawer-open')) {
+    shell.classList.remove('is-work-compact');
     return;
   }
-  const card = $('[data-live-work-card]');
-  if (!card || !messagesEl || !messagesEl.clientHeight) {
-    dock.classList.remove('is-anchored-in-stream');
+  const band = $('.composer-work-band', shell);
+  if (band?.classList.contains('is-brief')) {
+    shell.classList.add('is-work-compact');
     return;
   }
-  const msgRect = messagesEl.getBoundingClientRect();
-  const cardRect = card.getBoundingClientRect();
-  const visible = cardRect.top < msgRect.bottom - 18 && cardRect.bottom > msgRect.top + 18;
-  dock.classList.toggle('is-anchored-in-stream', visible);
-}
-function applyBotActivityTickerPosition(bar, animate = true) {
-  const track = $('[data-activity-track]', bar);
-  const badge = $('[data-activity-badge]', bar);
-  const count = Number(bar?.dataset.count || 0);
-  if (!track || count <= 1) return;
-  const idx = ((ui.activityTickerIndex || 0) % count + count) % count;
-  ui.activityTickerIndex = idx;
-  const rowH = track.firstElementChild?.getBoundingClientRect().height || 34;
-  if (!animate) track.style.transition = 'none';
-  track.style.transform = `translateY(${-idx * rowH}px)`;
-  if (!animate) {
-    void track.offsetHeight;
-    track.style.transition = '';
+  if (!messagesEl || !messagesEl.clientHeight) {
+    shell.classList.remove('is-work-compact');
+    return;
   }
-  if (badge) {
-    badge.textContent = `${idx + 1}/${count}`;
-    badge.hidden = false;
-  }
+  const distanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+  shell.classList.toggle('is-work-compact', distanceFromBottom > 72);
 }
 function syncBotActivityDock() {
-  stopBotActivityTicker();
   ensureLiveWorkClock();
   syncWorkDockVisibility($('.messages'));
-  const bar = $('[data-activity-bar]');
-  if (!bar) return;
-  const viewport = $('[data-activity-viewport]', bar);
-  const track = $('[data-activity-track]', bar);
-  const badge = $('[data-activity-badge]', bar);
-  const count = Number(bar.dataset.count || 0);
-  if (!viewport || !track || count <= 1) {
-    bar.dataset.layout = 'inline';
-    if (track) track.style.transform = '';
-    if (badge) badge.hidden = true;
-    ui.activityTickerIndex = 0;
-    return;
-  }
-  bar.dataset.layout = 'measure';
-  track.style.transition = 'none';
-  track.style.transform = '';
-  const fitsSingleLine = track.scrollWidth <= viewport.clientWidth - 2;
-  if (fitsSingleLine) {
-    bar.dataset.layout = 'inline';
-    track.style.transition = '';
-    if (badge) badge.hidden = true;
-    return;
-  }
-  bar.dataset.layout = 'ticker';
-  applyBotActivityTickerPosition(bar, false);
-  activityTickerTimer = setInterval(() => {
-    if (document.hidden || document.documentElement.classList.contains('summon-inactive')) return;
-    const liveBar = $('[data-activity-bar]');
-    if (!liveBar || liveBar.dataset.layout !== 'ticker') { stopBotActivityTicker(); return; }
-    if (liveBar.matches(':hover')) return;
-    const total = Number(liveBar.dataset.count || 0);
-    if (total <= 1) { stopBotActivityTicker(); return; }
-    ui.activityTickerIndex = ((ui.activityTickerIndex || 0) + 1) % total;
-    applyBotActivityTickerPosition(liveBar, true);
-  }, 3200);
 }
 
 function renderChatComposer(room, members, liveWorkItems, liveWork) {
@@ -4382,6 +4469,15 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
       <button type="button" class="primary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档继续聊天</button>
     </div></div>`;
   }
+  const items = liveWorkItems ?? collectRoomActivityItems(room, members);
+  const work = liveWork !== undefined ? liveWork : summarizeRoomWork(room, items);
+  const drawerOpen = ui.openRoomExecution === room.id;
+  const drawer = drawerOpen ? renderRoomExecutionDrawer(room, items) : '';
+  const workBand = renderUnifiedWorkBand(room, items, work, drawerOpen);
+  const hasWorkShell = Boolean(workBand || drawer);
+  const workStateClass = work?.hasWaitingInput ? 'is-waiting' : work?.isQuiet ? 'is-quiet' : '';
+  const initialCompact = Boolean(workBand && !work?.isRich && !drawerOpen);
+
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"
       class="mention-choice" data-action="toggle-mention" data-id="${esc(member.id)}" aria-pressed="${mentions.includes(member.id)}">
@@ -4389,19 +4485,22 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
   const selectedReply = ui.draftReplies[room.id];
   const reply = selectedReply ? `<div class="reply-preview">${avatar(selectedReply.senderId,25,'')}<span>回复 ${esc(nameOf(selectedReply.senderId))}
     · ${esc(messagePreview(selectedReply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
-  const floatingActivity = renderFloatingBotActivity(room, members, liveWorkItems, liveWork);
   const suspendedBanner = renderRoomSuspendedBanner();
-  return `<div class="composer-wrap">${floatingActivity}${suspendedBanner}${reply}${renderAttachmentDrafts()}
+  return `<div class="composer-wrap">${suspendedBanner}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" ${ref.kind === 'workspace_file' ? `data-workspace-id="${esc(ref.workspace_id)}" data-path="${esc(ref.path)}"` : `data-id="${esc(ref.id)}"`}>${icon('close',14)}</button></span>`).join('')}</div>` : ''}
-    <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
-      <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
-      <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="给 ${esc(room.name)} 发消息">${esc(ui.drafts[room.id] || '')}</textarea>
-      <div class="composer-tools"><div class="menu-anchor">${members.length ? `<button class="composer-mention ${mentions.length ? 'has-target' : ''}" type="button"
-        data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
-        <button class="icon-button" type="button" data-action="add-reference" title="添加资料引用" aria-label="添加资料引用">${icon('link',18)}</button></div>
-      <button type="submit" class="composer-send" ${sendBusy(room.id) ? 'disabled' : ''} aria-label="发送消息">${icon('send',22)}</button>
-    </form></div>`;
+    <div class="composer-shell ${hasWorkShell ? 'has-work' : ''} ${drawerOpen ? 'drawer-open' : ''} ${initialCompact ? 'is-work-compact' : ''} ${workStateClass}" data-composer-shell aria-live="polite">
+      ${drawer}${workBand}
+      <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
+        <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
+        <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="给 ${esc(room.name)} 发消息">${esc(ui.drafts[room.id] || '')}</textarea>
+        <div class="composer-tools"><div class="menu-anchor">${members.length ? `<button class="composer-mention ${mentions.length ? 'has-target' : ''}" type="button"
+          data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
+          <button class="icon-button composer-secret-btn" type="button" data-action="open-secret-input" title="独立隐私输入窗（账号/密码/Key 直达目标，不经过 AI）" aria-label="独立隐私输入窗">${icon('shield',18)}</button>
+          <button class="icon-button" type="button" data-action="add-reference" title="添加资料引用" aria-label="添加资料引用">${icon('link',18)}</button></div>
+        <button type="submit" class="composer-send" ${sendBusy(room.id) ? 'disabled' : ''} aria-label="发送消息">${icon('send',22)}</button>
+      </form>
+    </div></div>`;
 }
 
 function renderDetailPanel(room, bot) {
@@ -4938,6 +5037,13 @@ renderTopbar();
       return;
     }
   }
+  window.SummonSecretInput?.configure?.({
+    api,
+    toast,
+    getCurrentRoom: () => (ui.view === 'chat' && !ui.creatingRoom ? roomById(ui.roomId) : null),
+    sendSafeRoomReceipt: sendSafeSecretRoomReceipt,
+    onAfterChange: () => void refresh(),
+  });
   window.SummonOnboarding?.bind?.({
     api,
     toast,
@@ -4983,7 +5089,7 @@ let desktopWindowActive = true;
 function syncWindowActivity() {
   const active = desktopWindowActive && !document.hidden && (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
   document.documentElement.classList.toggle('summon-inactive', !active);
-  window.SummonAvatars?.setActive?.(active);
+  window.SummonAvatars?.setActive?.(!document.hidden);
 }
 window.addEventListener('blur', syncWindowActivity);
 window.addEventListener('focus', syncWindowActivity);

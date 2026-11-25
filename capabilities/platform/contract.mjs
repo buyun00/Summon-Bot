@@ -20,6 +20,29 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
+const inputTarget = { anyOf: [
+  object({ kind: oneOf('codex_turn'), turn_id: text, request_id: text }, ['kind', 'turn_id']),
+  object({ kind: oneOf('pi_run'), run_id: text, request_id: text }, ['kind', 'run_id']),
+  object({ kind: oneOf('cli_process'), instance_id: text, launch_call_id: text, request_id: text }, ['kind', 'instance_id', 'launch_call_id']),
+  object({ kind: oneOf('service_call'), call_id: text, request_id: text, operation_id: text }, ['kind', 'call_id']),
+  object({ kind: oneOf('idle_input'), input_revision: integer }, ['kind', 'input_revision']),
+] };
+const secretTarget = object({
+  kind: oneOf('hub_login', 'hub_register', 'hub_password', 'env', 'model_api_key', 'file_env', 'session_input'),
+  label: text,
+  hub_url: text,
+  connection_id: text,
+  provider: text,
+  base_url: text,
+  model: text,
+  name: text,
+  activate: flag,
+  workspace: text,
+  path: text,
+  session_id: text,
+  control_version: integer,
+  input_target: inputTarget,
+}, ['kind']);
 const promptOption = object({
   id: text,
   label: text,
@@ -30,29 +53,44 @@ const promptOption = object({
 const promptQuestion = object({
   id: text,
   label: text,
-  mode: oneOf('single', 'multi', 'text'),
+  mode: oneOf('single', 'multi', 'text', 'secret'),
   required: flag,
   allow_custom: flag,
   custom_placeholder: text,
+  secret: flag,
+  field: text,
+  env_name: text,
+  default_value: text,
+  hint: text,
   options: array(promptOption),
 }, ['id', 'label', 'mode']);
 const messagePrompt = object({
-  kind: oneOf('question', 'permission', 'confirm'),
+  kind: oneOf('question', 'permission', 'confirm', 'secret'),
   title: text,
+  description: text,
   submit_label: text,
+  secret_target: secretTarget,
   questions: array(promptQuestion),
-}, ['questions']);
+});
 const promptAnswerItem = object({
   question_id: text,
   label: text,
   selected_ids: array(text),
   selected_labels: array(text),
   custom_text: text,
+  redacted: flag,
 }, ['question_id']);
+const secretDeliveryReceipt = object({
+  target_kind: text,
+  target_label: text,
+  configured_keys: array(text),
+  detail: text,
+});
 const messagePromptResponse = object({
   prompt_message_id: text,
   skipped: flag,
   answers: array(promptAnswerItem),
+  secret_delivery: secretDeliveryReceipt,
 }, ['prompt_message_id', 'answers']);
 const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
   for_session_id: text, origin_message_id: eventOrId, awaiting_reply: flag, prompt: messagePrompt, prompt_response: messagePromptResponse };
@@ -65,13 +103,6 @@ const sendMessage = { anyOf: [
 ] };
 const usagePeriod = { anyOf: [oneOf('yesterday', 'today', '7d'), object({ from: text, to: text }, ['from', 'to'])] };
 const executionRef = object({ kind: oneOf('session', 'conversation'), id: text }, ['kind', 'id']);
-const inputTarget = { anyOf: [
-  object({ kind: oneOf('codex_turn'), turn_id: text, request_id: text }, ['kind', 'turn_id']),
-  object({ kind: oneOf('pi_run'), run_id: text, request_id: text }, ['kind', 'run_id']),
-  object({ kind: oneOf('cli_process'), instance_id: text, launch_call_id: text, request_id: text }, ['kind', 'instance_id', 'launch_call_id']),
-  object({ kind: oneOf('service_call'), call_id: text, request_id: text, operation_id: text }, ['kind', 'call_id']),
-  object({ kind: oneOf('idle_input'), input_revision: integer }, ['kind', 'input_revision']),
-] };
 const subscriptionRules = [
   object({ kind: oneOf('room_base'), room: roomOrId, mode: oneOf('all', 'mentions'),
     message_count: { type: 'integer', minimum: 1, description: 'New messages between EggBot observations in this group. The default is 20.' } }, ['kind', 'room', 'mode']),
@@ -125,7 +156,7 @@ const definitions = [
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace or any local host directory (pass {kind:"workspace",id:"D:\\\\..."} directly, including a drive root), use directory "." or a subdirectory to list entries, or add a relative path to read a text file. Read a File ref to inspect its text or image (on vision-capable models); pass an optional revision to inspect a historical snapshot from platform-file-revisions. ' +
     'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
-  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm",title?,submit_label?,questions:[{id,label,mode:"single"|"multi"|"text",required?,allow_custom?,custom_placeholder?,options?:[{id,label,description?,recommended?,tone?}]}]}). Use prompt whenever asking the user to pick options, confirm permissions, or answer structured questions instead of printing numbered text lists. ' +
+  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm"|"secret",title?,description?,submit_label?,secret_target?:{kind:"hub_login"|"hub_register"|"hub_password"|"env"|"model_api_key"|"file_env"|"session_input",label?,hub_url?,connection_id?,provider?,base_url?,model?,name?,activate?,workspace?,path?,session_id?,control_version?,input_target?},questions:[{id,label,mode:"single"|"multi"|"text"|"secret",required?,allow_custom?,custom_placeholder?,secret?,field?,env_name?,default_value?,hint?,options?:[{id,label,description?,recommended?,tone?}]}]}). Use prompt whenever asking the user to pick options, confirm permissions, or answer structured questions instead of printing numbered text lists. Whenever asking for passwords, API keys, tokens, or other sensitive credentials, ALWAYS use prompt with kind:"secret" and an appropriate secret_target so the user enters them in the standalone privacy input window directly to the destination without passing through AI context or chat history. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome (repaired, blocked, or non-terminal need_info to request missing parameters without closing).',
     object({ message: sendMessage }, ['message']), ({ message }) => message],

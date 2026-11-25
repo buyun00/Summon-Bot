@@ -590,6 +590,20 @@
     }
   });
 
+  async function applyAuthResult(res) {
+    if (hub.mode === 'local') {
+      applyAuthMe(res);
+    } else {
+      hub.authenticated = true;
+      hub.user = res?.user || hub.user;
+      if (typeof res?.maxUploadMb === 'number') hub.maxUploadMb = res.maxUploadMb;
+    }
+    closeAuthOverlay();
+    await refreshNodes();
+    connectEvents();
+    hub.callbacks?.onAuthSuccess?.();
+  }
+
   window.SummonHub = Object.freeze({
     state: hub,
     init,
@@ -606,6 +620,7 @@
     botsForNode,
     openAuthOverlay,
     closeAuthOverlay,
+    applyAuthResult,
     renderNodeFilterBar,
     renderNoOnlineNodesEmpty,
     renderHubSettingsSection,

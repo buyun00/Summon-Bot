@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 
 export function createRedactor(config) {
   const model = config.model ?? config;
+  const extraSecrets = typeof config.extraSecrets === 'function' ? config.extraSecrets : null;
   const secrets = new Set();
   const visit = (value, key = '') => {
     if (typeof value === 'string' && /token|apiKey|authorization|password|secret|^(?:key|access|refresh)$/i.test(key) && value.length >= 8) {
@@ -33,7 +34,8 @@ export function createRedactor(config) {
   }
   function redactString(input) {
     let text = input;
-    for (const secret of secrets) text = text.split(secret).join('[redacted]');
+    const allSecrets = extraSecrets ? [...new Set([...secrets, ...extraSecrets()])].sort((a, b) => b.length - a.length) : [...secrets].sort((a, b) => b.length - a.length);
+    for (const secret of allSecrets) if (secret) text = text.split(secret).join('[redacted]');
     return text
       .replace(/\b(Bearer|Basic)\s+[^\s,"'\\}]+/gi, '$1 [redacted]')
       .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted]')

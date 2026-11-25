@@ -1053,6 +1053,11 @@ export class BotRuntime {
     const roomId = this.roomIdForConversation(conversation);
     const executionRef = conversation.session_id ? sessionRef(conversation.session_id) : target;
     const isRoomConv = conversation.kind === 'room' && conversation.space?.kind === 'room' && !conversation.session_id;
+    if (isRoomConv && roomId && Array.isArray(run.injected_event_ids)) {
+      for (const eventId of run.injected_event_ids) {
+        this.platform.room?.ackMentionedMessage?.(roomId, eventId, bot.id, '收到');
+      }
+    }
     const initialActivitySeq = isRoomConv && this.platform.currentRoomActivitySeq
       ? this.platform.currentRoomActivitySeq(conversation.space.id) : null;
     const job = { inbox, conversation, botId: bot.id, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
