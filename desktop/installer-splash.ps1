@@ -92,8 +92,8 @@ $top  = ([System.Windows.SystemParameters]::PrimaryScreenHeight - $winH) / 2.0
           </Canvas>
         </Grid>
 
-        <TextBlock Text="Summon Bot" FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="23" FontWeight="Bold" Foreground="$inkColor" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-        <TextBlock x:Name="StatusText" Text="" FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="13.5" Foreground="$mutedColor" HorizontalAlignment="Center" Margin="0,0,0,18"/>
+        <TextBlock Text="Summon Bot" Height="28" FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="23" FontWeight="Bold" Foreground="$inkColor" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+        <TextBlock x:Name="StatusText" Height="21" Text="" FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="13.5" Foreground="$mutedColor" HorizontalAlignment="Center" Margin="0,0,0,18"/>
 
         <!-- Clean Unified Progress Bar -->
         <Border Width="340" Height="7" CornerRadius="3.5" Background="$trackBg" HorizontalAlignment="Center" ClipToBounds="True">
@@ -116,56 +116,50 @@ $statusText   = $win.FindName('StatusText')
 $progressFill = $win.FindName('ProgressFill')
 $statusText.Text = $msgUnbox
 
-# Playful occasional paper-box hop animation (every 1.9 seconds)
-$sb = New-Object System.Windows.Media.Animation.Storyboard
-$sb.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-$sb.Duration = [System.TimeSpan]::FromSeconds(1.9)
-
-function Add-KF($anim, $sec, $val) {
-  $kf = New-Object System.Windows.Media.Animation.LinearDoubleKeyFrame
-  $kf.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([System.TimeSpan]::FromSeconds($sec))
-  $kf.Value = $val
-  [void]$anim.KeyFrames.Add($kf)
+# Direct BeginAnimation on WPF Transform DependencyProperties (100% reliable, starts hopping immediately!)
+function New-LoopKFAnim([double]$durSec, [object[]]$pairs) {
+  $anim = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+  $anim.Duration = [System.TimeSpan]::FromSeconds($durSec)
+  $anim.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+  foreach ($p in $pairs) {
+    $kf = New-Object System.Windows.Media.Animation.LinearDoubleKeyFrame
+    $kf.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([System.TimeSpan]::FromSeconds([double]$p[0]))
+    $kf.Value = [double]$p[1]
+    [void]$anim.KeyFrames.Add($kf)
+  }
+  return $anim
 }
 
-$animY = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-Add-KF $animY 0.00 0; Add-KF $animY 0.72 0; Add-KF $animY 0.84 4; Add-KF $animY 1.02 -15; Add-KF $animY 1.18 0; Add-KF $animY 1.28 -5; Add-KF $animY 1.38 0; Add-KF $animY 1.90 0
-[Windows.Media.Animation.Storyboard]::SetTarget($animY, $boxTranslate)
-[Windows.Media.Animation.Storyboard]::SetTargetProperty($animY, (New-Object System.Windows.PropertyPath 'Y'))
-[void]$sb.Children.Add($animY)
+$animY = New-LoopKFAnim 1.7 @(
+  @(0.00, 0), @(0.22, 0), @(0.34, 4.5), @(0.52, -16), @(0.68, 0), @(0.79, -5.5), @(0.90, 0), @(1.70, 0)
+)
+$animSX = New-LoopKFAnim 1.7 @(
+  @(0.00, 1), @(0.22, 1), @(0.34, 1.09), @(0.52, 0.93), @(0.68, 1.04), @(0.84, 1), @(1.70, 1)
+)
+$animSY = New-LoopKFAnim 1.7 @(
+  @(0.00, 1), @(0.22, 1), @(0.34, 0.90), @(0.52, 1.08), @(0.68, 0.96), @(0.84, 1), @(1.70, 1)
+)
+$animRot = New-LoopKFAnim 1.7 @(
+  @(0.00, 0), @(0.30, 0), @(0.46, -3.5), @(0.62, 2.8), @(0.76, -1.2), @(0.88, 0), @(1.70, 0)
+)
+$animSh = New-LoopKFAnim 1.7 @(
+  @(0.00, 1), @(0.22, 1), @(0.34, 1.09), @(0.52, 0.74), @(0.68, 1.03), @(0.86, 1), @(1.70, 1)
+)
 
-$animSX = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-Add-KF $animSX 0.00 1; Add-KF $animSX 0.72 1; Add-KF $animSX 0.84 1.08; Add-KF $animSX 1.02 0.94; Add-KF $animSX 1.18 1.04; Add-KF $animSX 1.32 1; Add-KF $animSX 1.90 1
-[Windows.Media.Animation.Storyboard]::SetTarget($animSX, $boxScale)
-[Windows.Media.Animation.Storyboard]::SetTargetProperty($animSX, (New-Object System.Windows.PropertyPath 'ScaleX'))
-[void]$sb.Children.Add($animSX)
-
-$animSY = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-Add-KF $animSY 0.00 1; Add-KF $animSY 0.72 1; Add-KF $animSY 0.84 0.91; Add-KF $animSY 1.02 1.07; Add-KF $animSY 1.18 0.96; Add-KF $animSY 1.32 1; Add-KF $animSY 1.90 1
-[Windows.Media.Animation.Storyboard]::SetTarget($animSY, $boxScale)
-[Windows.Media.Animation.Storyboard]::SetTargetProperty($animSY, (New-Object System.Windows.PropertyPath 'ScaleY'))
-[void]$sb.Children.Add($animSY)
-
-$animRot = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-Add-KF $animRot 0.00 0; Add-KF $animRot 0.80 0; Add-KF $animRot 0.94 -3.2; Add-KF $animRot 1.10 2.6; Add-KF $animRot 1.24 -1.0; Add-KF $animRot 1.36 0; Add-KF $animRot 1.90 0
-[Windows.Media.Animation.Storyboard]::SetTarget($animRot, $boxRotate)
-[Windows.Media.Animation.Storyboard]::SetTargetProperty($animRot, (New-Object System.Windows.PropertyPath 'Angle'))
-[void]$sb.Children.Add($animRot)
-
-$animSh = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-Add-KF $animSh 0.00 1; Add-KF $animSh 0.72 1; Add-KF $animSh 0.84 1.08; Add-KF $animSh 1.02 0.78; Add-KF $animSh 1.18 1.03; Add-KF $animSh 1.34 1; Add-KF $animSh 1.90 1
-[Windows.Media.Animation.Storyboard]::SetTarget($animSh, $shadowScale)
-[Windows.Media.Animation.Storyboard]::SetTargetProperty($animSh, (New-Object System.Windows.PropertyPath 'ScaleX'))
-[void]$sb.Children.Add($animSh)
-
-$win.Add_Loaded({ $sb.Begin() })
+$win.Add_Loaded({
+  $boxTranslate.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $animY)
+  $boxScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $animSX)
+  $boxScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $animSY)
+  $boxRotate.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $animRot)
+  $shadowScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $animSh)
+})
 
 # Progress polling + seamless handoff to Summon Bot.exe
 $script:pct = 8.0
 $script:startedAt = Get-Date
 $script:lastActivity = Get-Date
 $timer = New-Object System.Windows.Threading.DispatcherTimer
-$timer.Interval = [System.TimeSpan]::FromMilliseconds(90)
+$timer.Interval = [System.TimeSpan]::FromMilliseconds(80)
 $timer.Add_Tick({
   if ($SignalFile -and (Test-Path -LiteralPath $SignalFile)) {
     $timer.Stop()

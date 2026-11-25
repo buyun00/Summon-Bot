@@ -10,15 +10,11 @@
   <div class="boot-portal-backdrop" id="boot-portal-backdrop" aria-hidden="true"></div>
   <div class="boot-portal-ring" id="boot-portal-ring" aria-hidden="true"></div>
 
-  <!-- Custom Solid Warm-Paper Floating Window (exact visual match to installer splash!) -->
+  <!-- Custom Solid Warm-Paper Floating Window (pixel-identical to installer splash!) -->
   <main class="boot-card" id="boot-card">
     <div class="box-stage" id="box-stage" aria-hidden="true">
       <div class="box-burst"></div>
       <div class="box-shadow"></div>
-      <!-- Summon Logo hidden inside box, leaps out when flaps open! -->
-      <div class="box-logo" id="box-logo">
-        <img src="icon.png" alt="Summon Bot">
-      </div>
       <!-- Paper-Craft Cardboard Box SVG -->
       <svg class="box-svg" viewBox="0 0 116 106" fill="none" xmlns="http://www.w3.org/2000/svg">
         <!-- Back inner walls -->
@@ -46,9 +42,18 @@
     <h1 class="boot-title">Summon Bot</h1>
     <p class="boot-status" id="boot-stage-text" role="status">正在准备核心运行组件…</p>
 
-    <div class="boot-progress-track" id="boot-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="55">
+    <div class="boot-progress-track" id="boot-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="56">
       <div class="boot-progress-fill" id="boot-progress-fill"></div>
     </div>
   </main>
+
+  <!-- Independent Hero Logo layer ABOVE the full-screen bloom so the Logo stays center-stage! -->
+  <div class="hero-stage" id="hero-stage" aria-hidden="true">
+    <div class="hero-halo"></div>
+    <div class="hero-logo" id="hero-logo">
+      <img src="icon.png" alt="Summon Bot">
+    </div>
+    <div class="hero-wordmark">Summon Bot</div>
+  </div>
 </body>
 </html>

@@ -47,6 +47,17 @@ function signalInstallerHandoff() {
   void writeFile(installerHandoffFile, 'ready').catch(() => {});
 }
 
+function revealIntroAndHandoff() {
+  if (introWindow && !introWindow.isDestroyed()) {
+    try { introWindow.setOpacity(1); } catch {}
+    introWindow.show();
+    introWindow.focus();
+  }
+  if (fromInstaller && !installerHandedOff) {
+    setTimeout(() => signalInstallerHandoff(), 120);
+  }
+}
+
 function broadcastUpdate(value) {
   for (const target of [mainWindow, introWindow]) {
     if (target && !target.isDestroyed()) target.webContents.send('summon:update-state', value);
@@ -160,6 +171,7 @@ function createIntroOverlayWindow(display = targetDisplayForMain()) {
     return introWindow;
   }
   introDisplayBounds = bounds;
+  const deferReveal = fromInstaller && !installerHandedOff;
   const target = introWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
@@ -175,6 +187,7 @@ function createIntroOverlayWindow(display = targetDisplayForMain()) {
     fullscreenable: false,
     hasShadow: false,
     alwaysOnTop: true,
+    opacity: deferReveal ? 0 : 1,
     show: true,
     webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
@@ -182,7 +195,7 @@ function createIntroOverlayWindow(display = targetDisplayForMain()) {
   try { target.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
   target.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: winHeight });
   target.webContents.once('did-finish-load', () => {
-    if (target === introWindow && !target.isDestroyed()) {
+    if (target === introWindow && !target.isDestroyed() && !deferReveal) {
       target.show();
       target.focus();
     }
@@ -284,14 +297,15 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
       await overlay.loadURL(bootUrl).catch(() => {});
     }
     if (fromInstaller && !installerHandedOff) {
-      setTimeout(() => signalInstallerHandoff(), 120);
+      // Safety fallback in case boot-ready IPC does not fire promptly
+      setTimeout(() => revealIntroAndHandoff(), 900);
     }
     return overlay;
   };
 
   setBootState({
     status: 'booting',
-    percent: fromInstaller && retryCount === 0 ? 56 : 14,
+    percent: fromInstaller && retryCount === 0 ? 54 : 14,
     stage: fromInstaller ? stageProgress.extract.stage : stageProgress.prepare.stage,
     error: '',
   });
@@ -322,10 +336,10 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
     const shouldUnbox = Boolean(ready.needsIntro || (fromInstaller && introWindow && !introWindow.isDestroyed()));
     if (shouldUnbox) {
       const overlay = await ensureBootSplash();
-      signalInstallerHandoff();
+      revealIntroAndHandoff();
       const animDone = new Promise(done => {
         resolveIntroAnim = done;
-        setTimeout(() => { resolveIntroAnim = null; done(); }, 3400);
+        setTimeout(() => { resolveIntroAnim = null; done(); }, 3800);
       });
       setBootState({ status: 'ready_to_unbox', percent: 100, stage: '准备就绪，开箱！', error: '' });
       await animDone;
@@ -498,6 +512,12 @@ ipcMain.handle('summon:preview-desktop-intro', async event => {
 ipcMain.handle('summon:intro-settle-window', (event, { width = 620, height = 700 } = {}) => {
   trusted(event, { allowIntroWeb: true, allowMainWeb: false });
   return settleIntroOverlayWindow(width, height) || false;
+});
+
+ipcMain.handle('summon:boot-ready', event => {
+  trusted(event, { allowBoot: true, allowMainWeb: false });
+  revealIntroAndHandoff();
+  return true;
 });
 
 ipcMain.handle('summon:boot-intro-done', event => {

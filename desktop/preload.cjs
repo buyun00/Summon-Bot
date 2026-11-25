@@ -5,6 +5,7 @@ if (location.protocol === 'summon-setup:' && location.host === 'boot') {
   const fromInstaller = params.get('from_installer') === '1';
   contextBridge.exposeInMainWorld('SummonBoot', Object.freeze({
     fromInstaller,
+    ready: () => ipcRenderer.invoke('summon:boot-ready'),
     info: () => ipcRenderer.invoke('summon:boot-info'),
     introDone: () => ipcRenderer.invoke('summon:boot-intro-done'),
     checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),

@@ -5,12 +5,13 @@ const stageText = document.getElementById('boot-stage-text');
 const progressTrack = document.getElementById('boot-progress-track');
 const progressFill = document.getElementById('boot-progress-fill');
 
-let currentPercent = boot.fromInstaller ? 56 : 12;
+let currentPercent = boot.fromInstaller ? 54 : 12;
 let unboxed = false;
 
-function setProgress(percent, label) {
+function setProgress(percent, label, { immediate = false } = {}) {
   const next = Math.max(currentPercent, Math.min(100, Math.round(percent)));
   currentPercent = next;
+  if (immediate) progressFill.classList.remove('is-animated');
   progressFill.style.width = `${next}%`;
   progressTrack.setAttribute('aria-valuenow', String(next));
   if (label) stageText.textContent = label;
@@ -26,19 +27,21 @@ function playUnboxingAndBloom() {
     void boot.introDone();
     return;
   }
-  // 1) Box flaps swing open & Summon Bot logo leaps out of the box (0 -> 920ms)
+  // 1) Box flaps swing wide open & Summon Bot Hero Logo leaps out of the box (150ms -> 960ms)
   setTimeout(() => {
     document.body.classList.add('is-unboxing');
-  }, 160);
-  // 2) Full-screen Arc/Dia radial expansion wave sweeps across the entire monitor (920ms -> 2480ms)
+  }, 150);
+  // 2) Card dissolves & Hero Logo glides to screen center while Arc/Dia full-screen bloom expands (960ms -> 2560ms)
   setTimeout(() => {
     document.body.classList.add('is-blooming');
-  }, 940);
-  // 3) Full-screen bloom recedes cleanly & hands off to the solid floating Setup Window!
+  }, 960);
+  // 3) Smooth settle fade (2560ms -> 2900ms), then hand off directly to the floating Setup Window
   setTimeout(() => {
     document.body.classList.add('is-settled');
+  }, 2560);
+  setTimeout(() => {
     void boot.introDone();
-  }, 2480);
+  }, 2900);
 }
 
 function applyState(state) {
@@ -59,6 +62,14 @@ setInterval(() => {
   setProgress(currentPercent + 1);
 }, 650);
 
-setProgress(currentPercent, boot.fromInstaller ? '正在准备核心运行组件…' : '正在准备本机环境…');
+// Paint initial progress width immediately BEFORE first frame so handoff has zero jump!
+setProgress(currentPercent, boot.fromInstaller ? '程序已就位，正在唤醒 Summon Bot…' : '正在准备本机环境…', { immediate: true });
+requestAnimationFrame(() => {
+  progressFill.classList.add('is-animated');
+  requestAnimationFrame(() => {
+    void boot.ready?.();
+  });
+});
+
 boot.onState(applyState);
 boot.info().then(applyState).catch(() => {});

@@ -11,7 +11,7 @@
   --aura-1: rgba(125, 130, 75, 0.34);
   --aura-2: rgba(108, 160, 194, 0.28);
   --aura-3: rgba(214, 149, 100, 0.28);
-  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  font: 15px/1.6 "Segoe UI", "Microsoft YaHei UI", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
   color: var(--ink);
   color-scheme: light dark;
 }
@@ -59,7 +59,7 @@ body {
     radial-gradient(66vw 66vw at 22% 18%, var(--aura-1), transparent 62%),
     radial-gradient(60vw 60vw at 82% 24%, var(--aura-2), transparent 60%),
     radial-gradient(64vw 64vw at 52% 86%, var(--aura-3), transparent 64%),
-    color-mix(in srgb, var(--bg) 90%, transparent);
+    color-mix(in srgb, var(--bg) 92%, transparent);
   clip-path: circle(0% at 50% 50%);
   opacity: 0;
   transition: clip-path 1550ms cubic-bezier(0.22, 1, 0.36, 1), opacity 600ms ease;
@@ -72,7 +72,7 @@ body.is-blooming .boot-portal-backdrop {
 
 body.is-settled .boot-portal-backdrop {
   opacity: 0;
-  transition: opacity 620ms ease;
+  transition: opacity 420ms ease;
 }
 
 .boot-portal-ring {
@@ -102,28 +102,28 @@ body.is-blooming .boot-portal-ring {
   100% { opacity: 0; transform: scale(20); }
 }
 
-/* Custom Solid Warm-Paper Floating Card (500x350 matching installer-splash.ps1!) */
+/* Custom Solid Warm-Paper Floating Card (500x350 pixel-identical to installer-splash.ps1!) */
 .boot-card {
   position: relative;
   z-index: 3;
   width: 500px;
   height: 350px;
-  padding: 36px 40px 38px;
+  padding: 0;
   border-radius: 28px;
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  transition: opacity 520ms ease, transform 640ms var(--ease);
+  transition: opacity 480ms ease, transform 600ms var(--ease);
 }
 
 body.is-blooming .boot-card {
   opacity: 0;
-  transform: scale(1.06);
+  transform: scale(0.95);
   pointer-events: none;
 }
 
@@ -144,15 +144,15 @@ body.is-blooming .boot-card {
   height: 16px;
   border-radius: 50%;
   background: var(--shadow);
-  animation: box-shadow-hop 1.9s ease-in-out infinite;
+  animation: box-shadow-hop 1.7s ease-in-out infinite;
 }
 
 .box-burst {
   position: absolute;
-  width: 110px;
-  height: 110px;
+  width: 118px;
+  height: 118px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 224, 152, 0.72) 0%, rgba(125, 130, 75, 0.24) 48%, transparent 72%);
+  background: radial-gradient(circle, rgba(255, 224, 152, 0.78) 0%, rgba(125, 130, 75, 0.26) 48%, transparent 72%);
   opacity: 0;
   transform: scale(0.35);
   transition: opacity 420ms ease, transform 620ms var(--ease);
@@ -164,7 +164,7 @@ body.is-blooming .boot-card {
   width: 116px;
   height: 106px;
   transform-origin: 50% 85%;
-  animation: box-hop 1.9s ease-in-out infinite;
+  animation: box-hop 1.7s ease-in-out infinite;
 }
 
 .box-flap-left,
@@ -179,48 +179,25 @@ body.is-blooming .boot-card {
   transition: opacity 220ms ease, transform 360ms var(--ease);
 }
 
-/* Logo hidden inside the closed cardboard box */
-.box-logo {
-  position: absolute;
-  z-index: 3;
-  width: 68px;
-  height: 68px;
-  border-radius: 20px;
-  display: grid;
-  place-items: center;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
-  opacity: 0;
-  transform: translateY(14px) scale(0.38);
-  transition: opacity 320ms ease, transform 680ms cubic-bezier(0.22, 1.35, 0.36, 1);
-}
-
-.box-logo img {
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
-}
-
 @keyframes box-hop {
-  0%, 38%, 74%, 100% { transform: translateY(0) scale(1, 1) rotate(0deg); }
-  44% { transform: translateY(4px) scale(1.08, 0.91) rotate(0deg); }
-  54% { transform: translateY(-15px) scale(0.94, 1.07) rotate(-3deg); }
-  62% { transform: translateY(0) scale(1.04, 0.96) rotate(2.4deg); }
-  68% { transform: translateY(-5px) scale(0.99, 1.02) rotate(-1deg); }
+  0%, 13%, 54%, 100% { transform: translateY(0) scale(1, 1) rotate(0deg); }
+  20% { transform: translateY(4.5px) scale(1.09, 0.90) rotate(0deg); }
+  31% { transform: translateY(-16px) scale(0.93, 1.08) rotate(-3.5deg); }
+  40% { transform: translateY(0) scale(1.04, 0.96) rotate(2.8deg); }
+  47% { transform: translateY(-5.5px) scale(0.99, 1.02) rotate(-1.2deg); }
 }
 
 @keyframes box-shadow-hop {
-  0%, 38%, 74%, 100% { transform: scaleX(1); opacity: 1; }
-  44% { transform: scaleX(1.08); opacity: 1; }
-  54% { transform: scaleX(0.76); opacity: 0.65; }
-  62% { transform: scaleX(1.03); opacity: 0.95; }
+  0%, 13%, 54%, 100% { transform: scaleX(1); opacity: 1; }
+  20% { transform: scaleX(1.09); opacity: 1; }
+  31% { transform: scaleX(0.74); opacity: 0.65; }
+  40% { transform: scaleX(1.03); opacity: 0.95; }
 }
 
-/* UNBOXING STATE: Box stops hopping, flaps pop open, Summon logo leaps out! */
+/* UNBOXING STATE: Box stops hopping, flaps swing wide open */
 body.is-unboxing .box-svg {
   animation: none;
-  transform: translateY(10px) scale(1.02, 0.94);
+  transform: translateY(10px) scale(1.03, 0.94);
   transition: transform 420ms var(--ease);
 }
 
@@ -230,11 +207,11 @@ body.is-unboxing .box-shadow {
 }
 
 body.is-unboxing .box-flap-left {
-  transform: rotate(-42deg) translate(-6px, -6px);
+  transform: rotate(-48deg) translate(-6px, -6px);
 }
 
 body.is-unboxing .box-flap-right {
-  transform: rotate(42deg) translate(6px, -6px);
+  transform: rotate(48deg) translate(6px, -6px);
 }
 
 body.is-unboxing .box-tape {
@@ -244,27 +221,121 @@ body.is-unboxing .box-tape {
 
 body.is-unboxing .box-burst {
   opacity: 1;
-  transform: scale(1.45);
+  transform: scale(1.5);
 }
 
-body.is-unboxing .box-logo {
+/* Independent Hero Logo Stage (z-index: 4 — stays visible throughout the entire full-screen bloom!) */
+.hero-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  transition: opacity 420ms ease, transform 420ms var(--ease);
+}
+
+.hero-halo {
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 224, 152, 0.45) 0%, var(--aura-1) 38%, transparent 72%);
+  opacity: 0;
+  transform: translateY(-42px) scale(0.35);
+  transition: opacity 640ms ease, transform 900ms var(--ease);
+}
+
+.hero-logo {
+  position: relative;
+  width: 82px;
+  height: 82px;
+  border-radius: 24px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  /* Starts tucked right inside the cardboard box opening (y = -42px relative to screen center) */
+  transform: translateY(-42px) scale(0.32);
+  transition:
+    opacity 320ms ease,
+    transform 720ms cubic-bezier(0.22, 1.36, 0.36, 1),
+    box-shadow 600ms ease;
+}
+
+.hero-logo img {
+  width: 64px;
+  height: 64px;
+  border-radius: 17px;
+  display: block;
+}
+
+.hero-wordmark {
+  position: absolute;
+  font-size: 26px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  opacity: 0;
+  transform: translateY(86px);
+  transition: opacity 520ms ease 180ms, transform 680ms var(--ease) 140ms;
+}
+
+/* Phase 1: Logo leaps up out of the open cardboard box */
+body.is-unboxing .hero-logo {
   opacity: 1;
-  transform: translateY(-34px) scale(1.12);
+  transform: translateY(-96px) scale(1.06);
+}
+
+body.is-unboxing .hero-halo {
+  opacity: 0.72;
+  transform: translateY(-88px) scale(0.88);
+}
+
+/* Phase 2: Card dissolves, Logo glides into dead-center of the full-screen Arc/Dia bloom! */
+body.is-blooming .hero-logo {
+  opacity: 1;
+  transform: translateY(-18px) scale(1.32);
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.22), 0 0 48px var(--aura-1);
+  transition:
+    opacity 320ms ease,
+    transform 820ms var(--ease),
+    box-shadow 640ms ease;
+}
+
+body.is-blooming .hero-halo {
+  opacity: 1;
+  transform: translateY(-18px) scale(1.65);
+}
+
+body.is-blooming .hero-wordmark {
+  opacity: 1;
+  transform: translateY(68px);
+}
+
+/* Phase 3: Smooth settle into the floating Setup Window */
+body.is-settled .hero-stage {
+  opacity: 0;
+  transform: scale(0.95);
 }
 
 .boot-title {
   margin: 0 0 8px;
+  height: 28px;
+  line-height: 28px;
   font-size: 23px;
-  font-weight: 760;
-  letter-spacing: -0.03em;
-  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .boot-status {
   margin: 0 0 18px;
+  height: 21px;
+  line-height: 21px;
   font-size: 13.5px;
   color: var(--ink-2);
-  min-height: 21px;
 }
 
 .boot-progress-track {
@@ -277,10 +348,13 @@ body.is-unboxing .box-logo {
 }
 
 .boot-progress-fill {
-  width: 15%;
+  width: 0;
   height: 100%;
   border-radius: 999px;
   background: var(--fill);
+}
+
+.boot-progress-fill.is-animated {
   transition: width 360ms var(--ease);
 }
 
@@ -289,7 +363,7 @@ body.is-unboxing .boot-progress-track {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .box-svg, .box-shadow, .boot-portal-backdrop, .boot-portal-ring, .box-logo, .boot-card {
+  .box-svg, .box-shadow, .boot-portal-backdrop, .boot-portal-ring, .hero-logo, .hero-halo, .hero-wordmark, .hero-stage, .boot-card {
     animation: none !important;
     transition: none !important;
   }
