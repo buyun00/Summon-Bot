@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, readJson, writeJson } from '../build/files.mjs';
+import { parseArgs, readJson, writeJson } from './files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { installProcessLog } from '@summon/bot/process-log';
 import { usableRemoteAccess, remoteOrigins } from './remote-config.mjs';

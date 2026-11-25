@@ -1678,7 +1678,7 @@ private fun ExecutionPendingPromptCard(store: SummonStore, exec: SummonJson, req
                                     store.submitPendingExecutionInput(
                                         target = exec["execution_ref"],
                                         controlVersion = exec["control_version"].int ?: 1,
-                                        inputTarget = request["input_target"],
+                                        requestId = request["request_id"].string ?: request["id"].string,
                                         input = currentVal,
                                     )
                                     selectedChoice = ""; freeText = ""
@@ -1703,7 +1703,7 @@ private fun ExecutionPendingPromptCard(store: SummonStore, exec: SummonJson, req
                                     store.submitPendingExecutionInput(
                                         target = exec["execution_ref"],
                                         controlVersion = exec["control_version"].int ?: 1,
-                                        inputTarget = request["input_target"],
+                                        requestId = request["request_id"].string ?: request["id"].string,
                                         input = skipChoiceId,
                                     )
                                     selectedChoice = ""; freeText = ""
@@ -1723,7 +1723,7 @@ private fun ExecutionPendingPromptCard(store: SummonStore, exec: SummonJson, req
                                 store.submitPendingExecutionInput(
                                     target = exec["execution_ref"],
                                     controlVersion = exec["control_version"].int ?: 1,
-                                    inputTarget = request["input_target"],
+                                    requestId = request["request_id"].string ?: request["id"].string,
                                     input = currentVal,
                                 )
                                 selectedChoice = ""; freeText = ""

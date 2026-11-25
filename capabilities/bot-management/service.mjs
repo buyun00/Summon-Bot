@@ -1,8 +1,7 @@
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { catalogMaintainerRole, defaultBotRoles, defaultPublicDuty, groupLeadRole, toolOnboardingRole } from '../../roles/index.mjs';
+import { eggbotRole, defaultPublicDuty, groupLeadRole } from './roles.mjs';
+import { botRootDir, ensureBotFolder, installBundledBotFiles, listBotFolderFiles, listBundledBots, readBotFolderMeta, readBotInstructions, syncBotMetaFiles } from './folders.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
-import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
+import { assertRevision, idOf, reject, sameIdentity, user } from '../platform/contract.mjs';
 
 export const botRecords = 'platform-bots';
 export const deletedBotRecords = 'deleted-bots';
@@ -32,15 +31,32 @@ function publicDuty(value) {
   return value.trim();
 }
 
+function envSlotsOf(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64 || value.some(v => typeof v !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(v))) {
+    reject('invalid_arguments', 'env_slots must be an array of valid environment variable names');
+  }
+  return [...new Set(value)];
+}
+
 export function directoryEntry(bot) {
   const role = bot.built_in_role?.id;
   const duty = defaultPublicDuty(bot);
-  return { kind: 'bot', id: bot.id, name: bot.name, public_duty: duty, enabled: bot.enabled, ...(role ? { role_id: role } : {}) };
+  return {
+    kind: 'bot',
+    id: bot.id,
+    name: bot.name,
+    public_duty: duty,
+    enabled: bot.enabled,
+    ...(role ? { role_id: role } : {}),
+    ...(bot.bundled_id ? { bundled_id: bot.bundled_id } : {}),
+    ...(bot.model_provider ? { model_provider: bot.model_provider } : {}),
+  };
 }
 
 export class BotManager {
-  constructor({ store, dataRoot, models, canUseModel, maintenanceConnection, bindMaintenance }) {
-    Object.assign(this, { store, dataRoot, models, canUseModel, maintenanceConnection, bindMaintenance });
+  constructor({ store, dataRoot, releaseRoot, models, canUseModel }) {
+    Object.assign(this, { store, dataRoot, releaseRoot, models, canUseModel });
   }
 
   list() { return this.store.list(botRecords); }
@@ -52,25 +68,39 @@ export class BotManager {
   }
 
   directory(id) {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id)) reject('invalid_identity', 'Invalid Bot ID');
-    return join(this.dataRoot, 'bots', id);
+    return botRootDir(this.dataRoot, id);
   }
 
   canConfigure(actor, bot) {
     return actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner);
   }
 
-  defaultBot(role, bots = this.list()) {
-    const matches = bots.filter(bot => !bot.archivedAt && bot.built_in_role?.id === role);
-    return matches.find(bot => bot.id === `bot-default-${role}-local`) ?? matches[0];
+  eggBot(bots = this.list()) {
+    const matches = bots.filter(bot => !bot.archivedAt && bot.built_in_role?.id === eggbotRole);
+    return matches.find(bot => bot.id === 'bot-default-eggbot-local') ?? matches[0] ?? null;
   }
 
-  onboardingBot() {
-    return this.defaultBot(toolOnboardingRole);
+  findByBundledId(bundledId) {
+    return this.list().find(bot => !bot.archivedAt && bot.bundled_id === bundledId) || null;
   }
 
-  eggBot() {
-    return this.defaultBot('eggbot');
+  bundledCatalog() {
+    const installed = this.list().filter(bot => !bot.archivedAt);
+    return listBundledBots(this.releaseRoot).map(pkg => {
+      const active = installed.find(bot => bot.bundled_id === pkg.id || (pkg.id === 'eggbot' && bot.id === 'bot-default-eggbot-local'));
+      return {
+        id: pkg.id,
+        name: pkg.name,
+        role_id: pkg.role_id,
+        public_duty: pkg.public_duty,
+        model_provider: pkg.model_provider,
+        env_slots: pkg.env_slots,
+        skills: pkg.skills,
+        scripts: pkg.scripts,
+        installed: Boolean(active),
+        bot_id: active?.id || null,
+      };
+    });
   }
 
   createGroupLead({ roomId, roomName, leadName } = {}) {
@@ -78,9 +108,7 @@ export class BotManager {
     const existing = this.store.get(botRecords, id);
     if (existing) return existing;
     const baseRoomName = typeof roomName === 'string' && roomName.trim() ? roomName.trim() : '新群聊';
-    const rawName = typeof leadName === 'string' && leadName.trim()
-      ? leadName.trim()
-      : `${baseRoomName.slice(0, 88)} · 主控`;
+    const rawName = typeof leadName === 'string' && leadName.trim() ? leadName.trim() : `${baseRoomName.slice(0, 88)} · 主控`;
     const name = cleanName(rawName.slice(0, 100));
     const duty = publicDuty(`负责「${baseRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`);
     return this.saveNew({
@@ -100,65 +128,80 @@ export class BotManager {
     const model = { mode: 'follow_default' };
     const resolved = this.models.resolveForBot(model, 'conversation');
     let changed = false;
-    const bots = Object.entries(defaultBotRoles).map(([role, name]) => {
-      const id = `bot-default-${role}-local`;
-      const bot = this.defaultBot(role, existing) ?? this.store.get(botRecords, id);
-      if (!bot) {
-        changed = true;
-        return this.saveNew({ id, name, instructions: '', model, owner: user, built_in_role: { id: role } });
+    const eggId = 'bot-default-eggbot-local';
+    let egg = this.eggBot(existing) ?? this.store.get(botRecords, eggId);
+    if (!egg) {
+      changed = true;
+      const pkg = installBundledBotFiles(this.releaseRoot, this.dataRoot, 'eggbot', eggId);
+      egg = this.saveNew({
+        id: eggId,
+        name: pkg.name || 'EggBot',
+        instructions: pkg.instructions || '',
+        public_duty: pkg.public_duty || '',
+        bundled_id: 'eggbot',
+        env_slots: pkg.env_slots || [],
+        model,
+        owner: user,
+        built_in_role: { id: eggbotRole },
+      });
+    } else if (resolved && egg.model?.mode === 'follow_default') {
+      const access = this.store.get('platform-access', egg.id);
+      if (!access?.model_ids?.includes(resolved.connection_id)) {
+        this.store.save('platform-access', {
+          id: egg.id,
+          revision: (access?.revision ?? 0) + 1,
+          model_ids: [...new Set([...(access?.model_ids ?? []), resolved.connection_id])],
+          workspace_ids: access?.workspace_ids ?? [],
+        });
       }
-      if (resolved && bot.model?.mode === 'follow_default') {
-        const access = this.store.get('platform-access', bot.id);
-        if (!access?.model_ids?.includes(resolved.connection_id)) {
-          this.store.save('platform-access', { id: bot.id, revision: (access?.revision ?? 0) + 1,
-            model_ids: [...new Set([...(access?.model_ids ?? []), resolved.connection_id])],
-            workspace_ids: access?.workspace_ids ?? [] });
-        }
-      }
-      return bot;
-    });
-    return { bots, changed };
-  }
-
-  maintainer(connection) {
-    const bot = connection?.maintainer_bot_id && this.store.get(botRecords, connection.maintainer_bot_id);
-    return bot && !bot.archivedAt ? bot : null;
+    }
+    return { bots: [egg], changed };
   }
 
   roleOf(id, context, bot) {
-    if (context.actor.kind !== 'user') {
-      if (id === toolOnboardingRole || (id !== undefined && bot?.built_in_role?.id === toolOnboardingRole)) {
-        reject('configuration_forbidden', 'The host selects the tool onboarding Bot', 403);
-      }
-      if (id === 'eggbot' && bot?.built_in_role?.id !== 'eggbot') {
-        reject('configuration_forbidden', 'Only the host can assign the EggBot role', 403);
-      }
-    }
-    if (id === toolOnboardingRole && bot?.built_in_role?.id !== toolOnboardingRole) {
-      const current = this.onboardingBot();
-      if (current && current.id !== bot?.id)
-        reject('onboarding_bot_exists', 'A tool onboarding Bot is already assigned', 409, { bot: current.id });
+    if (context.actor.kind !== 'user' && id === eggbotRole && bot?.built_in_role?.id !== eggbotRole) {
+      reject('configuration_forbidden', 'Only the host can assign the EggBot role', 403);
     }
     return id == null ? id : { id };
   }
 
-  assignment(args, context, role, reuse = false) {
-    if (args.role_connection_id === undefined) return null;
-    if (role?.id !== catalogMaintainerRole) reject('invalid_bot_role', 'Select the maintenance duty to bind this connection');
-    return this.maintenanceConnection(args.role_connection_id, context, args.connection_revision, reuse);
-  }
-
   view(bot, actor, { details = true } = {}) {
-    const base = { ...directoryEntry(bot), avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
-      ...(bot.home_room_id ? { home_room_id: bot.home_room_id } : {}),
-      archived_at: bot.archivedAt || null, created_at: bot.createdAt, updated_at: bot.updatedAt };
-    if (!details || !this.canConfigure(actor, bot)) return base;
-    const target = { kind: 'bot', id: bot.id };
-    const binding_source = bot.model?.mode || (bot.model?.connection_id ? 'custom' : 'unconfigured');
-    const isDefault = Object.hasOwn(defaultBotRoles, bot.built_in_role?.id) && bot.id === `bot-default-${bot.built_in_role.id}-local`;
-    return { ...base, instructions: bot.instructions, model: bot.model, binding_source, effective_models: this.models.resolveAllForBot(bot),
-      owner: bot.owner || user, revision: bot.revision, control: bot.control, material_index_ref: bot.material_index_ref || null,
-      private_space: target, deletable: !isDefault, archivable: !isDefault };
+    const diskMeta = readBotFolderMeta(this.dataRoot, bot.id);
+    const liveBot = diskMeta ? {
+      ...bot,
+      name: typeof diskMeta.name === 'string' && diskMeta.name.trim() ? diskMeta.name.trim() : bot.name,
+      public_duty: typeof diskMeta.public_duty === 'string' ? diskMeta.public_duty : bot.public_duty,
+      env_slots: Array.isArray(diskMeta.env_slots) ? diskMeta.env_slots : bot.env_slots,
+    } : bot;
+    const base = {
+      ...directoryEntry(liveBot),
+      avatar: liveBot.avatar ? normalizePaperAvatar(liveBot.avatar) : defaultPaperAvatar(liveBot.id),
+      ...(liveBot.home_room_id ? { home_room_id: liveBot.home_room_id } : {}),
+      env_slots: Array.isArray(liveBot.env_slots) ? liveBot.env_slots : [],
+      archived_at: liveBot.archivedAt || null,
+      created_at: liveBot.createdAt,
+      updated_at: liveBot.updatedAt,
+    };
+    if (!details || !this.canConfigure(actor, liveBot)) return base;
+    const target = { kind: 'bot', id: liveBot.id };
+    const binding_source = liveBot.model?.mode || (liveBot.model?.connection_id ? 'custom' : 'unconfigured');
+    const isDefault = liveBot.id === 'bot-default-eggbot-local';
+    const instructions = readBotInstructions(this.dataRoot, liveBot);
+    const folder_files = listBotFolderFiles(this.dataRoot, liveBot.id);
+    return {
+      ...base,
+      instructions,
+      folder_files,
+      model: liveBot.model,
+      binding_source,
+      effective_models: this.models.resolveAllForBot(liveBot),
+      owner: liveBot.owner || user,
+      revision: liveBot.revision,
+      control: liveBot.control,
+      private_space: target,
+      deletable: !isDefault,
+      archivable: !isDefault,
+    };
   }
 
   modelConnectionIds(model) {
@@ -170,46 +213,69 @@ export class BotManager {
 
   saveNew(value) {
     const { id, model } = value;
-    mkdirSync(this.directory(id), { recursive: true });
-    const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true, archivedAt: null,
-      control: activeControl(), material_index_ref: null });
+    const record = this.store.save(botRecords, {
+      ...value,
+      env_slots: Array.isArray(value.env_slots) ? value.env_slots : [],
+      revision: 1,
+      enabled: true,
+      archivedAt: null,
+      control: activeControl(),
+    });
+    ensureBotFolder(this.dataRoot, record);
     const modelIds = this.modelConnectionIds(model);
     if (modelIds.length) this.store.save('platform-access', { id, model_ids: modelIds, workspace_ids: [] });
     return record;
   }
 
   selectModelBinding(rawModel) {
-    try {
-      return this.models.selectBinding(rawModel);
-    } catch (error) {
-      if (error?.code === 'connection_not_found' && rawModel) {
-        const candidateIds = typeof rawModel === 'string'
-          ? [rawModel]
-          : [rawModel.id, rawModel.connection_id, ...Object.values(rawModel.purposes || {}).map(item => item?.connection_id)].filter(Boolean);
-        for (const connId of candidateIds) {
-          const exec = this.store.get('platform-connections', connId);
-          if (exec) {
-            reject('invalid_model_connection',
-              `「${exec.name}」(${connId}) 是 ${exec.kind} 执行连接，不能绑定为 Bot 的 model（模型连接）。请留空使用默认模型或选用模型连接，在运行时通过 open_session(engine: "${connId}", ...) 调用该执行连接。`,
-              400);
-          }
-        }
+    return this.models.selectBinding(rawModel);
+  }
+
+  activateBundled(bundledId, context = { actor: user }, beforeSave = () => {}) {
+    const existing = this.findByBundledId(bundledId);
+    if (existing) return { bot: existing, created: false };
+    const targetId = bundledId === 'eggbot' ? 'bot-default-eggbot-local' : `bot-bundled-${bundledId}`;
+    const bot = this.store.transaction(() => {
+      beforeSave();
+      const saved = this.store.get(botRecords, targetId);
+      if (saved && !saved.archivedAt) return saved;
+      const pkg = installBundledBotFiles(this.releaseRoot, this.dataRoot, bundledId, targetId);
+      let model = { mode: 'follow_default' };
+      const neededIds = this.modelConnectionIds(model);
+      if (neededIds.some(connId => !this.canUseModel(context.actor, connId))) {
+        const creator = context.actor.kind === 'bot' ? this.store.get(botRecords, context.actor.id) : null;
+        if (creator?.model) model = creator.model;
       }
-      throw error;
-    }
+      return this.saveNew({
+        id: targetId,
+        name: pkg.name,
+        instructions: pkg.instructions || '',
+        public_duty: pkg.public_duty || '',
+        bundled_id: pkg.id,
+        model_provider: pkg.model_provider || null,
+        env_slots: pkg.env_slots || [],
+        model,
+        owner: context.actor,
+        ...(pkg.role_id && pkg.role_id !== 'default' ? { built_in_role: { id: pkg.role_id } } : {}),
+      });
+    });
+    return { bot, created: true };
   }
 
   create(id, args, context, beforeSave) {
+    if (args.bundled_id) {
+      const { bot } = this.activateBundled(args.bundled_id, context, beforeSave);
+      return bot;
+    }
     const { actor } = context;
-    const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
+    const name = cleanName(args.name);
+    const instructions = instructionsOf(args.instructions ?? '');
+    const env_slots = envSlotsOf(args.env_slots);
     return this.store.transaction(() => {
       beforeSave();
       const saved = this.store.get(botRecords, id);
       if (saved) return saved;
       const role = this.roleOf(args.role_id, context);
-      const connection = this.assignment(args, context, role, true);
-      const assigned = this.maintainer(connection);
-      if (assigned) return assigned;
       let model = this.selectModelBinding(args.model);
       const neededIds = this.modelConnectionIds(model);
       if (neededIds.some(connId => !this.canUseModel(actor, connId))) {
@@ -222,14 +288,20 @@ export class BotManager {
           reject('connection_forbidden', 'Default model connection is not available to this caller', 403);
         }
       }
-      const record = this.saveNew({ id, name, instructions, model, owner: actor, public_duty: publicDuty(args.public_duty ?? ''),
-        ...(role ? { built_in_role: role } : {}) });
-      if (connection) this.bindMaintenance(connection, record);
-      return record;
+      return this.saveNew({
+        id,
+        name,
+        instructions,
+        env_slots,
+        model,
+        owner: actor,
+        public_duty: publicDuty(args.public_duty ?? ''),
+        ...(role ? { built_in_role: role } : {}),
+      });
     });
   }
 
-  configure(args, context, callId, validateIndex) {
+  configure(args, context, callId) {
     const { actor } = context;
     const id = idOf(args.bot, 'bot');
     const before = this.get(id);
@@ -240,8 +312,6 @@ export class BotManager {
     if (selfEdit) {
       if (args.role_id !== undefined && args.role_id !== (before.built_in_role?.id ?? null))
         reject('configuration_forbidden', 'A Bot cannot change its own built-in role', 403);
-      if (args.instructions !== undefined && args.instructions !== before.instructions)
-        reject('configuration_forbidden', 'A Bot cannot overwrite its own instructions', 403);
       if (args.enabled === false)
         reject('configuration_forbidden', 'A Bot cannot pause itself', 403);
     }
@@ -250,13 +320,9 @@ export class BotManager {
     if (args.name !== undefined) changes.name = cleanName(args.name);
     if (args.instructions !== undefined) changes.instructions = instructionsOf(args.instructions);
     if (args.public_duty !== undefined) changes.public_duty = publicDuty(args.public_duty);
+    if (args.env_slots !== undefined) changes.env_slots = envSlotsOf(args.env_slots);
     const role = this.roleOf(args.role_id, context, before);
     if (role !== undefined && role?.id !== before.built_in_role?.id) changes.built_in_role = role;
-    const connection = this.assignment(args, context, role === undefined ? before.built_in_role : role);
-    const maintainer = this.maintainer(connection);
-    if (maintainer && maintainer.id !== id)
-      reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
-        { maintainer: { kind: 'bot', id: maintainer.id } });
     if (args.model !== undefined) {
       const model = this.selectModelBinding(args.model);
       const target = { kind: 'bot', id };
@@ -268,35 +334,28 @@ export class BotManager {
         const access = this.store.get('platform-access', id) || {};
         const merged = [...new Set([...(access.model_ids || []), ...neededIds])];
         if (merged.length !== (access.model_ids || []).length) {
-          this.store.save('platform-access', { id, revision: (access.revision ?? 0) + 1,
-            model_ids: merged, workspace_ids: access.workspace_ids || [] });
+          this.store.save('platform-access', { id, revision: (access.revision ?? 0) + 1, model_ids: merged, workspace_ids: access.workspace_ids || [] });
         }
       }
       changes.model = model;
       if (before.default_model_pending) changes.default_model_pending = false;
-    }
-    if (args.material_index_ref !== undefined) {
-      if (args.material_index_ref !== null) validateIndex(args.material_index_ref, id);
-      changes.material_index_ref = args.material_index_ref;
     }
     if (args.enabled !== undefined && typeof args.enabled !== 'boolean') {
       reject('invalid_control', 'Invalid Bot control operation');
     }
     if (args.enabled === false && before.enabled) {
       changes.enabled = false;
-      changes.control = { ...before.control, state: 'paused', control_version: before.control.control_version + 1,
-        stop_id: callId, requested_by: actor, stop_status: 'pending' };
+      changes.control = { ...before.control, state: 'paused', control_version: before.control.control_version + 1, stop_id: callId, requested_by: actor, stop_status: 'pending' };
     }
     if (args.enabled === true && !before.enabled) {
       if (before.archivedAt) reject('bot_archived', 'Restore the archived Bot before enabling it', 409);
       if (!canResume(actor, before.control, before.owner || user))
         reject('restore_forbidden', 'Only the host or pausing principal can re-enable this Bot', 403);
       changes.enabled = true;
-      changes.control = { state: 'active', control_version: before.control.control_version + 1,
-        stop_id: null, requested_by: null, stop_status: null };
+      changes.control = { state: 'active', control_version: before.control.control_version + 1, stop_id: null, requested_by: null, stop_status: null };
     }
     const bot = Object.keys(changes).length ? this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 }) : before;
-    if (connection) this.bindMaintenance(connection, bot);
+    syncBotMetaFiles(this.dataRoot, bot);
     return bot;
   }
 
@@ -304,14 +363,16 @@ export class BotManager {
     const before = this.get(id);
     if (actor.kind !== 'user' && !sameIdentity(actor, before.owner))
       reject('configuration_forbidden', 'Bot archive requires the host or owner', 403);
-    if (before.connection_initializer || (Object.hasOwn(defaultBotRoles, before.built_in_role?.id) && before.id === `bot-default-${before.built_in_role.id}-local`))
+    if (before.id === 'bot-default-eggbot-local')
       reject('bot_protected', 'Default system Bots cannot be archived', 403);
     if (revision !== undefined) assertRevision(before.revision, revision);
     if (before.archivedAt) return before;
     return this.store.save(botRecords, {
-      id, archivedAt: new Date().toISOString(), enabled: false, revision: before.revision + 1,
-      control: { ...before.control, state: 'paused', control_version: before.control.control_version + 1,
-        stop_id: callId || null, requested_by: actor, stop_status: 'pending' },
+      id,
+      archivedAt: new Date().toISOString(),
+      enabled: false,
+      revision: before.revision + 1,
+      control: { ...before.control, state: 'paused', control_version: before.control.control_version + 1, stop_id: callId || null, requested_by: actor, stop_status: 'pending' },
     });
   }
 
@@ -322,16 +383,18 @@ export class BotManager {
     if (revision !== undefined) assertRevision(before.revision, revision);
     if (!before.archivedAt) return before;
     return this.store.save(botRecords, {
-      id, archivedAt: null, enabled: true, revision: before.revision + 1,
-      control: { state: 'active', control_version: before.control.control_version + 1,
-        stop_id: null, requested_by: null, stop_status: null },
+      id,
+      archivedAt: null,
+      enabled: true,
+      revision: before.revision + 1,
+      control: { state: 'active', control_version: before.control.control_version + 1, stop_id: null, requested_by: null, stop_status: null },
     });
   }
 
   assertRemovable(id, revision, actor) {
     if (actor.kind !== 'user') reject('configuration_forbidden', 'Only the host can delete a Bot', 403);
     const before = this.get(id);
-    if (before.connection_initializer || (Object.hasOwn(defaultBotRoles, before.built_in_role?.id) && before.id === `bot-default-${before.built_in_role.id}-local`))
+    if (before.id === 'bot-default-eggbot-local')
       reject('bot_protected', 'Default system Bots cannot be deleted', 403);
     if (revision !== undefined) assertRevision(before.revision, revision);
     return before;

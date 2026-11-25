@@ -8,10 +8,9 @@ import { copyTree, readJson, writeJson, within, parseArgs } from './files.mjs';
 import { removeInside } from '../release/repository.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
-const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
-const docsBases = ['ARCHITECTURE', 'CLIENT_RELEASES', 'DEPLOYMENT', 'DEVELOPMENT', 'EGGBOT', 'IOS_TESTFLIGHT', 'MACOS_SIGNING', 'MODEL_CONNECTIONS', 'OPERATIONS', 'PAPER_AVATARS', 'WEB_AUTH'];
-const docsFiles = docsBases.flatMap(name => [`${name}.md`, `${name}.zh-CN.md`]);
+const directories = ['bot', 'web', 'capabilities', 'bundled-bots', 'scripts/installation'];
+const rootFiles = ['package.json', 'release.json'];
+const launcherFiles = ['Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 
@@ -35,17 +34,16 @@ const unusedDepPrefixes = [
   'node_modules/cors',
   'node_modules/json-schema-to-ts',
   'node_modules/@babel/',
+  'node_modules/@modelcontextprotocol/',
 ];
 
 function isUnusedProdPackage(pkgPath) {
   return unusedDepPrefixes.some(prefix => pkgPath === prefix || pkgPath.startsWith(prefix + '/') || (prefix.endsWith('/') && pkgPath.startsWith(prefix)));
 }
 
-function includeProdDepFile(pkgPath) {
-  const skipMcpCjs = pkgPath === 'node_modules/@modelcontextprotocol/sdk';
+function includeProdDepFile() {
   return name => {
     const parts = name.split('/');
-    if (skipMcpCjs && parts[0] === 'dist' && parts[1] === 'cjs') return false;
     if (parts.some(part => ignoredDepDirs.has(part))) return false;
     const base = parts[parts.length - 1];
     if (ignoredDepFile.test(base) || ignoredDepMeta.test(base)) return false;
@@ -54,7 +52,7 @@ function includeProdDepFile(pkgPath) {
 }
 
 export async function copyProductionDependencies(sourceRoot, stage) {
-  const lock = await readJson(join(stage, 'package-lock.json'));
+  const lock = await readJson(join(sourceRoot, 'package-lock.json'));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;
@@ -66,7 +64,7 @@ export async function copyProductionDependencies(sourceRoot, stage) {
     }
     const actual = await readJson(join(installed, 'package.json'));
     if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
-    await copyTree(installed, join(stage, path), includeProdDepFile(path));
+    await copyTree(installed, join(stage, path), includeProdDepFile());
     dependencies.push({ path, version: actual.version });
   }
   return dependencies;
@@ -93,7 +91,7 @@ async function materializeWorkspace(root, folder) {
   return { name: pkg.name, version: pkg.version, source: folder, entries: Object.keys(exports) };
 }
 
-export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, committedOnly = false, commit } = {}) {
+export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, committedOnly = false, commit, includeLaunchers = true } = {}) {
   // These Windows builds contain libuv's uninitialized OSVERSIONINFOW stack
   // overwrite in TCP keepalive (nodejs/node#62561). Never ship them again.
   if (process.platform === 'win32' && ['24.15.0','25.8.0'].includes(process.versions.node)) throw new Error('This Node build has a Windows TCP keepalive native crash. Build with the fixed Node 24.21.0 LTS runtime.');
@@ -108,7 +106,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   const stage = `${releaseRoot}.building-${process.pid}`;
   await mkdir(dirname(stage), { recursive: true }); await mkdir(stage);
   try {
-    await exportSource({ sourceRoot, stage, committedOnly, sourceCommit });
+    await exportSource({ sourceRoot, stage, committedOnly, sourceCommit, includeLaunchers });
     const pkg = await readJson(join(stage, 'package.json'));
     const release = await readJson(join(stage, 'release.json'));
     const { protocolVersion } = await import(pathToFileURL(join(stage, 'capabilities/platform/contract.mjs')));
@@ -149,15 +147,18 @@ export async function exportCommittedPaths(sourceRoot, stage, sourceCommit, path
   } finally { await unlink(archive); }
 }
 
-async function exportSource({ sourceRoot, stage, committedOnly, sourceCommit }) {
+async function exportSource({ sourceRoot, stage, committedOnly, sourceCommit, includeLaunchers = true }) {
+  const files = [...rootFiles, ...(includeLaunchers ? launcherFiles : [])];
   if (committedOnly) {
     const excludes = ['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'];
-    await exportCommittedPaths(sourceRoot, stage, sourceCommit, [...directories, ...rootFiles, ...docsFiles.map(name => `docs/${name}`)], excludes);
+    await exportCommittedPaths(sourceRoot, stage, sourceCommit, [...directories, ...files], excludes);
   } else {
     for (const folder of directories) if (existsSync(join(sourceRoot, folder))) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
-    for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
-    await mkdir(join(stage, 'docs'), { recursive: true });
-    for (const name of docsFiles) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+    for (const name of files) {
+      if (!existsSync(join(sourceRoot, name))) continue;
+      await mkdir(dirname(join(stage, name)), { recursive: true });
+      await copyFile(join(sourceRoot, name), join(stage, name));
+    }
   }
 }
 

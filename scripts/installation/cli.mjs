@@ -2,7 +2,7 @@
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { parseArgs, readJson } from '../build/files.mjs';
+import { parseArgs, readJson } from './files.mjs';
 import { deploymentPath, startSystem, stopSystem, inspectService } from './system.mjs';
 import { assertInstallationWritable, dataFormat, readInstallationState } from './installation-state.mjs';
 import { watchSystem } from './watchdog.mjs';

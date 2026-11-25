@@ -29,7 +29,6 @@ struct SummonReference: Codable, Hashable, Identifiable, Sendable {
         case "file": return "/api/files/\(part)"
         case "room": return "/api/rooms/\(part)"
         case "bot": return "/api/bots/\(part)"
-        case "connection": return "/api/connections/\(part)"
         case "call": return "/api/calls/\(part)"
         case "workspace": return "/api/workspaces/\(part)"
         default: return nil
@@ -104,8 +103,6 @@ struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var revision: Int?
     var enabled: Bool?
     var control: SummonJSONValue?
-    var resume_ref: SummonJSONValue?
-    var material_index_ref: SummonReference?
     var memory_items: [SummonJSONValue]?
     var activity: String?
     var avatar: SummonAvatar?
@@ -307,11 +304,11 @@ struct SummonBootstrap: Decodable, Equatable, Sendable {
 
 struct SummonInputOption: Identifiable {
     let kind: String
-    let target: SummonJSONValue
+    let requestId: String?
     let question: String?
     let choices: [SummonJSONValue]
 
-    var id: String { kind + target.prettyPrinted }
+    var id: String { kind + ":" + (requestId ?? "") }
     var label: String {
         switch kind {
         case "reply": return "回答"
@@ -321,18 +318,20 @@ struct SummonInputOption: Identifiable {
     }
 
     static func options(_ detail: SummonJSONValue) -> [Self] {
-        (detail["input_targets"].array ?? []).flatMap { option -> [Self] in
-            let target = option["input_target"]
-            guard target.object != nil else { return [] }
-            let request = target["request_id"].string.flatMap { id in
-                detail["pending_input"].array?.first { $0["id"].string == id }
-            }
-            return (option["kinds"].array ?? []).compactMap { value in
-                guard let kind = value.string, ["reply", "steer", "next"].contains(kind) else { return nil }
-                return Self(kind: kind, target: target, question: option["question"].string ?? request?["question"].string ?? request?["prompt"].string,
-                    choices: option["choices"].array ?? request?["choices"].array ?? [])
-            }
+        var result: [Self] = []
+        let pending = detail["pending_requests"].array ?? detail["pending_input"].array ?? []
+        for req in pending {
+            let rid = req["request_id"].string ?? req["id"].string
+            let question = req["question"].string ?? req["text"].string ?? req["prompt"].string
+            result.append(Self(kind: "reply", requestId: rid, question: question, choices: req["choices"].array ?? []))
         }
+        if detail["can_steer"].bool == true {
+            result.append(Self(kind: "steer", requestId: nil, question: nil, choices: []))
+        }
+        if detail["can_continue"].bool == true {
+            result.append(Self(kind: "next", requestId: nil, question: nil, choices: []))
+        }
+        return result
     }
 }
 

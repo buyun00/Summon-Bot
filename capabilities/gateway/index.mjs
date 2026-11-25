@@ -13,7 +13,7 @@ import { ChatroomService } from '../chatroom/service.mjs';
 import { ModelConnections } from '../models/service.mjs';
 import { protocolVersion, reject, user } from '../platform/contract.mjs';
 import { SummonPlatform } from '../platform/platform.mjs';
-import { SummonConnections, connectionRecords } from '../services/connections.mjs';
+import { ExecRunner } from '../services/exec-runner.mjs';
 import { SecretService } from '../services/secrets.mjs';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync, syncPages } from '../shared/sync.mjs';
@@ -105,7 +105,7 @@ export async function startGateway(options = {}) {
   if (history?.status && history.status !== 'complete') throw new Error('Offline history maintenance is incomplete');
   const historyEpoch = history?.historyEpoch ?? null;
   const clients = new Set(), requests = new Set(), stores = [];
-  let platform, runtime, models, connections, push, server, url, timer, heartbeatTimer, usageTimer, activeTick, activeConnectionTick, closeTask, installation;
+  let platform, runtime, models, exec, push, server, url, timer, heartbeatTimer, usageTimer, activeTick, closeTask, installation;
   let closing = false;
   let drainSnapshot;
   function store(name) {
@@ -149,11 +149,6 @@ export async function startGateway(options = {}) {
     if (closing) return;
     applyWindow(state);
     if (state && ['converting', 'data_ready'].includes(state.phase)) return;
-    if (!platform.draining && !activeConnectionTick) {
-      activeConnectionTick = Promise.resolve().then(() => connections.tick())
-        .catch(error => console.error(`Summon external Session observation failed (${error.code || error.name})`))
-        .finally(() => { activeConnectionTick = null; });
-    }
     await platform.tick({ observations: !platform.draining, deliveries: !installation?.intake_closed });
   }
   function queueTick() {
@@ -169,8 +164,8 @@ export async function startGateway(options = {}) {
       for (const client of clients) client.end();
       const closed = server?.listening ? new Promise(done => server.close(done)) : null;
       server?.closeIdleConnections();
-      await Promise.allSettled([...requests, activeTick, activeConnectionTick]);
-      await Promise.allSettled([runtime?.close(), connections?.close(), models?.close(), push?.close()]);
+      await Promise.allSettled([...requests, activeTick]);
+      await Promise.allSettled([runtime?.close(), exec?.close(), models?.close(), push?.close()]);
       await Promise.allSettled([...(platform?.botStops || [])]);
       await closed;
       for (const value of stores) value.close();
@@ -190,22 +185,20 @@ export async function startGateway(options = {}) {
       workspaces: options.workspaces });
     secrets.attach({ platform, models });
     const room = new ChatroomService({ store: records, manager: platform.manager, attachments, platform, emit });
-    connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
-      extraSecrets: () => secrets.secrets(),
-      assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),
+    exec = new ExecRunner({ store: records, dataRoot, releaseRoot, workspace: options.defaultCwd || join(dataRoot, 'workspace'),
+      redact: clean,
       onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
       onProgressChange: () => emit('execution'),
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
-    models.attachConnections(() => connections.store.list(connectionRecords));
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
-    platform.attach({ room, runtime, connections });
+    platform.attach({ room, runtime, exec });
     platform.initializeDefaults();
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();
     push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch,
       onNotify: item => emit('push.notify', item) }).initialize();
-    const api = createApi({ platform, room, attachments, models, connections, secrets, push, sync, historyEpoch, emit,
+    const api = createApi({ platform, room, attachments, models, exec, secrets, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
         if (!runtime.usage || runtime.usageRecoveryFailed) reject('usage_unavailable', 'The local usage report is unavailable', 503);
         const bots = platform.listBots().filter(bot => platform.visibleBot(bot, context));

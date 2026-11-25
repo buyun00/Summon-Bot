@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createPathAccess, pathWithin, sensitivePath } from '../../bot/src/capabilities/file-policy.mjs';
+import { protectedRuntimeDirs } from '../bot-management/folders.mjs';
 import { reject, user } from '../platform/contract.mjs';
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -222,7 +223,7 @@ export class SecretService {
     }
     const checkedPath = createPathAccess({
       workspace: workspaceRoot,
-      protectedDirectories: [join(this.dataRoot, 'config'), join(this.dataRoot, 'capabilities')],
+      protectedDirectories: protectedRuntimeDirs(this.dataRoot, this.platform.releaseRoot),
       protectedPath: sensitivePath,
     });
     const fullPath = await checkedPath(relPath, { operations: ['write'], file: false, exists: false });
@@ -305,8 +306,8 @@ export class SecretService {
       target: { kind: 'session', id: sessionId },
       kind: 'reply',
       input: secretText,
+      ...(target.request_id ? { request_id: target.request_id } : {}),
       ...(Number.isSafeInteger(target.control_version) ? { control_version: target.control_version } : {}),
-      ...(target.input_target ? { input_target: target.input_target } : {}),
     };
     await this.platform.executeTool('send_input', args, { actor: user, clientId });
     return {

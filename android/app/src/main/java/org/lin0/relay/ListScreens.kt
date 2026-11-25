@@ -145,7 +145,7 @@ enum class ResourceSection(val title: String, val icon: ImageVector, val path: S
     Executions("执行会话", Icons.Filled.Terminal, "/api/executions"),
     Files("资料", Icons.Filled.Folder, "/api/files"),
     Wakeups("订阅与提醒", Icons.Filled.Schedule, "/api/wakeups"),
-    Connections("执行连接与额度", Icons.Filled.Link, "/api/connections"),
+    Connections("预置 Bot 与目录", Icons.Filled.Link, "/api/bundled-bots"),
 }
 
 private const val DEFAULT_FOLDER_ID = "__default__"

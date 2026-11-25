@@ -1,11 +1,10 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { toToolDeclaration } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
-import { connectionSetupTool } from '../../../capabilities/platform/contract.mjs';
-import { builtInInstructions, defaultPublicDuty } from '../../../roles/index.mjs';
+import { collectBotContextBundle } from '../../../capabilities/bot-management/folders.mjs';
+import { builtInInstructions, defaultPublicDuty } from '../../../capabilities/bot-management/roles.mjs';
 import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
-import { isMaterialFact } from '../context/materials.mjs';
 import { contextTokens, eventInput, repairRun, roomMessageInput, textMessage, toolObservation, toolObservationLimitFor } from '../context/projection.mjs';
 import { fitRoomHistory, pruneOversizedTranscript, splitOversizedCompressionRecord } from '../context/room-history.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
@@ -20,14 +19,14 @@ const hardBoundaries = [
 const roomLayerRules = [
   'Instruction layers and conflict priority (subject to the hard boundaries above):',
   '- When the speaker has appropriate authority and the instruction applies, resolve conflicts in this order: 1) current-turn explicit request or correction (this delivery only) > 2) confirmed room or project convention (this room/project only) > 3) this Bot’s individual persona and long-term user instructions (all rooms and direct chats) > 4) built-in role default > 5) general defaults.',
-  '- Preserve all non-conflicting rules from lower layers. Active entries in selected_material_revisions whose applies_to matches this Bot or Room are live operative rules—actually apply every required format, tone, or closing signature/suffix to the final text of your send reply (do not merely quote or describe the rule and omit it) unless overridden by a current-turn one-off exception.',
-  '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly sets or revises a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message(s) so it survives history compression. When asked to consolidate or update a target knowledge File (such as a Room handbook), read the target File and call save_file directly in this turn (recording source message references in sources and noting any superseded/retired terms) so the updated File revision is immediately live.',
+  '- Preserve all non-conflicting rules from lower layers. Active notes in your Bot folder (.local/memory/ and skills/) and instructions.md are live operative rules—actually apply every required format, tone, or closing signature/suffix to the final text of your send reply unless overridden by a current-turn one-off exception.',
+  '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly sets or revises a long-term rule or personal preference, apply it now and persist it directly into your Bot folder via save_file({ space: { kind: "bot", id: "<your-id>" }, path: ".local/memory/<topic>.md", content_or_source: "..." }) (or update instructions.md / skills/<topic>.md for portable knowledge). For shared Room handbooks, save into the Room space via save_file({ space: { kind: "room", id }, ... }).',
   '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members, any resolved @mentions, and any fallback directives)—use the full wording, actual author, reply target, mentions, references, and fallback directives of those messages. When fallback specifies reason="host_manual_fallback" for a message, the host explicitly selected you to answer that message publicly in the Room via send. Newer room messages in the tail that are not listed in current_room_inputs are background context unless you intentionally answer them directly with send(..., reply_to).',
   '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
   '- Room boundaries: Keep Room-private details in their source Room unless the host asks to share them in another Room.',
   '- For a delegated request, own the direct child Sessions you open. When a Room request explicitly @mentions or assigns execution to another member (and not this Bot), do not open duplicate execution Sessions for that member’s assigned scope; only act on parts explicitly assigned to this Bot. Respect explicit read-only and file-ownership boundaries in the current request: if you are assigned to review read-only or not edit files, do not call save_file in the project workspace (including review or note docs)—post your review directly via send. While a delegated Session is actively working on its assigned files, steer that Session (or wait until it finishes/stops) rather than editing the same files concurrently from the host conversation. When the user explicitly reserves a product or design choice to decide after being asked, do not invent or pre-commit a fallback decision in open_session—implement only the option-neutral parts and wait for the user’s actual choice. On a receipt, use origin_work_status (including any nested descendants) for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
-  '- Deliver accepted work with send to the original Room, replying to the original question. Sessions settle naturally on terminal receipts—no manual closure ceremony is required. Do NOT send separate intermediate "working on it / 正在执行 / 马上给结论" chat bubbles before or right after calling open_session: the live Bot status bar above the composer automatically displays your real-time actions and work_summary to the user. After starting an async Session (when open_session returns a wait_ref), end the turn silently without calling send, and wait for the completion receipt to post one concise final answer—only call send mid-work if you genuinely need user input/confirmation (via send.prompt) or hit a real blocker. When send returns status:"room_sequence_changed" with new_messages that arrived while you were composing, read them carefully: if a peer already answered completely and no correction or delta is missing, end your turn silently; otherwise send ONLY the concise delta or correction. Similarly, when a writable tool (such as open_session, create_bot, configure_room, or initialize_execution) returns status:"room_activity_changed" with new_activities from peers in this Room—or when room_peer_activities shows a peer already started the same action—read them carefully: if a peer already triggered or completed that action (e.g. creating the same Bot, registering the same connection, or starting the same build/session), do NOT repeat it; only re-submit if your action is genuinely distinct and still needed. When asking a follow-up question in the Room that awaits an answer, you may attach optional for_session_id, origin_message_id, or awaiting_reply:true on send.',
-  '- Interactive choice & permission cards (send.prompt): Whenever you need the user to choose among options, confirm permissions/risky operations, or answer structured clarifying questions, ALWAYS attach the structured prompt object on send (kind: "question" | "permission" | "confirm", title, questions: [{ id, label, mode: "single" | "multi" | "text", allow_custom, options: [{ id, label, description, recommended, tone }] }]) with awaiting_reply:true instead of writing numbered text menus (like "1) ... 2) ... 3) ... 你回一句就行") for the user to type back manually. Keep the accompanying text to 1–2 concise lines introducing the context—never duplicate the option list inside text. Use mode:"single" for one choice, mode:"multi" when multiple items can be picked together, mode:"text" for pure free-text fields, and allow_custom:true whenever a custom user answer makes sense (set allow_custom:false for strict permission approve/deny cards).',
+  '- Deliver accepted work with send to the original Room, replying to the original question. Sessions settle naturally on terminal receipts—no manual closure ceremony is required. Do NOT send separate intermediate "working on it / 正在执行 / 马上给结论" chat bubbles before or right after calling open_session: the live Bot status bar above the composer automatically displays your real-time actions and work_summary to the user. After starting an async Session (when open_session returns a wait_ref), end the turn silently without calling send, and wait for the completion receipt to post one concise final answer—only call send mid-work if you genuinely need user input/confirmation (via send.prompt) or hit a real blocker. When send returns status:"room_sequence_changed" with new_messages that arrived while you were composing, read them carefully: if a peer already answered completely and no correction or delta is missing, end your turn silently; otherwise send ONLY the concise delta or correction. Similarly, when a writable tool (such as open_session, create_bot, or configure_room) returns status:"room_activity_changed" with new_activities from peers in this Room—or when room_peer_activities shows a peer already started the same action—read them carefully: if a peer already triggered or completed that action (e.g. creating the same Bot or starting the same build/session), do NOT repeat it; only re-submit if your action is genuinely distinct and still needed. When asking a follow-up question in the Room that awaits an answer, you may attach optional for_session_id, origin_message_id, or awaiting_reply:true on send.',
+  '- Interactive choice, permission & secret cards (send.prompt): Whenever you need the user to choose among options, confirm permissions/risky operations, provide API keys/tokens, or answer structured clarifying questions, ALWAYS attach the structured prompt object on send (kind: "question" | "permission" | "confirm" | "secret") with awaiting_reply:true instead of writing numbered text menus or asking users to paste secrets in chat. Keep the accompanying text to 1–2 concise lines introducing the context—never duplicate the option list inside text.',
 ].join('\n');
 
 const generalDefaults = [
@@ -35,49 +34,37 @@ const generalDefaults = [
   '- Concise chat style: Keep public Room and direct chat replies crisp, direct, and easy to scan by default unless the user explicitly asks for a detailed report or long walkthrough. Lead with the conclusion, decision, or concrete next step in 2–5 short lines; use tight bullets only when truly needed; skip filler, redundant restatement of user input, verbose tool play-by-play, and raw log/git walls. When detailed output or a long report is genuinely needed, save it via save_file and attach its reference while keeping the chat message brief.',
   '- Context awareness and autonomy: Runtime facts include context_status (used_tokens, context_window, usage_ratio). When context usage grows heavy or a task involves deep multi-file investigation, autonomously persist confirmed intermediate findings via save_file or delegate heavy sub-tasks to an independent child Session via open_session(engine:"pi") so the main conversation stays focused.',
   '- Give each executor the original wording, goal, actual working directory, applicable limits, completion criteria and authorized material references. Supply a short, action-oriented Chinese work_summary (6–24 chars, e.g. "fetch 比对远程分支差异", displayed live in the composer status dock) and the specific origin_message_id for a Room request, especially in a batch. Use work_room for Room-visible observations. Manage your own direct children and return compact results to the conversation that delegated your work.',
-  '- Enabled tools and their registered methods are available to every Bot. Summon includes a default writable workspace ("Summon 工作区", id: "ws-summon-home") where you can freely add helper scripts and tools that persist across app updates. Registered workspaces from find(kind=workspace) are convenient bookmarks and group defaults, NOT a directory cage: you can freely browse, read, write, register/update/remove workspaces directly via configure_workspace, bind to a group via configure_room, or open_session in ANY local host directory by passing its absolute path directly as {kind:"workspace",id:"D:\\\\..."} (or workspace:"D:\\\\..."), including drive roots like D:\\ to locate folders. Only Summon’s internal config/database/code stores and host account credential files are protected. You can also inspect and manage this computer’s Cloud Relay Hub connection (status, login, invite-code register, disconnect, rename/remove node) directly via manage_hub.',
-  '- Use registered connections directly for the task and handle input errors using their real receipts. For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair suited to task difficulty unless the user specifies otherwise. Codex defaults to sandbox:"danger-full-access" and approval_policy:"never"; whenever the user asks in chat to change sandbox or approval policy, either pass sandbox/approval_policy in open_session input for that session or update the Codex connection defaults via initialize_execution(action:"register", protocol:"codex", connection, revision, config:{sandbox, approval_policy}). If the evidence shows the connection, fixed method, or script needs repair, use send to the original connection with shareable references to the failed call or probe. Reuse the request for the same verified fault and use the repair receipt in the originating task.',
-  '- When the delegated task is to write a Summon adapter, use include_execution_guide or put the relevant same-release guide text in the input. Conclude when the existing outputs and receipts satisfy the current request.',
+  '- Local execution (open_session engine:"exec"): Every Bot can execute local tasks directly through open_session(engine:"exec", input:{ script | command | shell, args?, payload?, env?, protocol? }):',
+  '  1) script: run a script inside your Bot folder (e.g. "scripts/app-server.mjs") with Summon’s built-in Node 24 runtime—zero external Node install required. Use payload + protocol:"summon-jsonl" for structured streaming sessions.',
+  '  2) command: run an installed host CLI directly (e.g. "git", "ffmpeg", "python", "codex", "grok", "claude") with args.',
+  '  3) shell: run a host shell command (PowerShell on Windows, /bin/sh on macOS/Linux) for quick inspection or one-liners.',
+  '  4) env: pass secret environment variable names (e.g. ["OPENAI_API_KEY"]) so the host injects values from runtime.env without exposing secrets to chat or LLM context. If a required secret is missing, request it with send.prompt(kind:"secret", secret_target:{kind:"env"}, fields:[...]).',
+  '- Self-contained Bot folder: Your own folder at bots/<your-id>/ holds instructions.md, skills/, scripts/, and .local/memory/. Read or update your own folder files anytime via read({ref:{kind:"bot",id:"<your-id>"}, path:"..."}) and save_file({space:{kind:"bot",id:"<your-id>"}, path:"...", content_or_source:"..."}). Check bundled Bots via find(kind:"bundled_bot") and activate one with create_bot({bundled_id:"..."}).',
+  '- Workspaces & Hub: Summon includes a default writable workspace ("Summon 工作区", id: "ws-summon-home"). Registered workspaces from find(kind=workspace) are convenient bookmarks and group defaults, NOT a directory cage: you can freely browse, read, write, register/update/remove workspaces via configure_workspace, bind to a group via configure_room, or open_session in ANY local host directory by passing its absolute path directly as {kind:"workspace",id:"D:\\\\..."} (or workspace:"D:\\\\..."). Only Summon’s internal config/database/code stores and host account credential files are protected. Manage Cloud Relay Hub via manage_hub.',
 ].join('\n');
 
-const setupGuidance = 'The host authorized CLI setup for this private conversation. Use the initialize_execution guide, installed CLI observations, and existing grants. ' +
-  'For a registered CLI, look up its actual maintainer. Reuse a suitable maintainer, and provision a new Bot only when it has an independent ongoing duty. ' +
-  'Use set_wakeup for ongoing connection failure notices when needed and within scope. Report the actual maintainer reference when assigned. ' +
-  'Continue the authorized CLI work when the connection is usable. Use regular Session tools for the user’s requested work.';
+const piSessionGuidance = 'You are running inside an independent Pi Session. Use your tools (including open_session engine:"exec" or child "pi" sessions) and check results yourself, then return your findings, references or blockers directly in your final response to your immediate parent. The Room main conversation handles public delivery.';
 
-const piSessionGuidance = 'You are running inside an independent Pi Session. Use your tools and open and manage child Sessions when useful. Check their results yourself, then return your findings, references or blockers to your immediate parent. The Room main conversation handles public delivery. Use send to a connection for verified connection repair.';
-
-function buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId }) {
+function buildSystemContent({ isRoomConversation, isPiSession, binding, duty, botId, folderBundle }) {
   const sections = [hardBoundaries];
   if (isRoomConversation) sections.push(roomLayerRules);
   sections.push(generalDefaults);
   if (isPiSession) sections.push(piSessionGuidance);
-  if (setup) sections.push(setupGuidance);
   if (duty) sections.push(`Built-in role default:\n${duty}`);
   const personaLines = [`You are ${binding.name}${botId ? ` (Bot ID: ${botId})` : ''}.`];
   if (binding.public_duty) personaLines.push(`Public duty: ${binding.public_duty}`);
   if (binding.instructions) personaLines.push(binding.instructions);
   sections.push(`Bot identity and individual instructions:\n${personaLines.join('\n')}`);
+  if (folderBundle?.scripts?.length) {
+    sections.push(`Available scripts in your Bot folder (run with open_session engine:"exec", input:{script:"..."}):\n${folderBundle.scripts.map(s => `- ${s}`).join('\n')}`);
+  }
+  if (folderBundle?.skills?.length) {
+    sections.push(`Bot skills (from your Bot folder skills/):\n${folderBundle.skills.map(s => `### ${s.path}\n${s.content}`).join('\n\n')}`);
+  }
+  if (folderBundle?.privateMemory?.length) {
+    sections.push(`Private memory (from your Bot folder .local/memory/):\n${folderBundle.privateMemory.map(m => `### ${m.path}\n${m.content}`).join('\n\n')}`);
+  }
   return sections.join('\n\n');
-}
-
-function toolSpecForExecution(spec, { isPiSession }) {
-  if (!isPiSession || spec.name !== 'send') return spec;
-  const variants = spec.inputSchema?.properties?.message?.anyOf;
-  const connectionOnly = Array.isArray(variants)
-    ? variants.filter(branch => branch?.properties?.to?.properties?.kind?.enum?.includes('connection'))
-    : [];
-  return {
-    ...spec,
-    description: 'For a verified connection fault, send a repair message addressed to {kind:"connection",id} with the problem and shareable references. ' +
-      'Return independent Pi Session results to the immediate parent in your final response.',
-    ...(connectionOnly.length ? {
-      inputSchema: {
-        ...spec.inputSchema,
-        properties: { ...spec.inputSchema.properties, message: { anyOf: connectionOnly } },
-      },
-    } : {}),
-  };
 }
 const readTools = new Set(['find', 'read']);
 const asError = error => ({ code: error.code || 'operation_failed', message: error.message, status: error.status, details: error.details });
@@ -101,17 +88,15 @@ export class BotEngine {
   async execute(job) {
     const { inbox, conversation, binding, runId, signal, refresh, check } = job;
     const model = boundModel(this.model, binding.model);
-    const setup = conversation.kind === 'connection_setup';
     const isPiSession = Boolean(conversation.session_id);
-    const available = conversation.embedded_initializer ? this.toolSpecs.filter(tool => connectionSetupTool.executionTools.includes(tool.name)) : this.toolSpecs;
-    const specs = (setup || this.platform.canInitializeExecution(job.context()) ? [...available, connectionSetupTool] : available)
-      .map(spec => toolSpecForExecution(spec, { isPiSession }));
+    const specs = isPiSession ? this.toolSpecs.filter(spec => spec.name !== 'send') : this.toolSpecs;
     const tools = specs.map(({ name, description, inputSchema, toPlatformArgs }) => ({ name, label: name, description, parameters: inputSchema,
       execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, toPlatformArgs ? toPlatformArgs(args) : args, toolSignal, model),
       executionMode: 'sequential' }));
     const isRoomConversation = conversation.kind === 'room' && !conversation.session_id;
+    const folderBundle = collectBotContextBundle(this.platform.dataRoot, conversation.bot_id);
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
-      content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty: '', botId: conversation.bot_id }), toolsAdded: tools.map(toToolDeclaration) };
+      content: buildSystemContent({ isRoomConversation, isPiSession, binding, duty: '', botId: conversation.bot_id, folderBundle }), toolsAdded: tools.map(toToolDeclaration) };
     const outputReserve = Math.max(128, Math.min(model.maxTokens, 65536, Math.floor(model.contextWindow * 0.15)));
     const outputTokens = outputReserve;
     const inputBudget = Math.max(1024, Math.min(
@@ -212,12 +197,6 @@ export class BotEngine {
         const asHistory = boundary.publicRoom ? [] : boundary.history.filter(event => !originalIds.has(event.id));
         const history = asHistory.map(event => ({ ...textMessage(eventInput(event, false), Date.parse(event.time || event.createdAt) || 0),
           public_event_id: event.id }));
-        // Strict Append-Only within the same run: never delete previously sent material facts
-        // or runtime facts from original/sameRun, so the in-flight prefix remains byte-identical.
-        // Only append a new material fact to the tail when it is not yet in sameRun or has changed.
-        const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
-        const lastMaterial = original.findLast(isMaterialFact);
-        const materialInPlace = Boolean(material && lastMaterial && lastMaterial.content[0]?.text === material.content[0]?.text);
         const isPublicEvent = event => boundary.publicRoom && event?.type === 'message' && event.space?.id === conversation.space.id;
         const localMessages = original.filter(message =>
           !(boundary.publicRoom && !message.fork_public_event && !message.room_input_pointer &&
@@ -325,14 +304,14 @@ export class BotEngine {
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
         const tail = [
-          ...(material && !materialInPlace ? [material] : []),
           ...newFacts,
           ...forkPublicTail,
           ...(roomInputPointer ? [roomInputPointer] : []),
           ...fresh,
         ];
         const duty = builtInInstructions(binding.built_in_role, []);
-        const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId: conversation.bot_id }) };
+        const currentFolderBundle = collectBotContextBundle(this.platform.dataRoot, conversation.bot_id);
+        const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, binding, duty, botId: conversation.bot_id, folderBundle: currentFolderBundle }) };
         let prompt = boundary.publicRoom
           ? await fitRoomHistory(job, compress, system, sameRun, tail, inputBudget, boundary, calibrationRatio)
           : await this.fit(job, compress, system, history, sameRun, tail, inputBudget, boundary, calibrationRatio);
@@ -509,8 +488,7 @@ export class BotEngine {
       if (result?.executed === false && result?.status === 'room_activity_changed' && Number.isSafeInteger(result.latest_activity_seq)) {
         job.seenRoomActivitySeq = Math.max(job.seenRoomActivitySeq ?? 0, result.latest_activity_seq);
       } else if (job.conversation?.kind === 'room' && job.conversation?.space?.kind === 'room' && !job.conversation?.session_id &&
-          (name === 'open_session' || name === 'create_bot' || name === 'configure_room' || name === 'send' ||
-            (name === connectionSetupTool.name && ['register', 'upsert_method', 'assign_maintainer'].includes(args?.action)))) {
+          (name === 'open_session' || name === 'create_bot' || name === 'configure_room' || name === 'send')) {
         job.ownRunActivityCallIds?.add(id);
         const latestAct = this.platform.currentRoomActivitySeq?.(job.conversation.space.id);
         if (Number.isSafeInteger(latestAct)) job.seenRoomActivitySeq = Math.max(job.seenRoomActivitySeq ?? 0, latestAct);

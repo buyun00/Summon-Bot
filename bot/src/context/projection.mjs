@@ -140,26 +140,12 @@ export function toolObservation(callId, value, isError = false, limit = DEFAULT_
   const execution = (kind === 'session' || kind === 'conversation') && execution_ref?.kind === kind && execution_ref.id === id
     ? {
       kind, id, execution_ref, control: control && { state: control.state, stop_status: control.stop_status },
-      acceptance_state: value.acceptance_state,
-      control_version: value.control_version, input_revision: value.input_revision, can_submit: value.can_submit, can_stop: value.can_stop,
-      input_targets: value.input_targets?.map(({ kinds, input_target, question, choices, request_kind, answer_format, plain_text }) => ({
-        kinds, input_target, question, request_kind, answer_format, plain_text, choices: choices?.map(({ id, label }) => ({ id, label })),
-      })),
+      control_version: value.control_version, input_revision: value.input_revision,
+      can_submit: value.can_submit, can_stop: value.can_stop,
+      can_steer: value.can_steer, can_continue: value.can_continue,
+      ...(value.pending_requests?.length ? { pending_requests: value.pending_requests } : {}),
     } : undefined;
-  let executionLength = execution ? JSON.stringify(execution).length : 0;
-  if (executionLength > limit) {
-    const descriptions = (execution.input_targets ?? []).flatMap(target => [
-      [target, 'question'], ...(target.choices ?? []).map(choice => [choice, 'label']),
-    ]).filter(([entry, field]) => typeof entry[field] === 'string')
-      .sort(([a, aField], [b, bField]) => b[bField].length - a[aField].length);
-    for (const [entry, field] of descriptions) {
-      if (executionLength <= limit) break;
-      const before = JSON.stringify(entry).length;
-      const length = Math.max(0, entry[field].length - (executionLength - limit));
-      entry[field] = entry[field].slice(0, length) || undefined;
-      executionLength -= before - JSON.stringify(entry).length;
-    }
-  }
+  const executionLength = execution ? JSON.stringify(execution).length : 0;
   if (execution && Array.isArray(value.messages) && (value.transcript_page || value.engine === 'pi' || kind === 'conversation') &&
       value.messages.every(item => typeof item?.run_id === 'string' && typeof item.id === 'string')) {
     const page = value.transcript_page ? { messages: value.messages, next_cursor: value.next_cursor } :

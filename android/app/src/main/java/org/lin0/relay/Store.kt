@@ -727,18 +727,18 @@ class SummonStore(private val app: Context) {
         deliver(id, queryFirst = false)
     }
 
-    suspend fun submitPendingExecutionInput(target: SummonJson, controlVersion: Int, inputTarget: SummonJson, input: String) {
+    suspend fun submitPendingExecutionInput(target: SummonJson, controlVersion: Int, requestId: String?, input: String) {
         if (!protocolReady) throw SummonApiException.invalidResponse
         request(
             "/api/executions/input",
             "POST",
-            SummonJson.obj(
-                "target" to target,
-                "kind" to SummonJson.Str("reply"),
-                "control_version" to controlVersion.numOrNull(),
-                "input_target" to inputTarget,
-                "input" to SummonJson.Str(input),
-            ),
+            SummonJson.Obj(buildMap {
+                put("target", target)
+                put("kind", SummonJson.Str("reply"))
+                put("control_version", controlVersion.numOrNull())
+                if (!requestId.isNullOrEmpty()) put("request_id", SummonJson.Str(requestId))
+                put("input", SummonJson.Str(input))
+            }),
             newID(),
         )
         refresh()

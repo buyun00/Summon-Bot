@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
-import { botMaintenanceRoomId, groupLeadRole } from '../../roles/index.mjs';
+import { botMaintenanceRoomId, groupLeadRole } from '../bot-management/roles.mjs';
 
 function list(value, label, maximum = 100) {
   if (value === undefined) return [];
@@ -94,11 +94,9 @@ function normalizeSecretTarget(raw) {
   copyStr('workspace', 500);
   copyStr('path', 240);
   copyStr('session_id', 160);
+  copyStr('request_id', 160);
   if (raw.activate === true) out.activate = true;
   if (Number.isSafeInteger(raw.control_version) && raw.control_version >= 0) out.control_version = raw.control_version;
-  if (raw.input_target && typeof raw.input_target === 'object' && !Array.isArray(raw.input_target)) {
-    out.input_target = raw.input_target;
-  }
   return out;
 }
 
@@ -534,12 +532,11 @@ export class ChatroomService {
     }
   }
 
-  ensureMaintenanceRoom(bot, { defaultWorkspaceId = null } = {}) {
-    if (!bot || bot.archivedAt) return null;
+  ensureMaintenanceRoom({ defaultWorkspaceId = null } = {}) {
     const existing = this.store.get('rooms', botMaintenanceRoomId);
     const egg = this.manager.eggBot();
     if (!existing) {
-      const members = [bot.id, ...(egg?.enabled ? [egg.id] : [])];
+      const members = egg?.enabled ? [egg.id] : [];
       return this.createRoom({
         title: 'Summon',
         members,
@@ -551,10 +548,6 @@ export class ChatroomService {
     }
     let changed = false;
     const next = { ...existing };
-    if (next.name === 'Bot 维护群') {
-      next.name = 'Summon';
-      changed = true;
-    }
     const members = [...(next.members || [])];
     if (!members.includes('user')) { members.unshift('user'); changed = true; }
     let leadBotId = next.lead_bot_id || members.find(member =>
@@ -572,7 +565,6 @@ export class ChatroomService {
       changed = true;
     }
     if (egg?.enabled && !members.includes(egg.id)) { members.push(egg.id); changed = true; }
-    if (!members.includes(bot.id)) { members.push(bot.id); changed = true; }
     if (!next.workspace && defaultWorkspaceId) {
       try {
         next.workspace = this.platform.bindRoomWorkspace(defaultWorkspaceId, 'user', 'group');
@@ -662,11 +654,6 @@ export class ChatroomService {
         }
         const egg = this.manager.eggBot();
         if (egg?.enabled && !included.includes(egg.id)) included.push(egg.id);
-        const onboarding = this.manager.onboardingBot();
-        if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
-      } else if (mode === 'group') {
-        const onboarding = this.manager.onboardingBot();
-        if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
       }
       const boundWorkspace = workspace == null ? null : this.platform.bindRoomWorkspace(workspace, actor, mode);
       const room = this.store.save('rooms', {
@@ -678,8 +665,8 @@ export class ChatroomService {
         const leadRecord = this.store.get('platform-bots', leadBotId);
         const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
         const welcomeText = wsLabel
-          ? `我是「${roomName}」的群主控，已绑定目录「${wsLabel}」，EggBot 和接口 Bot 已就位。直接说需求就行。`
-          : `我是「${roomName}」的群主控，EggBot 和接口 Bot 已就位。直接说你想做什么就行。`;
+          ? `我是「${roomName}」的群主控，已绑定目录「${wsLabel}」，EggBot 已就位。直接说需求就行。`
+          : `我是「${roomName}」的群主控，EggBot 已就位。直接说你想做什么就行。`;
         const openId = randomUUID();
         this.store.save('messages', {
           id: openId,
@@ -734,14 +721,6 @@ export class ChatroomService {
           fail(dup.archivedAt
             ? `已有同名已归档群聊「${dup.name}」，请换一个名称`
             : `群聊名称「${dup.name}」已存在，请换一个名称`, 409);
-        }
-      }
-      if (mode === 'group' && room.mode === 'direct') {
-        const onboarding = this.manager.onboardingBot();
-        if (onboarding?.enabled && !members.includes(onboarding.id) && !remove.has(onboarding.id) &&
-            !this.platform.deliveries.wasRemoved(onboarding.id, id)) {
-          members.push(onboarding.id);
-          added.push(onboarding.id);
         }
       }
       const pins = new Map(room.pins.map(ref => [refKey(ref), ref]));

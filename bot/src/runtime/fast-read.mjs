@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
+import { builtInInstructions, defaultPublicDuty } from '../../../capabilities/bot-management/roles.mjs';
 import { keyOf } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
-import { builtInInstructions, defaultPublicDuty } from '../../../roles/index.mjs';
 import { bindModel, boundModel } from '../agent/model.mjs';
 import { contextTokens, roomMessageInput, textMessage } from '../context/projection.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
@@ -50,7 +51,7 @@ const fastReadRules = [
     'items 必须完整覆盖 pending_message_ids 中的每一个 message_id。',
 ].join('\n\n');
 
-function buildFastReadSystem(bot, room, members) {
+function buildFastReadSystem(bot, room, members, instructions) {
   const duty = builtInInstructions(bot.built_in_role, []);
   const identityLines = [
     `Bot ID: ${bot.id}`,
@@ -58,7 +59,7 @@ function buildFastReadSystem(bot, room, members) {
     `公开职责: ${defaultPublicDuty(bot) || '（未单独填写）'}`,
   ];
   if (duty) identityLines.push(`内置角色说明:\n${duty}`);
-  if (bot.instructions) identityLines.push(`个人长期指令（供判断职责归属与边界，本阶段不执行）:\n${bot.instructions}`);
+  if (instructions) identityLines.push(`个人长期指令（供判断职责归属与边界，本阶段不执行）:\n${instructions}`);
   const roomLines = room ? [
     `群 ID: ${room.id}`,
     `群名: ${room.name || room.id}`,
@@ -178,7 +179,7 @@ export class FastReadRuntime {
       status: session.status || 'idle',
       origin_message_id: session.origin_message_id || null,
       work_summary: session.work_summary || null,
-      waiting_summary: session.waiting_summary || session.last_output_summary || null,
+      pending_requests: session.pending_input?.length ? session.pending_input : undefined,
     }));
   }
 
@@ -262,10 +263,6 @@ export class FastReadRuntime {
       const latestEnd = Math.max(this.platform.room.observationEnd(roomId, bot.id), ...batchSequences);
       const snapshot = this.platform.room.publicHistory(roomId, bot.id, latestEnd);
 
-      const maintainedIds = this.platform.store.list('platform-connections')
-        .filter(entry => entry.maintainer_bot_id === bot.id)
-        .map(entry => entry.id)
-        .sort();
       const members = [...(room.members || [])].sort((a, b) => (a === 'user' ? -1 : b === 'user' ? 1 : a.localeCompare(b))).map(memberId => {
         if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
         const memberBot = this.platform.store.get('platform-bots', memberId);
@@ -276,7 +273,7 @@ export class FastReadRuntime {
           public_duty: defaultPublicDuty(memberBot),
         };
       });
-      const systemContent = buildFastReadSystem(bot, room, members);
+      const systemContent = buildFastReadSystem(bot, room, members, readBotInstructions(this.platform.dataRoot, bot));
       const systemMessage = {
         role: 'system',
         timestamp: Date.parse(room.createdAt) || 0,
@@ -319,7 +316,6 @@ export class FastReadRuntime {
         pending_message_ids: eventIds,
         ...(Object.keys(pendingMentions).length ? { pending_mentions: pendingMentions } : {}),
         ...(activeSessions.length ? { active_sessions: activeSessions } : {}),
-        ...(maintainedIds.length ? { maintained_connection_ids: maintainedIds } : {}),
       });
 
       const maxTokens = Math.max(128, Math.min(model.maxTokens, Math.floor(model.contextWindow * 0.25), Math.max(512, eventIds.length * 160 + 256)));

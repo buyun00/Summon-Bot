@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { installProcessLog } from '@summon/bot/process-log';
-import { readJson, writeJson } from '../build/files.mjs';
+import { readJson, writeJson } from './files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { deploymentPath, inspectService, launchService, stopSystem } from './system.mjs';
 import { assertInstallationWritable, dataFormat } from './installation-state.mjs';

@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { instanceProof } from '../../web/backend/instance-probe.mjs';
-import { parseArgs, readJson, writeJson } from '../build/files.mjs';
+import { parseArgs, readJson, writeJson } from './files.mjs';
 import { protocolVersion } from '../../capabilities/platform/contract.mjs';
 import { dataFormat } from './installation-state.mjs';
 import { inspectService, serviceRunPath, startSystem, stopSystem } from './system.mjs';

@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { messageEvent } from '../chatroom/service.mjs';
 import { waitRecords } from './calls.mjs';
-import { botMaintenanceRoomId } from '../../roles/index.mjs';
 
 export const wakeupRecords = 'platform-wakeups';
 export const wakeupRunRecords = 'platform-wakeup-runs';
@@ -10,11 +9,8 @@ export const deliveryRecords = 'platform-deliveries';
 export const roomChainRecords = 'room-chain-state';
 
 const roomBaseId = (botId, roomId) => keyOf('room_base', botId, roomId);
-const maintenanceReviewId = botId => keyOf('maintenance_review', botId, botMaintenanceRoomId);
 const unique = (values, key) => [...new Map(values.map(value => [key(value), value])).values()];
 const handledWaitStates = new Set(['processed', 'cancelled', 'access_revoked']);
-const defaultObservationCount = 20;
-const maintenanceReviewIntervalMs = 24 * 60 * 60 * 1000;
 const platformAuthor = { kind: 'platform', id: 'platform' };
 const positionOf = ({ id, sequence }) => ({ id, sequence });
 const MAX_DELIVERY_RETRIES = 8;
@@ -115,38 +111,6 @@ export class Deliveries {
     return this.store.save(wakeupRecords, { id, bot_id: botId, rule, dedupe_key: id,
       observation: null,
       member_active: true, enabled: active ? previous.enabled : true, revision: (previous?.revision ?? 0) + 1 });
-  }
-
-  ensureMaintenanceWakeup(botId) {
-    if (!botId || !this.store.get('rooms', botMaintenanceRoomId)) return null;
-    const id = maintenanceReviewId(botId);
-    const existing = this.store.get(wakeupRecords, id);
-    if (existing) return existing;
-    const first = new Date();
-    first.setHours(9, 0, 0, 0);
-    if (first.getTime() <= Date.now() + 60_000) first.setDate(first.getDate() + 1);
-    const scheduledMs = first.getTime();
-    const rule = {
-      kind: 'time',
-      scope: { kind: 'room', id: botMaintenanceRoomId },
-      at: first.toISOString(),
-      interval_ms: maintenanceReviewIntervalMs,
-    };
-    const dedupe_key = dedupeKeyFor(botId, rule, scheduledMs);
-    return this.store.save(wakeupRecords, {
-      id,
-      bot_id: botId,
-      rule,
-      dedupe_key,
-      next_due: scheduledMs,
-      enabled: true,
-      archived: false,
-      disabled_reason: null,
-      created_by: platformAuthor,
-      updated_by: platformAuthor,
-      source_call_id: null,
-      revision: 1,
-    });
   }
 
   syncObserverMemberships(botId) {

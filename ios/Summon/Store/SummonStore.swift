@@ -797,18 +797,19 @@ final class SummonStore {
         await deliver(id, queryFirst: false)
     }
 
-    func submitPendingExecutionInput(target: SummonJSONValue, controlVersion: Int, inputTarget: SummonJSONValue, input: String) async throws {
+    func submitPendingExecutionInput(target: SummonJSONValue, controlVersion: Int, requestId: String?, input: String) async throws {
         guard protocolReady else { throw SummonAPIError.invalidResponse }
+        var body: [String: SummonJSONValue] = [
+            "target": target,
+            "kind": .string("reply"),
+            "control_version": .number(Double(controlVersion)),
+            "input": .string(input)
+        ]
+        if let requestId, !requestId.isEmpty { body["request_id"] = .string(requestId) }
         _ = try await request(
             path: "/api/executions/input",
             method: "POST",
-            body: .object([
-                "target": target,
-                "kind": .string("reply"),
-                "control_version": .number(Double(controlVersion)),
-                "input_target": inputTarget,
-                "input": .string(input)
-            ]),
+            body: .object(body),
             clientID: Self.newID()
         )
         await refresh()

@@ -22,15 +22,11 @@ const unavailable = { name: '模型设置暂不可用', configured: false, usage
 
 /** Model credentials and account usage belong to the existing host, outside Bot conversation history. */
 export class ModelConnections {
-  constructor({ dataRoot, model, emit = () => {}, listPlatformConnections = null }) {
+  constructor({ dataRoot, model, emit = () => {} }) {
     this.dataRoot = dataRoot; this.initialModel = model; this.emit = emit;
-    this.listPlatformConnections = listPlatformConnections;
     this.path = connectionPath(dataRoot);
     this.credentials = new ModelCredentialStore(this.path); this.logins = new Map(); this.usage = Object.create(null); this.configured = Object.create(null); this.pendingUsage = new Map(); this.writeChain = Promise.resolve();
     this.usagePath = join(dataRoot, 'config', 'model-usage.json');
-  }
-  attachConnections(listPlatformConnections) {
-    this.listPlatformConnections = typeof listPlatformConnections === 'function' ? listPlatformConnections : null;
   }
   async initialize() {
     if (!existsSync(this.path)) {
@@ -234,54 +230,13 @@ export class ModelConnections {
       return entry.provider === 'deepseek' && host === 'api.deepseek.com' || entry.provider === 'openrouter' && host === 'openrouter.ai';
     } catch { return false; }
   }
-  platformWorkEngines() {
-    let list;
-    try { list = this.listPlatformConnections?.() || []; } catch { return []; }
-    if (!Array.isArray(list)) return [];
-    return list.filter(entry => entry?.enabled === true).map(entry => {
-      if (entry.kind === 'codex') return { connector: 'codex', entry };
-      if (entry.kind === 'cli' && entry.config?.adapter?.connector === 'grok-build') return { connector: 'grok', entry };
-      if (entry.kind === 'cli' && entry.config?.adapter?.connector === 'claude-code') return { connector: 'claude-code', entry };
-      return null;
-    }).filter(Boolean);
-  }
   resolveWorkEngine(catalog) {
     const activeId = catalog.activeId ?? null;
     const configuredOther = catalog.connections.filter(entry => entry.id !== activeId && this.isConfigured(entry));
-    const platformEngines = this.platformWorkEngines();
-    for (const kind of ['codex', 'grok']) {
-      const ext = platformEngines.find(item => item.connector === kind);
-      if (!ext) continue;
-      const match = configuredOther.find(entry => entry.kind === kind);
-      if (match) return { ...this.publicEntry(match, activeId, catalog), role: 'executor', enabled: true, roleLabel: '工作引擎', workSource: 'platform' };
-      const activeSame = catalog.connections.find(entry => entry.id === activeId && entry.kind === kind);
-      if (!activeSame) {
-        const authFile = kind === 'codex' ? localCodexAuthPath() : localGrokAuthPath();
-        const id = `executor:${kind}`;
-        return {
-          id, role: 'executor', kind, provider: kind === 'codex' ? 'openai-codex' : 'xai',
-          name: ext.entry.name || (kind === 'codex' ? 'Codex' : 'Grok'),
-          model: ext.entry.config?.model || null,
-          authMode: `${kind}-local`, authFile,
-          enabled: true, configured: existsSync(authFile),
-          roleLabel: '工作引擎', workSource: 'platform',
-          usage: this.usageFor(id),
-        };
-      }
-    }
     const codexSub = configuredOther.find(entry => entry.kind === 'codex');
-    if (codexSub) return { ...this.publicEntry(codexSub, activeId, catalog), role: 'executor', enabled: true, roleLabel: '工作引擎' };
+    if (codexSub) return { ...this.publicEntry(codexSub, activeId, catalog), role: 'executor', enabled: true, roleLabel: '备用订阅' };
     const grokSub = configuredOther.find(entry => entry.kind === 'grok');
-    if (grokSub) return { ...this.publicEntry(grokSub, activeId, catalog), role: 'executor', enabled: true, roleLabel: '工作引擎' };
-    const claudeExt = platformEngines.find(item => item.connector === 'claude-code');
-    if (claudeExt) {
-      return {
-        id: 'executor:claude-code', role: 'executor', kind: 'claude-code', provider: 'anthropic',
-        name: claudeExt.entry.name || 'Claude Code', model: null,
-        enabled: true, configured: true, roleLabel: '工作引擎', workSource: 'platform',
-        usage: { status: 'unsupported', unsupported: true, note: 'Claude Code 暂未提供公开额度接口' },
-      };
-    }
+    if (grokSub) return { ...this.publicEntry(grokSub, activeId, catalog), role: 'executor', enabled: true, roleLabel: '备用订阅' };
     const otherQuota = configuredOther.find(entry => this.supportsQuota(entry));
     if (otherQuota) return { ...this.publicEntry(otherQuota, activeId, catalog), role: 'executor', enabled: true, roleLabel: '备用模型' };
     return null;

@@ -6,18 +6,17 @@
 
   const PROVIDERS = [
     { id: 'codex', kind: 'codex', name: 'Codex 订阅', subtitle: 'ChatGPT 账号授权', provider: 'openai-codex', api: 'openai-codex-responses', baseUrl: 'https://chatgpt.com/backend-api', defaultModel: 'gpt-6.1-terra' },
+    { id: 'grok', kind: 'grok', name: 'Grok 订阅', subtitle: 'Grok 账号授权', provider: 'xai', api: 'openai-responses', baseUrl: 'https://cli-chat-proxy.grok.com/v1', defaultModel: 'grok-4.7' },
     { id: 'deepseek', kind: 'api', name: 'DeepSeek', subtitle: '只需 API Key', provider: 'deepseek', api: 'openai-completions', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
     { id: 'openai', kind: 'api', name: 'OpenAI', subtitle: '只需 API Key', provider: 'openai', api: 'openai-responses', baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-5.4' },
     { id: 'anthropic', kind: 'api', name: 'Anthropic', subtitle: 'Claude API Key', provider: 'anthropic', api: 'anthropic-messages', baseUrl: 'https://api.anthropic.com', defaultModel: 'claude-sonnet-4-5' },
     { id: 'openrouter', kind: 'api', name: 'OpenRouter', subtitle: '多模型聚合 Key', provider: 'openrouter', api: 'openai-completions', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'openai/gpt-5.4' },
-    { id: 'openai-compatible', kind: 'api', name: '自定义 API', subtitle: '兼容接口 / 本机', provider: 'openai-compatible', api: 'openai-completions', baseUrl: '', defaultModel: '' },
+    { id: 'openai-compatible', kind: 'api', name: '自定义 API', subtitle: 'Token Plan / 本机', provider: 'openai-compatible', api: 'openai-completions', baseUrl: '', defaultModel: '' },
   ];
 
   const ob = {
     open: false,
     preview: false,
-    focusActive: false,
-    previewFocus: false,
     selectedProvider: 'deepseek',
     localSources: [],
     catalog: null,
@@ -110,6 +109,8 @@
     ob.localSources = (local?.sources || []).filter(item => item.available);
     if (ob.localSources.some(s => s.kind === 'codex')) {
       ob.selectedProvider = 'codex';
+    } else if (ob.localSources.some(s => s.kind === 'grok')) {
+      ob.selectedProvider = 'grok';
     }
     const models = providerModels(ob.selectedProvider);
     if (!ob.draft.model && models[0]?.id) ob.draft.model = models[0].id;
@@ -183,6 +184,7 @@
     const choices = providerModels(ob.selectedProvider);
     const activeExisting = ob.catalog?.connections?.find(c => c.id === ob.catalog.activeId && c.configured);
     const hasLocalCodex = ob.localSources.some(s => s.kind === 'codex');
+    const hasLocalGrok = ob.localSources.some(s => s.kind === 'grok');
     const faceClass = ob.phase === 'testing' || ob.phase === 'saving'
       ? 'is-testing'
       : ob.phase === 'success' ? 'is-success' : '';
@@ -219,13 +221,14 @@
     const providerGrid = `<div class="ob-provider-grid" role="tablist" aria-label="选择 AI 服务商">${PROVIDERS.map(item => `
       <button type="button" role="tab" aria-selected="${item.id === ob.selectedProvider}" class="ob-provider-tile ${item.id === ob.selectedProvider ? 'is-selected' : ''}" data-ob-action="pick-provider" data-provider="${esc(item.id)}" ${ob.busy ? 'disabled' : ''}>
         <span class="ob-provider-head">${renderProviderIcon(item)}<strong>${esc(item.name)}</strong></span>
-        <small>${esc(item.id === 'codex' && hasLocalCodex ? '已登录 · 直接复用' : item.subtitle)}</small>
+        <small>${esc((item.id === 'codex' && hasLocalCodex) || (item.id === 'grok' && hasLocalGrok) ? '已登录 · 直接复用' : item.subtitle)}</small>
       </button>`).join('')}</div>`;
 
     let formBody = '';
-    if (def.kind === 'codex') {
-      if (hasLocalCodex) {
-        // Local Codex already has the prominent one-click reuse card right above — no redundant big duplicate box!
+    if (def.kind === 'codex' || def.kind === 'grok') {
+      const hasLocal = def.kind === 'codex' ? hasLocalCodex : hasLocalGrok;
+      const subLabel = def.kind === 'codex' ? 'Codex' : 'Grok';
+      if (hasLocal) {
         formBody = '';
       } else {
         const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
@@ -238,9 +241,9 @@
               <button type="button" class="ob-secondary-btn" data-ob-action="cancel-oauth">取消</button>
             </div>
           ` : `
-            <small>未检测到本机 Codex 登录，你可以登录 Codex 订阅账号，或在上方改用 DeepSeek / OpenAI / Anthropic 等 API Key。</small>
+            <small>未检测到本机 ${subLabel} 登录，你可以登录 ${subLabel} 订阅账号，或在上方改用 DeepSeek / OpenAI / Anthropic / 自定义 API Key。</small>
             <div class="ob-oauth-actions">
-              <button type="button" class="ob-primary-btn" data-ob-action="start-codex-oauth" ${ob.busy ? 'disabled' : ''}>登录 Codex 订阅</button>
+              <button type="button" class="ob-primary-btn" data-ob-action="start-sub-oauth" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>登录 ${subLabel} 订阅</button>
             </div>
           `}
         </div>`;
@@ -302,8 +305,8 @@
       </div>
       <header class="ob-hero">
         <div class="ob-hero-face ${faceClass}">${avatarSvg(64)}</div>
-        <h1>接入你的第一个 AI</h1>
-        <p>只需完成这一步——验证可用后进入 Summon 群，其余环境配置全由 AI 自动带你搞定。</p>
+        <h1>点亮你的第一个 AI</h1>
+        <p>只需完成这一步——验证可用后直接进入 Summon 工作台。若复用 Codex / Grok 订阅，将同步激活对应的专职 Bot。</p>
       </header>
       <section class="ob-card">
         ${previewActiveBanner}
@@ -315,7 +318,7 @@
     `;
   }
 
-  async function verifyAndEnterSummonChat(connId, label) {
+  async function verifyAndEnterSummonChat(connId, label, { activateBundled = null } = {}) {
     const api = ob.callbacks?.api;
     if (!api) return;
     ob.busy = true;
@@ -326,13 +329,13 @@
       const test = await api(`/api/model-settings/connections/${encodeURIComponent(connId)}/test`, 'POST', {});
       await api('/api/model-settings/active', 'POST', { id: connId });
       ob.phase = 'success';
-      ob.statusText = `连接成功 · ${test.model} 响应正常（${test.latencyMs}ms），正在进入 Summon 群…`;
+      ob.statusText = `连接成功 · ${test.model} 响应正常（${test.latencyMs}ms），正在进入工作台…`;
       renderOverlayContent();
       if (ob.preview) {
         await new Promise(resolve => setTimeout(resolve, 680));
         await finishOverlayIntoChat({ preview: true });
       } else {
-        await api('/api/onboarding/start', 'POST', {});
+        await api('/api/onboarding/start', 'POST', activateBundled ? { activateBundled } : {});
         await new Promise(resolve => setTimeout(resolve, 680));
         await finishOverlayIntoChat({ preview: false });
       }
@@ -374,12 +377,6 @@
     ob.busy = false;
     ob.phase = 'idle';
     ob.statusText = '';
-    if (preview) {
-      ob.previewFocus = true;
-      setFocusMode(true);
-    } else {
-      setFocusMode(true);
-    }
     await ob.callbacks?.onEnterOnboardingChat?.(SUMMON_ROOM_ID, { preview });
   }
 
@@ -394,7 +391,8 @@
     try {
       const res = await api('/api/model-settings/local/import', 'POST', { kind, activate: true });
       const connId = res.importedId || `${kind}-local`;
-      await verifyAndEnterSummonChat(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`);
+      const activateBundled = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+      await verifyAndEnterSummonChat(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { activateBundled });
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
@@ -403,55 +401,59 @@
     }
   }
 
-  async function handleStartCodexOAuth() {
+  async function handleStartSubOAuth(kind = 'codex') {
     if (ob.busy) return;
     const api = ob.callbacks?.api;
     if (!api) return;
+    const subLabel = kind === 'grok' ? 'Grok' : 'Codex';
+    const defaultModel = kind === 'grok' ? 'grok-4.7' : 'gpt-6.1-terra';
     ob.busy = true;
     ob.phase = 'oauth';
-    ob.statusText = '正在创建 Codex 订阅连接并获取设备授权码…';
+    ob.statusText = `正在创建 ${subLabel} 订阅连接并获取设备授权码…`;
     renderOverlayContent();
     try {
       const saved = await api('/api/model-settings/connections', 'POST', {
-        kind: 'codex',
-        name: 'Codex 订阅',
-        model: ob.draft.model || 'gpt-6.1-terra',
+        kind,
+        name: `${subLabel} 订阅`,
+        model: ob.draft.model || defaultModel,
       });
-      const connId = saved.savedId || saved.connections?.find(c => c.kind === 'codex' && c.authMode !== 'codex-local')?.id;
-      if (!connId) throw new Error('未能创建 Codex 订阅连接');
+      const connId = saved.savedId || saved.connections?.find(c => c.kind === kind && c.authMode !== `${kind}-local`)?.id;
+      if (!connId) throw new Error(`未能创建 ${subLabel} 订阅连接`);
       ob.oauthConnId = connId;
       ob.oauthState = await api(`/api/model-settings/connections/${encodeURIComponent(connId)}/login`, 'POST', {});
       ob.busy = false;
       ob.statusText = '请在浏览器中完成授权，授权完成后将自动检测并进入主界面…';
       renderOverlayContent();
-      void pollCodexOAuth(connId);
+      void pollSubOAuth(connId, kind);
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
-      ob.statusText = error.message || '无法发起 Codex 授权';
+      ob.statusText = error.message || `无法发起 ${subLabel} 授权`;
       renderOverlayContent();
     }
   }
 
-  async function pollCodexOAuth(connId) {
+  async function pollSubOAuth(connId, kind = 'codex') {
     stopOAuthPoll();
     const api = ob.callbacks?.api;
     if (!api || !ob.open || ob.oauthConnId !== connId) return;
+    const subLabel = kind === 'grok' ? 'Grok' : 'Codex';
     try {
       const status = await api(`/api/model-settings/connections/${encodeURIComponent(connId)}/login`);
       ob.oauthState = status;
       if (['starting', 'waiting'].includes(status.status)) {
         renderOverlayContent();
-        ob.oauthTimer = setTimeout(() => void pollCodexOAuth(connId), 2000);
+        ob.oauthTimer = setTimeout(() => void pollSubOAuth(connId, kind), 2000);
         return;
       }
       if (status.status === 'completed') {
-        await verifyAndEnterSummonChat(connId, 'Codex 订阅');
+        const activateBundled = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+        await verifyAndEnterSummonChat(connId, `${subLabel} 订阅`, { activateBundled });
         return;
       }
       if (status.status === 'failed') {
         ob.phase = 'error';
-        ob.statusText = status.error || 'Codex 授权未完成，请重试。';
+        ob.statusText = status.error || `${subLabel} 授权未完成，请重试。`;
       } else {
         ob.phase = 'idle';
         ob.statusText = '';
@@ -517,17 +519,6 @@
     }
   }
 
-  function setFocusMode(enabled, { celebrate = false } = {}) {
-    const wasFocused = ob.focusActive;
-    ob.focusActive = Boolean(enabled);
-    document.body.classList.toggle('onboarding-focus', ob.focusActive);
-    if (wasFocused && !ob.focusActive) {
-      document.body.classList.add('onboarding-unlocking');
-      setTimeout(() => document.body.classList.remove('onboarding-unlocking'), 720);
-      if (celebrate) ob.callbacks?.toast?.('初始化完成，欢迎进入 Summon Bot 工作台');
-    }
-  }
-
   async function openOverlay({ preview = false, skipBloom = false } = {}) {
     if (ob.open) return;
     ob.open = true;
@@ -559,31 +550,12 @@
     root?.remove();
     ob.open = false;
     ob.preview = false;
-    ob.previewFocus = false;
     ob.busy = false;
-    setFocusMode(false);
     ob.callbacks?.onRender?.();
   }
 
   function enterFocusFromDesktop({ preview = false } = {}) {
-    if (preview) ob.previewFocus = true;
-    setFocusMode(true);
     void ob.callbacks?.onEnterOnboardingChat?.(SUMMON_ROOM_ID, { preview });
-  }
-
-  async function exitFocusMode({ previewOnly = false } = {}) {
-    if (ob.previewFocus || previewOnly) {
-      ob.previewFocus = false;
-      ob.preview = false;
-      setFocusMode(false, { celebrate: true });
-      ob.callbacks?.onRender?.();
-      return;
-    }
-    try {
-      await ob.callbacks?.api?.('/api/onboarding/complete', 'POST', { summary: '用户跳过剩余初始化进入完整工作台' });
-    } catch {}
-    setFocusMode(false, { celebrate: true });
-    await ob.callbacks?.refresh?.(true);
   }
 
   function syncState(onboarding) {
@@ -592,46 +564,17 @@
         document.getElementById('summon-onboarding-root')?.remove();
         ob.open = false;
       }
-      if (ob.focusActive && !ob.previewFocus) setFocusMode(false);
       return;
     }
-    if (ob.preview || ob.previewFocus) return;
-    if (!onboarding) return;
+    if (ob.preview || !onboarding) return;
     if (onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel) {
-      setFocusMode(false);
       if (!ob.open) void openOverlay({ preview: false });
       return;
     }
-    if (onboarding.status === 'configuring_chat') {
-      if (ob.open) {
-        document.getElementById('summon-onboarding-root')?.remove();
-        ob.open = false;
-      }
-      if (!ob.focusActive) {
-        setFocusMode(true);
-        void ob.callbacks?.onEnterOnboardingChat?.(onboarding.roomId || SUMMON_ROOM_ID, { preview: false });
-      }
-      return;
+    if (ob.open) {
+      document.getElementById('summon-onboarding-root')?.remove();
+      ob.open = false;
     }
-    if (onboarding.status === 'completed') {
-      if (ob.open) {
-        document.getElementById('summon-onboarding-root')?.remove();
-        ob.open = false;
-      }
-      if (ob.focusActive) {
-        setFocusMode(false, { celebrate: true });
-      }
-    }
-  }
-
-  function isFocusLocked() {
-    return Boolean(ob.focusActive || ob.previewFocus);
-  }
-
-  function renderFocusHeaderActions() {
-    if (!isFocusLocked()) return '';
-    return `<span class="ob-focus-pill"><i class="ob-focus-dot" aria-hidden="true"></i>初始化引导中</span>
-      <button type="button" class="secondary-button small-button" data-ob-action="skip-focus">${ob.previewFocus ? '结束预览' : '跳过引导，进入工作台'}</button>`;
   }
 
   document.addEventListener('click', event => {
@@ -640,11 +583,10 @@
     const action = btn.dataset.obAction;
     if (action === 'pick-provider') return selectProvider(btn.dataset.provider);
     if (action === 'import-local') return void handleImportLocal(btn.dataset.kind);
-    if (action === 'start-codex-oauth') return void handleStartCodexOAuth();
+    if (action === 'start-sub-oauth' || action === 'start-codex-oauth') return void handleStartSubOAuth(btn.dataset.kind || 'codex');
     if (action === 'cancel-oauth') return void handleCancelOAuth();
     if (action === 'close-preview' || action === 'close-intro') return closePreview();
     if (action === 'test-existing') return void verifyAndEnterSummonChat(btn.dataset.id, '当前默认模型');
-    if (action === 'skip-focus') return void exitFocusMode({ previewOnly: ob.previewFocus });
   });
 
   document.addEventListener('input', event => {
@@ -664,12 +606,9 @@
   window.SummonOnboarding = Object.freeze({
     bind(callbacks) { ob.callbacks = callbacks; },
     syncState,
-    isFocusLocked,
-    renderFocusHeaderActions,
     startDesktopIntro({ preview = false, skipBloom = false } = {}) { void openOverlay({ preview, skipBloom }); },
     startPreview() { void openOverlay({ preview: true, skipBloom: false }); },
     enterFocusFromDesktop,
-    exitFocusMode,
     SUMMON_ROOM_ID,
   });
 })();

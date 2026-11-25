@@ -1,6 +1,6 @@
 import { callRecords } from './calls.mjs';
 import { idOf, identity, keyOf, reject, sameRef } from './contract.mjs';
-import { executionRecords } from '../services/connection-records.mjs';
+import { sessionRecords as executionRecords } from './executions.mjs';
 
 export class RoomWork {
   constructor(platform) { this.platform = platform; }
@@ -108,11 +108,11 @@ export class RoomWork {
     const id = keyOf('work.tool', callId, position);
     if (store.get('platform-events', id)) return;
     const { room, source } = session.group_work;
-    const event = platform.connections.clean({
+    const event = platform.exec.clean({
       kind: 'event', type: 'work.tool', id, space: room, roomId: room.id,
       author: { kind: 'platform', id: 'platform' },
       execution: { kind: 'session', id: session.id }, call_ref: { kind: 'call', id: callId },
-      source, executor: session.execution_actor, connection: { kind: 'connection', id: session.engine },
+      source, executor: session.execution_actor, engine: session.engine,
       environment: { ...session.execution_environment, cwd: fact.cwd ?? session.workspace?.path, workspace: session.workspace_ref },
       time: new Date().toISOString(), ...fact,
     });

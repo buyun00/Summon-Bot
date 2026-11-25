@@ -83,44 +83,22 @@ private fun SummonEditDialog(
 
 @Composable
 internal fun ExecutionEditor(store: SummonStore, close: () -> Unit) {
-    var engines by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
     var directories by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
-    var engine by remember { mutableStateOf("") }
     var workspace by remember { mutableStateOf("") }
     var input by remember { mutableStateOf("") }
-    var json by remember { mutableStateOf(false) }
-    var model by remember { mutableStateOf("") }
-    var effort by remember { mutableStateOf("") }
-    val codex = engines.firstOrNull { it["id"].string == engine }?.get("protocol")?.string == "codex"
-    val requestID = remember(engine, workspace, input, json, model, effort) { SummonStore.newID() }
-    SummonEditDialog(store, "打开执行会话", close, valid = engine.isNotBlank() && input.isNotBlank(), load = {
-        engines = store.list("/api/connections").filter { it["id"].string != "pi" && it["available"].bool != false }
+    val requestID = remember(workspace, input) { SummonStore.newID() }
+    SummonEditDialog(store, "打开本机执行会话", close, valid = input.isNotBlank(), load = {
         directories = store.list("/api/workspaces")
-        if (engine.isEmpty()) engine = engines.firstOrNull()?.get("id")?.string.orEmpty()
     }, save = {
         val payload = SummonJson.Obj(buildMap {
-            put("engine", SummonJson.Str(engine))
-            val value = when {
-                codex -> SummonJson.Obj(buildMap {
-                    put("text", SummonJson.Str(input))
-                    if (model.isNotBlank()) put("model", SummonJson.Str(model.trim()))
-                    if (effort.isNotBlank()) put("effort", SummonJson.Str(effort.trim()))
-                })
-                json -> SummonJson.parse(input)
-                else -> SummonJson.Str(input)
-            }
-            put("input", value)
+            put("engine", SummonJson.Str("exec"))
+            put("input", SummonJson.obj("shell" to SummonJson.Str(input)))
             if (workspace.isNotEmpty()) put("workspace", SummonReference("workspace", workspace).toJson())
         })
         store.request("/api/executions", "POST", payload, requestID)
     }) {
-        SummonChoice("连接", engine, engines.choices()) { engine = it }
-        SummonChoice("执行目录", workspace, listOf("" to "选择目录") + directories.choices()) { workspace = it }
-        if (codex) {
-            SummonTextField("模型（留空使用连接配置）", model, { model = it })
-            SummonTextField("推理强度（留空使用连接默认值）", effort, { effort = it })
-        } else SummonToggle("JSON 输入", json) { json = it }
-        SummonTextField("输入", input, { input = it }, multiline = true)
+        SummonChoice("执行目录", workspace, listOf("" to "默认目录") + directories.choices()) { workspace = it }
+        SummonTextField("Shell 命令", input, { input = it }, multiline = true)
     }
 }
 
@@ -258,49 +236,6 @@ private fun parseWakeupTime(value: String): Instant =
     java.time.LocalDateTime.parse(value.trim(), wakeupTimeFormat).atZone(java.time.ZoneId.systemDefault()).toInstant()
 
 @Composable
-internal fun ConnectionEditor(store: SummonStore, item: SummonJson, close: () -> Unit) {
-    var name by remember(item) { mutableStateOf(item["name"].string.orEmpty()) }
-    var description by remember(item) { mutableStateOf(item["description"].string.orEmpty()) }
-    var kind by remember(item) { mutableStateOf("codex") }
-    var config by remember(item) { mutableStateOf(if (item == SummonJson.Null) "{}" else "") }
-    var enabled by remember(item) { mutableStateOf(item["enabled"].bool ?: true) }
-    val previous = item["allowed_bot_ids"].array.orEmpty().mapNotNull { it.string }.toSet()
-    var allBots by remember(item) { mutableStateOf("*" in previous) }
-    var allowed by remember(item) { mutableStateOf(previous - "*") }
-    SummonEditDialog(store, if (item == SummonJson.Null) "新增连接" else "执行连接设置", close, name.isNotBlank(), save = {
-        val body = mutableMapOf<String, SummonJson>(
-            "name" to SummonJson.Str(name.trim()), "description" to SummonJson.Str(description),
-            "enabled" to SummonJson.Bool(enabled), "allowed_bot_ids" to (if (allBots) listOf("*") else allowed.sorted()).toJsonStrings(),
-        )
-        val id = item["id"].string
-        if (id != null) {
-            body["revision"] = item["revision"]
-            if (config.isNotBlank()) body["config_patch"] = connectionConfig(config)
-            store.request("/api/connections/" + SummonApiClient.component(id), "PATCH", SummonJson.Obj(body))
-        } else {
-            body["kind"] = SummonJson.Str(kind); body["config"] = connectionConfig(config)
-            store.request("/api/connections", "POST", SummonJson.Obj(body))
-        }
-    }) {
-        SummonTextField("名称", name, { name = it })
-        SummonTextField("说明", description, { description = it })
-        if (item == SummonJson.Null) {
-            SummonChoice("协议", kind, listOf("codex", "cli", "mcp", "http").map { it to it }) { kind = it }
-        }
-        SummonTextField(if (item == SummonJson.Null) "连接配置 JSON" else "要修改的配置 JSON（留空保留配置）",
-            config, { config = it }, multiline = true)
-        SummonToggle("启用", enabled) { enabled = it }
-        SummonToggle("允许所有 Bot 使用", allBots) { allBots = it }
-        if (!allBots) SummonResourceSelection("允许使用的 Bot", store.bots.map(SummonBot::toJson), allowed, previous - "*") { allowed = it }
-    }
-}
-
-private fun connectionConfig(text: String): SummonJson {
-    val result = runCatching { SummonJson.parse(text) }.getOrNull()
-    return result?.takeIf { it.obj != null } ?: throw SummonApiException("连接配置需要一个 JSON 对象。")
-}
-
-@Composable
 internal fun DirectoryEditor(store: SummonStore, item: SummonJson, close: () -> Unit) {
     var name by remember(item) { mutableStateOf(item["name"].string.orEmpty()) }
     var path by remember(item) { mutableStateOf(item["path"].string.orEmpty()) }
@@ -320,40 +255,12 @@ internal fun DirectoryEditor(store: SummonStore, item: SummonJson, close: () -> 
 }
 
 @Composable
-internal fun LimitsEditor(store: SummonStore, close: () -> Unit) {
-    var revision by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
-    var values by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    SummonEditDialog(store, "宿主额度", close, revision.int != null, load = {
-        val response = store.request("/api/connections/limits")
-        revision = response["revision"]
-        values = response["limits"].obj.orEmpty().mapValues { it.value.stringValue }
-    }, save = {
-        val limits = values.mapValues { (key, text) ->
-            val value = text.trim().toLongOrNull()
-            if (value == null || value < (if (key == "period_ms") 1000L else 0L) || value > 9_007_199_254_740_991L) {
-                throw SummonApiException("请输入有效的 " + resourceName(key))
-            }
-            SummonJson.Num(value.toDouble())
-        }
-        store.request("/api/connections/limits", "PATCH", SummonJson.obj("revision" to revision, "limits" to SummonJson.Obj(limits)))
-    }) {
-        values.toSortedMap().forEach { (key, value) -> SummonTextField(resourceName(key), value, { values = values + (key to it) }) }
-    }
-}
-
-@Composable
 internal fun SummonToggle(label: String, enabled: Boolean, update: (Boolean) -> Unit) {
     Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(enabled, update)
         Text(label)
     }
 }
-
-internal fun resourceName(key: String): String = mapOf(
-    "sessions" to "活动会话", "models" to "并发模型请求", "external" to "并发外部执行",
-    "queue" to "待处理事件", "reserved_calls" to "回执容量", "period_ms" to "周期（毫秒）", "calls" to "调用次数",
-    "tokens" to "Token", "active_ms" to "活跃时间（毫秒）",
-)[key] ?: key
 
 private fun List<SummonJson>.choices(): List<Pair<String, String>> =
     mapNotNull { item -> item["id"].string?.let { id -> id to (item["name"].string ?: id) } }

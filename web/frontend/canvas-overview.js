@@ -75,25 +75,23 @@ globalThis.SummonCanvasOverview = (() => {
     const isLive = ctx.LIVE_EXEC_STATUSES.has(item.status);
     const needsInput = ['needs_input', 'awaiting_input'].includes(item.status);
     const fallback = `${ctx.executionLabel(item)} · ${ctx.labels[item.status] || item.status || '未知'}`;
-    if (needsInput) return cleanSummary(item.waiting_summary || item.live_progress || item.work_summary, '等待你的确认或回复');
-    if (isLive) return cleanSummary(item.live_progress || item.work_summary || item.waiting_summary, '正在执行任务…');
+    if (needsInput) return cleanSummary(item.pending_requests?.[0]?.question || item.live_progress || item.work_summary, '等待你的确认或回复');
+    if (isLive) return cleanSummary(item.live_progress || item.work_summary, '正在执行任务…');
     if (item.status === 'failed' && item.last_error?.message) {
       return cleanSummary(item.work_summary || item.last_error.message, fallback);
     }
-    return cleanSummary(item.work_summary || item.last_output_summary || item.live_progress || item.waiting_summary, fallback);
+    return cleanSummary(item.work_summary || item.live_progress, fallback);
   }
 
   function botRoleOrder(room, bot) {
     if (room?.lead_bot_id === bot.id || bot.role_id === 'group-lead') return 0;
     if (bot.role_id === 'eggbot') return 2;
-    if (bot.role_id === 'tool-onboarding') return 3;
     return 1;
   }
 
   function botRoleBadge(room, bot) {
     if (room?.lead_bot_id === bot.id || bot.role_id === 'group-lead') return '主控';
     if (bot.role_id === 'eggbot') return '孵化';
-    if (bot.role_id === 'tool-onboarding') return '接口';
     return '';
   }
 
@@ -154,7 +152,7 @@ globalThis.SummonCanvasOverview = (() => {
       }
     }
 
-    // Merge room_files / bot_files when /api/files hasn't returned them yet
+    // Merge room_files when /api/files hasn't returned them yet
     const mergeFiles = (primary = [], fallback = []) => {
       const map = new Map();
       for (const f of [...primary, ...fallback]) {
@@ -209,7 +207,7 @@ globalThis.SummonCanvasOverview = (() => {
           return scopes.some(s => s.kind === 'bot' || (s.kind === 'room' && s.id === room.id));
         })
       : allMems;
-    const privateFiles = data.mergeFiles(data.filesByBot.get(bot.id), bot.bot_files);
+    const privateFiles = data.filesByBot.get(bot.id) || [];
     const liveExecs = execs.filter(e => ctx.LIVE_EXEC_STATUSES.has(e.status));
     const needsInput = execs.some(e => ['needs_input', 'awaiting_input'].includes(e.status));
 

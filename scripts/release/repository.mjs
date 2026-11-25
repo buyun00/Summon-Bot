@@ -1,38 +1,11 @@
-import { copyFile, lstat, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { validTarget } from './targets.mjs';
-import { readJson, writeJson } from '../build/files.mjs';
+import { inside, readJson, removeInside, writeJson } from '../installation/files.mjs';
 import { acquireServiceLock } from '../installation/service-lock.mjs';
+import { validateRelease } from '../../web/backend/release-meta.mjs';
 
-export const inside = (root, path) => { const part = relative(resolve(root), resolve(path)); return part && !part.startsWith('..') && !isAbsolute(part); };
-export async function removeInside(root, path) {
-  root = resolve(root); path = resolve(path);
-  if (!inside(root, path)) throw new Error('Refusing cleanup outside the named root');
-  let info;
-  try { info = await lstat(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
-  const actualRoot = await realpath(root);
-  const actualPath = info.isSymbolicLink() ? join(await realpath(dirname(path)), relative(dirname(path), path)) : await realpath(path);
-  if (!inside(actualRoot, actualPath)) throw new Error('Cleanup target resolves outside its root');
-  await rm(path, { recursive: info.isDirectory() && !info.isSymbolicLink(), force: true });
-}
-export function validateRelease(value) {
-  if (!validTarget(value.platform, value.arch) || !/^\d+\.\d+\.\d+$/.test(value.version)
-    || !Number.isSafeInteger(value.buildNumber) || value.buildNumber < 1
-    || !Array.isArray(value.files) || !value.files.length
-    || value.files.some(file => !/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:exe|dmg|zip|apk|yml|blockmap)$/.test(file.name)
-      || !Number.isSafeInteger(file.size) || file.size < 1)
-    || new Set(value.files.map(file => file.name)).size !== value.files.length
-    || !value.files.some(file => file.name === value.mainFile)) throw new Error('Invalid client release');
-  const extension = value.platform === 'windows' ? '.exe' : value.platform === 'macos' ? '.dmg' : '.apk';
-  if (!value.mainFile.endsWith(extension)) throw new Error('Incorrect primary package for platform');
-  if (value.platform === 'windows' && !value.files.some(file => file.name === 'latest.yml')) throw new Error('Windows update metadata missing');
-  return { platform: value.platform, arch: value.arch, version: value.version, buildNumber: value.buildNumber,
-    updateMode: value.platform === 'macos' ? 'manual' : 'automatic',
-    sourceCommit: typeof value.sourceCommit === 'string' ? value.sourceCommit.slice(0, 80) : null,
-    notes: typeof value.notes === 'string' ? value.notes.slice(0, 8000) : '', mainFile: value.mainFile,
-    files: value.files.map(file => ({ name: file.name, size: file.size })) };
-}
+export { inside, removeInside, validateRelease };
 
 export const sameRelease = (left, right) => left.buildNumber === right.buildNumber
   && left.version === right.version && left.sourceCommit === right.sourceCommit;

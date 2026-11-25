@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { readJson, writeJson } from '../build/files.mjs';
+import { readJson, writeJson } from './files.mjs';
 import { readRemoteAccess, writeRemoteAccess } from './remote-config.mjs';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
 

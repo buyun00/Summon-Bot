@@ -29,8 +29,8 @@ export async function buildDesktop({ platform, arch, output, candidate, commit }
   const app = join(stage, 'desktop');
   const target = platform === 'macos' ? builder.Platform.MAC : builder.Platform.WINDOWS;
   try {
-    const bundled = await buildRelease({ sourceRoot: root, releaseRoot: runtime, committedOnly: !candidate, commit });
-    const inputs = [...shellFiles, 'package-lock.json', ...(platform === 'macos' ? ['summon', 'entitlements.mac.plist'] : ['summon.cmd', 'installer.nsh', 'installer-splash.ps1'])]
+    const bundled = await buildRelease({ sourceRoot: root, releaseRoot: runtime, committedOnly: !candidate, commit, includeLaunchers: false });
+    const inputs = [...shellFiles, ...(platform === 'macos' ? ['summon', 'entitlements.mac.plist'] : ['summon.cmd', 'installer.nsh', 'installer-splash.ps1'])]
       .map(name => 'desktop/' + name);
     if (platform === 'macos') inputs.push(macIcon);
     if (candidate) {

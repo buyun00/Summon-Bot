@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as pause } from 'node:timers/promises';
-import { readJson, writeJson, within } from '../build/files.mjs';
+import { readJson, writeJson, within } from './files.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
 import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';

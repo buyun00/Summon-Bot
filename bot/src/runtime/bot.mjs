@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { rm, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, rm, stat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { assertInstallationWritable, readInstallationState } from '../../../scripts/installation/installation-state.mjs';
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
-import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
+import { botStateDbPath, readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
+import { tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sessionRecords } from '../../../capabilities/platform/executions.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
@@ -17,7 +18,6 @@ import { connectionPath } from '../agent/connections.mjs';
 import { UsageLedger } from '../agent/usage.mjs';
 import { createRedactor } from './config.mjs';
 import { textMessage, transcriptPage } from '../context/projection.mjs';
-import { MaterialRuntime } from '../context/materials.mjs';
 import { FastReadRuntime } from './fast-read.mjs';
 
 const conversationRef = executionRef;
@@ -38,22 +38,17 @@ function canRetainAuthorizationView(previous, current) {
     if (!Array.isArray(before) || !Array.isArray(after) || !sameRef(before[0], after[0])) return false;
     const earlierDetails = before.slice(4);
     const currentDetails = after.slice(4);
-    const earlierDuties = earlierDetails.find(detail => detail.maintained_connection_ids)?.maintained_connection_ids ?? [];
-    const currentDuties = currentDetails.find(detail => detail.maintained_connection_ids)?.maintained_connection_ids ?? [];
     const grants = [[before[1], after[1]], [before[2], after[2]],
-      [before[3][0], after[3][0]], [before[3][1], after[3][1]], [earlierDuties, currentDuties]];
+      [before[3][0], after[3][0]], [before[3][1], after[3][1]]];
     const retained = grants.every(([earlier, authorized]) => {
       const allowed = new Set(authorized.map(value => recordKey(value)));
       return earlier.every(value => allowed.has(recordKey(value)));
     });
-    const earlierRevocations = earlierDetails.filter(detail => !detail.maintained_connection_ids);
-    const currentRevocations = currentDetails.filter(detail => !detail.maintained_connection_ids);
-    return retained && recordKey(...earlierRevocations) === recordKey(...currentRevocations);
+    return retained && recordKey(...earlierDetails) === recordKey(...currentDetails);
   } catch { return false; }
 }
-const targetOption = (kind, value) => ({ kinds: [kind], input_target: value });
-const protectedEvents = new Set(['connection.failure', 'connection.changed', repairRequestType, 'work.tool']);
-const protectedEvent = event => protectedEvents.has(event.type) || event.result?.output?.type === repairResultType;
+const protectedEvents = new Set(['work.tool']);
+const protectedEvent = event => protectedEvents.has(event.type);
 const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
 const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
 const roomEvent = message => ({
@@ -113,7 +108,11 @@ function describeToolActivity(name, args = {}, platform = null) {
     case 'open_session': {
       if (args.work_summary) return ensureDoingText(args.work_summary, 44);
       const engine = typeof args.engine === 'string' ? args.engine : '';
-      return engine && engine !== 'pi' ? `正在启动 ${engine} 执行任务` : '正在启动执行任务';
+      if (engine === 'exec') {
+        const label = args.input?.script || args.input?.command || 'exec';
+        return `正在执行 ${compactActivityText(label, 22)}`;
+      }
+      return '正在启动执行任务';
     }
     case 'configure_session':
       return args.work_summary ? ensureDoingText(args.work_summary, 44) : '正在更新任务状态';
@@ -126,7 +125,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (kind === 'workspace') return '正在查找工作区';
       if (kind === 'file') return args.query ? `正在搜索资料 ${compactActivityText(args.query, 18)}` : '正在查找资料';
       if (kind === 'bot') return '正在查看成员列表';
-      if (kind === 'connection') return '正在查看可用工具';
+      if (kind === 'bundled_bot') return '正在查看预置 Bot 库';
       if (kind === 'execution') return '正在查看执行状态';
       if (kind === 'event') return '正在检索群记录';
       if (kind === 'wakeup') return '正在查看提醒规则';
@@ -141,9 +140,8 @@ function describeToolActivity(name, args = {}, platform = null) {
       }
       if (refKind === 'file') return '正在读取资料';
       if (refKind === 'session' || refKind === 'conversation') return '正在查看执行输出';
-      if (refKind === 'connection') return '正在检查工具连接';
       if (refKind === 'event') return '正在查看消息详情';
-      if (refKind === 'bot') return '正在查看成员配置';
+      if (refKind === 'bot') return args.path ? `正在读取 ${shortPathLabel(args.path)}` : '正在查看成员配置';
       if (refKind === 'room') return '正在读取群信息';
       return '正在读取内容';
     }
@@ -152,6 +150,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       return target ? `正在写入 ${target}` : '正在保存资料';
     }
     case 'create_bot':
+      if (args.bundled_id) return `正在激活预置 Bot ${compactActivityText(args.bundled_id, 16)}`;
       return args.name ? `正在创建成员 ${compactActivityText(args.name, 16)}` : '正在创建成员';
     case 'configure_bot':
       return '正在更新成员配置';
@@ -167,15 +166,6 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (args.action === 'disconnect') return '正在断开云端中枢';
       if (args.action === 'rename_node') return '正在修改本机名称';
       return '正在管理云端中枢';
-    }
-    case 'complete_onboarding':
-      return '正在完成初始化并解锁工作台';
-    case 'initialize_execution': {
-      if (args.action === 'inspect') return '正在探测工具环境';
-      if (args.action === 'discover') return '正在查找本地工具';
-      if (args.action === 'register' || args.action === 'upsert_method') return '正在配置工具连接';
-      if (args.action === 'guide') return '正在阅读接入手册';
-      return '正在接入外部工具';
     }
     case 'send':
       return args.prompt ? '正在发送确认卡片' : '正在整理并回复';
@@ -215,7 +205,6 @@ export class BotRuntime {
         this.usageIncomplete = true;
         this.emit('engine.usage_unavailable');
       } });
-    this.materials = new MaterialRuntime(this);
     this.fastRead = new FastReadRuntime(this);
     const submissions = this.platform.executions.pendingPiSubmissions();
     if (submissions.length) {
@@ -261,11 +250,13 @@ export class BotRuntime {
     if (state?.phase === 'prepared' || state?.phase === 'draining') {
       if (state.intake_closed) throw runtimeFailure('updating', 'Installation is no longer accepting events', 503);
     } else await assertInstallationWritable(this.dataRoot, this.releaseRoot);
-    const file = join(this.dataRoot, 'bots', botId, 'state.sqlite');
+    const file = botStateDbPath(this.dataRoot, botId);
     let inbox, store;
     try {
       if (!create) {
         try { await stat(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      } else {
+        await mkdir(dirname(file), { recursive: true });
       }
       store = new BotStore(file);
       inbox = new Inbox(store, botId);
@@ -337,8 +328,7 @@ export class BotRuntime {
             route?.run_id === input.run_id && input.conversation_id === submission.conversation_id &&
             inbox.run(input.run_id)?.conversation_id === input.conversation_id) {
           outcome = 'submitted';
-          facts = { input_revision: input.input_revision, native: { conversation_id: input.conversation_id, run_id: input.run_id },
-            input_targets: [], confirmed_input: input.confirmed_input };
+          facts = { input_revision: input.input_revision, native: { conversation_id: input.conversation_id, run_id: input.run_id } };
         } else if (!input && !event && !route && (inbox ? this.inputWriterFinished(submission.writer_pid)
           : this.missingRecoveryInboxes.has(submission.bot_id) && submission.writer_finished)) outcome = 'not_submitted';
       } catch {
@@ -444,12 +434,6 @@ export class BotRuntime {
   controlChanged(record) {
     const inbox = this.inboxes.get(record.bot_id);
     if (inbox) this.syncConversationControl(inbox, inbox.conversation(record.id));
-  }
-
-  async connectionSetupConversation(bot, id, setup) {
-    const inbox = await this.inbox(bot.id);
-    return this.register(inbox, inbox.putConversation({ id, kind: 'connection_setup', space: botRef(bot.id),
-      owner: { kind: 'user', id: 'user' }, connection_setup: setup }));
   }
 
   async dispatch(inbox, bot) {
@@ -699,12 +683,6 @@ export class BotRuntime {
       const room = conversation.space?.kind === 'room' ? this.platform.store.get('rooms', conversation.space.id) : null;
       return details?.workspace_id === scope.id || convSession?.workspace_ref?.id === scope.id || room?.workspace?.id === scope.id;
     }
-    if (scope.kind === 'connection') {
-      if (!scope.id || !this.platform.canUseConnection(actor, scope.id)) return false;
-      if (details?.connection_id) return details.connection_id === scope.id;
-      return convSession?.engine === scope.id ||
-        inbox.calls(run.id).some(call => (call.args?.engine?.id || call.args?.engine) === scope.id);
-    }
     return false;
   }
 
@@ -842,8 +820,8 @@ export class BotRuntime {
     const resolved = this.platform.models.resolveForBot(bot, purpose);
     const blocker = this.platform.modelAccessBlocker(botRef(bot.id), resolved?.connection_id);
     if (blocker) throw runtimeFailure('connection_forbidden', blocker.message, 403);
-    return { name: bot.name, instructions: bot.instructions, public_duty: bot.public_duty || '', revision: bot.revision,
-      built_in_role: bot.built_in_role ?? null, model: bindModel(this.model, resolved, purpose), material_index_ref: bot.material_index_ref };
+    return { name: bot.name, instructions: readBotInstructions(this.dataRoot, bot), public_duty: bot.public_duty || '', revision: bot.revision,
+      built_in_role: bot.built_in_role ?? null, model: bindModel(this.model, resolved, purpose) };
   }
 
   notifyRoomActivity(roomId, activity) {
@@ -1114,7 +1092,6 @@ export class BotRuntime {
       },
       refresh: window => this.contextBoundary(job, window),
       canReadReference: ref => this.platform.canReadReference(ref, this.platform.context(context())),
-      materials: () => this.materials.boundary(job),
       checkInstallation: () => this.checkInstallation(),
       hasNewInput: ids => inbox.pending().some(route => route.run_id === run.id && !ids.includes(route.event_id) && this.routeReady(inbox, route)),
       finishInput() { job.accepting = false; },
@@ -1137,7 +1114,6 @@ export class BotRuntime {
     const observation = conversation.kind === 'room' && conversation.space.kind === 'room' &&
       this.platform.deliveries.roomObservation(context.actor.id, conversation.space.id);
     if (observation) scope.push({ room_observation: observation.generation });
-    if (view.maintained_connection_ids?.length) scope.push({ maintained_connection_ids: view.maintained_connection_ids });
     if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
     const canReadPiInput = event => !view.session || this.canReadPiInput(event, view.session);
     const events = sortedIds([...run.pending_event_ids, ...run.injected_event_ids]).map(id => inbox.event(id)).filter(Boolean);
@@ -1250,7 +1226,7 @@ export class BotRuntime {
       if (openChildren.length) {
         facts.push(textMessage({ type: 'open_children', sessions: openChildren.map(child => ({
           session_id: child.id, engine: child.engine, status: child.status, work_summary: child.work_summary,
-          waiting_summary: child.waiting_summary, latest_call_id: child.latest_call_id })) }));
+          latest_call_id: child.latest_call_id })) }));
       }
     }
     const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
@@ -1310,21 +1286,15 @@ export class BotRuntime {
         }
         const descendants = this.platform.executions.descendantSessions(work.id);
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
-          status: work.status, waiting_summary: work.waiting_summary,
+          status: work.status,
           control: work.control, latest_call_id: work.latest_call_id,
           ...(descendants.length ? { descendants: descendants.map(child => ({
             session_id: child.id, engine: child.engine, parent_session_id: child.origin_execution?.id ?? null,
             status: child.status,
           })) } : {}),
-          ...(work.pending_input?.length ? { pending_requests: work.pending_input, input_targets: work.input_targets } : {}) });
+          ...(work.pending_input?.length ? { pending_requests: work.pending_input } : {}) });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
-    }
-    if (Array.isArray(view.maintained_connection_ids) && view.maintained_connection_ids.length) {
-      facts.push(textMessage({
-        type: 'maintained_connections',
-        connection_ids: [...view.maintained_connection_ids].sort(),
-      }));
     }
     const storedConv = inbox.conversation(conversation.id);
     const lastInputTokens = storedConv?.last_input_tokens ?? 0;
@@ -1337,7 +1307,7 @@ export class BotRuntime {
         usage_ratio: Number((lastInputTokens / contextWindow).toFixed(3)),
       }));
     }
-    return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
+    return { ...view, current, history, facts, observation, publicRoom };
   }
 
   sessionHistory(inbox, conversation, runId, view) {
@@ -1391,8 +1361,7 @@ export class BotRuntime {
       kind: 'pi', owner: session.owner, session_id: session.id, open_call_id: session.open_call_id || session.latest_call_id,
       space: session.space, ...(session.origin_room ? { origin_room: session.origin_room } : {}),
       binding: { model, instructions, name: bot.name, revision: session.bot_revision,
-        built_in_role: session.built_in_role ?? null,
-        material_index_ref: bot.material_index_ref }, input_revision: session.input_revision || 0 }));
+        built_in_role: session.built_in_role ?? null }, input_revision: session.input_revision || 0 }));
     return { inbox, bot, conversation };
   }
 
@@ -1406,12 +1375,12 @@ export class BotRuntime {
     await beforeSubmit();
     const { run } = this.acceptInput(details, call, input, 'next', null);
     this.wake();
-    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: details.conversation.id, run_id: run.id }, input_targets: [] };
+    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: details.conversation.id, run_id: run.id }, can_steer: true, can_continue: false };
   }
 
   async submitConversation(options) { return this.submitInput(options, false); }
 
-  async submitInput({ session, conversation: current, call, kind, input_target, input, beforeSubmit, signal }, forSession) {
+  async submitInput({ session, conversation: current, call, kind, input, beforeSubmit, signal }, forSession) {
     if (kind === 'reply') throw runtimeFailure('unsupported', 'Pi has no pending protocol request for this input', 409);
     signal?.throwIfAborted();
     const details = forSession ? await this.firstRun(session) : this.locate(current.id);
@@ -1419,35 +1388,33 @@ export class BotRuntime {
     const { inbox, conversation } = details;
     const prior = inbox.store.getRecord(R.input, call.id);
     const inspect = () => this.inspectLocal(inbox, conversation, { sessionInput: forSession });
-    if (prior) return { ...inspect(), confirmed_input: prior.confirmed_input };
-    const verify = () => {
-      const progress = inspect();
-      const expected = progress.input_targets.find(option => option.kinds.includes(kind));
-      if (!expected || Object.keys(input_target).some(key => input_target[key] !== expected.input_target[key]))
-        throw runtimeFailure('input_target_expired', 'The native Pi input target has changed');
+    if (prior) return inspect();
+    const checkState = () => {
       const active = this.active.get(conversation.id);
-      if (kind === 'steer' && !active?.accepting) throw runtimeFailure('input_target_expired', 'The Pi run has ended');
-      return active;
+      if (kind === 'steer') {
+        if (!active?.accepting) throw runtimeFailure('input_closed', 'The Pi run is no longer accepting live steer input', 409);
+        return active;
+      }
+      if (active || this.starting.has(conversation.id)) {
+        throw runtimeFailure('execution_busy', 'Wait for the current Pi turn to finish or use kind:"steer"', 409);
+      }
+      return null;
     };
-    verify();
-    const selected = kind === 'next' ? this.inputRun(inbox, conversation) : null;
+    checkState();
     signal?.throwIfAborted();
     await beforeSubmit();
     let active;
-    try { signal?.throwIfAborted(); active = verify(); }
+    try { signal?.throwIfAborted(); active = checkState(); }
     catch (error) { error.beforeSubmit = true; throw error; }
     const last = kind === 'next' ? this.inputRun(inbox, conversation) : null;
-    if (last?.id !== selected?.id) throw Object.assign(runtimeFailure('input_target_expired', 'The conversation run changed before input submission'), { beforeSubmit: true });
     const resumeSuspended = last?.state === 'suspended' && (forSession || conversation.kind === 'room');
     const continuation = resumeSuspended || forSession && last?.state === 'waiting' ? last : null;
-    const steerTarget = forSession && kind === 'steer' ? input_target : null;
-    const { run, confirmed_input } = this.acceptInput(details, call, input, kind, active?.runId ?? continuation?.id, steerTarget);
+    const { run } = this.acceptInput(details, call, input, kind, active?.runId ?? continuation?.id);
     this.wake();
-    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: conversation.id, run_id: run.id },
-      input_targets: [], ...(confirmed_input && { confirmed_input }) };
+    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: conversation.id, run_id: run.id }, can_steer: true, can_continue: false };
   }
 
-  acceptInput({ inbox, conversation }, call, input, kind, runId, steerTarget) {
+  acceptInput({ inbox, conversation }, call, input, kind, runId) {
     return inbox.store.transaction(() => {
       const current = inbox.conversation(conversation.id);
       const id = recordKey('pi.input', call.id);
@@ -1457,13 +1424,10 @@ export class BotRuntime {
       inbox.store.putRecord(R.event, { id, event, received_at: event.time });
       const route = inbox.route(id, { conversation_id: current.id });
       const run = runId ? inbox.associate(runId, [route]) : inbox.createRun(next, [route], { submitted_by: actorFor(call) });
-      const start = steerTarget?.kind === 'pi_run' && steerTarget.run_id === run.id && call.origin?.run_id !== run.id &&
-        inbox.list(R.input, 'run_id', run.id).find(item => item.kind === 'next' && item.conversation_id === current.id);
-      const confirmed_input = start ? { operation_call_id: start.id, input_target: steerTarget } : undefined;
       inbox.store.putRecord(R.input, { id: call.id, run_id: run.id, event_id: id, conversation_id: current.id,
-        kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call), confirmed_input });
+        kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call) });
       return { run: inbox.putRun({ id: run.id, input_revision: next.input_revision,
-        ...(run.state === 'suspended' ? { state: 'pending', retry_at: null } : {}) }), confirmed_input };
+        ...(run.state === 'suspended' ? { state: 'pending', retry_at: null } : {}) }) };
     });
   }
 
@@ -1489,10 +1453,9 @@ export class BotRuntime {
 
   stageInput(inbox, conversation, input, status, result) {
     const revision = inbox.conversation(conversation.id).input_revision;
+    const canContinue = status === 'completed' || (status === 'waiting' && Boolean(conversation.session_id));
     const facts = { status, position: recordKey(input.run_id, status), native: { run_id: input.run_id }, output: result?.text,
-      input_targets: status === 'completed' || status === 'waiting' && conversation.session_id
-        ? [targetOption('next', { kind: 'idle_input', input_revision: revision })] : [], input_revision: revision,
-      confirmed_input: input.confirmed_input };
+      can_steer: false, can_continue: canContinue, input_revision: revision };
     if (input.receipt_pending === 'pending') {
       inbox.store.putRecord(R.input, { ...input, status, queued_receipts: [...(input.queued_receipts || []), facts] });
       return;
@@ -1527,7 +1490,7 @@ export class BotRuntime {
 
   inspectConversation(id, options) {
     const item = this.locate(id);
-    return item ? this.inspectLocal(item.inbox, item.conversation, options) : { status: 'unknown', input_targets: [] };
+    return item ? this.inspectLocal(item.inbox, item.conversation, options) : { status: 'unknown', can_steer: false, can_continue: false };
   }
 
   conversationSummary(id) {
@@ -1565,10 +1528,10 @@ export class BotRuntime {
     try { inbox = await this.inbox(session.execution_actor.id, { create: false }); }
     catch (error) {
       if (error.code !== 'bot_inbox_unavailable') throw error;
-      return { status: 'unknown', input_targets: [], last_error: { code: error.code, message: error.message } };
+      return { status: 'unknown', can_steer: false, can_continue: false, last_error: { code: error.code, message: error.message } };
     }
     const conversation = inbox?.conversation(id);
-    return conversation ? this.inspectLocal(inbox, conversation, { ...options, sessionInput: true }) : { status: session.status || 'unknown', input_targets: [] };
+    return conversation ? this.inspectLocal(inbox, conversation, { ...options, sessionInput: true }) : { status: session.status || 'unknown', can_steer: false, can_continue: false };
   }
 
   piAtRest(session) {
@@ -1582,11 +1545,9 @@ export class BotRuntime {
     const revision = inbox.conversation(conversation.id).input_revision;
     const active = this.active.get(conversation.id);
     const summary = this.runSummary(conversation.id, last);
-    const canAdvance = !active && !this.starting.has(conversation.id) &&
+    const canContinue = !active && !this.starting.has(conversation.id) &&
       (summary.status === 'idle' || summary.status === 'suspended' || sessionInput && summary.status === 'waiting');
-    const target = active?.accepting ? [targetOption('steer', { kind: 'pi_run', run_id: active.runId })] : canAdvance ?
-      [targetOption('next', { kind: 'idle_input', input_revision: revision })] : [];
-    return { ...summary, input_targets: target, input_revision: revision };
+    return { ...summary, can_steer: Boolean(active?.accepting), can_continue: canContinue, input_revision: revision };
   }
 
   inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false, modelPage = false } = {}) {
@@ -1640,7 +1601,7 @@ export class BotRuntime {
       if (!job) this.flushInputs(inbox);
     }
     if (job) await Promise.race([job.done, new Promise(done => setTimeout(done, 1500))]).catch(() => {});
-    return { status: 'stopped', remote_outcome: 'confirmed_stopped' };
+    return { status: 'stopped' };
   }
 
   stopBot(id) {
@@ -1833,7 +1794,7 @@ export class BotRuntime {
       const needsInput = ['needs_input', 'awaiting_input'].includes(session.status);
       const piLive = session.engine === 'pi' ? this.conversationLiveProgress(session.conversation_id || session.id) : null;
       const text = needsInput
-        ? (session.waiting_summary ? `等待输入：${compactActivityText(session.waiting_summary, 30)}` : '等待你的输入')
+        ? (session.pending_input?.[0]?.question ? `等待输入：${compactActivityText(session.pending_input[0].question, 30)}` : '等待你的输入')
         : (piLive || ensureDoingText(session.live_progress || session.work_summary, 44) || '正在执行任务');
       const existing = byBot.get(botId);
       const updatedAt = session.updated_at || session.created_at || now();

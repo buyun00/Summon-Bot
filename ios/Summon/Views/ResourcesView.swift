@@ -11,7 +11,7 @@ enum ResourceSection: String, CaseIterable, Identifiable {
         case .executions: "执行会话"
         case .files: "资料"
         case .wakeups: "订阅与提醒"
-        case .connections: "执行连接与额度"
+        case .connections: "预置 Bot 与目录"
         }
     }
     var symbol: String {
@@ -20,10 +20,10 @@ enum ResourceSection: String, CaseIterable, Identifiable {
         case .executions: "terminal"
         case .files: "folder"
         case .wakeups: "clock"
-        case .connections: "link"
+        case .connections: "puzzlepiece.extension"
         }
     }
-    var endpoint: String { "/api/\(rawValue)" }
+    var endpoint: String { self == .connections ? "/api/bundled-bots" : "/api/\(rawValue)" }
 }
 
 struct SummonProtocolNotice: View {
@@ -61,7 +61,6 @@ struct SummonObjectList: View {
     let section: ResourceSection
     var space: SummonReference? = nil
     @State private var items: [SummonJSONValue] = []
-    @State private var hosts = SummonJSONValue.null
     @State private var directories: [SummonJSONValue] = []
     @State private var loading = false
     @State private var error: String?
@@ -136,7 +135,6 @@ struct SummonObjectList: View {
                     case .files: Button("新增资料") { editor = .file }
                     case .wakeups: Button("新增订阅或提醒") { editor = .wakeup(.null) }
                     case .connections:
-                        Button("新增连接") { editor = .connection(.null) }
                         Button("登记执行目录") { editor = .directory(.null) }
                     }
                     Button("刷新") { Task { await reload() } }
@@ -150,9 +148,7 @@ struct SummonObjectList: View {
             case .execution: SummonExecutionEditor()
             case .file: SummonFileEditor(space: space)
             case .wakeup(let item): SummonWakeupEditor(item: item, space: space)
-            case .connection(let item): SummonConnectionEditor(item: item)
             case .directory(let item): SummonDirectoryEditor(item: item)
-            case .limits: SummonLimitsEditor()
             }
         }
     }
@@ -173,29 +169,33 @@ struct SummonObjectList: View {
 
     private var connectionSections: some View {
         Group {
-            Section("执行连接") {
+            Section("预置专职 Bot 库") {
                 ForEach(items, id: \.prettyPrinted) { item in
-                    if let id = item["id"].string {
-                        NavigationLink(item["name"].string ?? id) {
-                            SummonReferenceView(ref: SummonReference(kind: "connection", id: id))
-                        }
-                        .swipeActions {
-                            if item["revision"].int != nil, id != "pi" {
-                                Button("设置") { editor = .connection(item) }.disabled(!store.protocolReady)
+                    let id = item["id"].stringValue
+                    let installed = item["installed"].bool == true
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item["name"].string ?? id)
+                            if let duty = item["public_duty"].string, !duty.isEmpty {
+                                Text(duty).summonFont(.caption).foregroundStyle(.secondary)
                             }
+                        }
+                        Spacer()
+                        if installed, let botId = item["bot_id"].string {
+                            NavigationLink("查看") { BotDetailsView(botID: botId) }
+                        } else {
+                            Button("激活") {
+                                Task {
+                                    do {
+                                        _ = try await store.request(path: "/api/bundled-bots/activate", method: "POST", body: .object(["id": .string(id), "wake": .bool(true)]))
+                                        await store.refresh()
+                                        await reload()
+                                    } catch { self.error = error.localizedDescription }
+                                }
+                            }.disabled(!store.protocolReady || loading)
                         }
                     }
                 }
-            }
-            Section("宿主额度") {
-                ForEach((hosts["limits"].object ?? [:]).keys.sorted(), id: \.self) { key in
-                    let used = hosts["usage"][key].int.map { "\($0) / " } ?? ""
-                    LabeledContent(resourceName(key), value: used + (hosts["limits"][key].int.map { String($0) } ?? ""))
-                }
-                if let at = SummonDate.parse(hosts["usage"]["resets_at"].string) {
-                    LabeledContent("本周期截止", value: at.formatted(date: .abbreviated, time: .shortened))
-                }
-                Button("编辑额度") { editor = .limits }.disabled(!store.protocolReady || hosts["limits_revision"].int == nil)
             }
             Section("执行目录") {
                 ForEach(directories, id: \.prettyPrinted) { directory in
@@ -216,27 +216,28 @@ struct SummonObjectList: View {
         defer { loading = false }
         do {
             if section == .bots { await store.refresh(); return }
-            items = try await store.list(path)
             if section == .connections {
-                async let usage = store.request(path: "/api/connections")
+                async let bundled = store.request(path: "/api/bundled-bots")
                 async let workspaces = store.list("/api/workspaces")
-                (hosts, directories) = try await (usage, workspaces)
+                let (b, w) = try await (bundled, workspaces)
+                items = b["items"].array ?? []
+                directories = w
+            } else {
+                items = try await store.list(path)
             }
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }
 
 private enum SummonEditorRoute: Identifiable {
-    case bot, execution, file, wakeup(SummonJSONValue), connection(SummonJSONValue), directory(SummonJSONValue), limits
+    case bot, execution, file, wakeup(SummonJSONValue), directory(SummonJSONValue)
     var id: String {
         switch self {
         case .bot: "bot"
         case .execution: "execution"
         case .file: "file"
         case .wakeup(let item): "wakeup" + item["id"].stringValue
-        case .connection(let item): "connection" + item["id"].stringValue
         case .directory(let item): "directory" + item["id"].stringValue
-        case .limits: "limits"
         }
     }
 }
@@ -251,12 +252,6 @@ private func wakeupTitle(_ rule: SummonJSONValue) -> String {
     default:
         return [rule["type"].string, rule["author"]["id"].string, rule["room"].string].compactMap { $0 }.joined(separator: " · ")
     }
-}
-
-private func resourceName(_ key: String) -> String {
-    ["sessions": "活动会话", "models": "并发模型请求", "external": "并发外部执行",
-     "queue": "待处理事件", "reserved_calls": "回执容量", "period_ms": "周期（毫秒）", "calls": "调用次数",
-     "tokens": "Token", "active_ms": "活跃时间（毫秒）"][key] ?? key
 }
 
 struct SummonReferencePicker: View {
@@ -533,9 +528,6 @@ struct SummonExecutionView: View {
                     if detail["can_stop"].bool == true && detail["control"]["state"].string != "paused" {
                         Button("暂停并请求停止", role: .destructive) { showStop = true }.disabled(busy || !store.protocolReady)
                     }
-                    if detail["resume_ref"].object != nil && detail["control"]["stop_status"].string == "stopped" {
-                        Button("恢复控制") { Task { await command(kind: "resume") } }.disabled(busy || !store.protocolReady)
-                    }
                     ForEach(stopResults, id: \.prettyPrinted) { result in
                         if let target = SummonReference(result["target"]) {
                             Text(store.label(target) + " · " + SummonFormat.status(result["control"]["stop_status"].stringValue))
@@ -544,7 +536,7 @@ struct SummonExecutionView: View {
                 }
                 ForEach(SummonInputOption.options(detail)) { option in
                     SummonNativeInput(option: option, disabled: busy || !store.protocolReady) { input in
-                        await command(kind: option.kind, input: input, target: option.target)
+                        await command(kind: option.kind, input: input, requestId: option.requestId)
                     }
                     .id(detail["control_version"].stringValue + option.id)
                 }
@@ -601,7 +593,7 @@ struct SummonExecutionView: View {
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
-    private func command(kind: String, input: SummonJSONValue? = nil, target: SummonJSONValue? = nil, scope: String? = nil) async {
+    private func command(kind: String, input: SummonJSONValue? = nil, requestId: String? = nil, scope: String? = nil) async {
         guard !busy, let execution = SummonReference(detail["execution_ref"]), execution == ref,
               let version = detail["control_version"].int else { return }
         busy = true; error = nil
@@ -609,8 +601,8 @@ struct SummonExecutionView: View {
         if kind == "stop", let scope { body["scope"] = .string(scope) }
         else {
             body["kind"] = .string(kind)
-            if kind == "resume" { body["resume_ref"] = detail["resume_ref"] }
-            else { body["input"] = input; body["input_target"] = target }
+            body["input"] = input
+            if let requestId, !requestId.isEmpty { body["request_id"] = .string(requestId) }
         }
         let payload = SummonJSONValue.object(body)
         let request = pendingCommand.flatMap { $0.kind == kind && $0.body == payload ? $0 : nil }
@@ -641,16 +633,14 @@ private struct SummonNativeInput: View {
     let disabled: Bool
     let submit: (SummonJSONValue) async -> Void
     @State private var text = ""
-    @State private var asJSON = false
     @State private var error: String?
 
     var body: some View {
         Section(option.label) {
-            LabeledContent("实际目标", value: targetLabel)
+            if let rid = option.requestId, !rid.isEmpty { LabeledContent("请求标识", value: rid) }
             if let question = option.question { Text(question) }
             if option.choices.isEmpty {
                 TextField("输入", text: $text, axis: .vertical).lineLimit(2...8)
-                if option.target["kind"].string == "service_call" { Toggle("JSON 输入", isOn: $asJSON) }
             } else {
                 Picker("回答", selection: $text) {
                     Text("选择回答").tag("")
@@ -661,21 +651,12 @@ private struct SummonNativeInput: View {
             }
             Button(option.label) {
                 Task {
-                    do {
-                        let input: SummonJSONValue = asJSON && option.choices.isEmpty && option.target["kind"].string == "service_call"
-                            ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(text.utf8)) : .string(text)
-                        error = nil
-                        await submit(input)
-                    } catch { self.error = "JSON 输入格式无效。" }
+                    error = nil
+                    await submit(.string(text))
                 }
             }.disabled(disabled || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if let error { InlineError(message: error) }
         }
-    }
-
-    private var targetLabel: String {
-        let keys = ["kind", "turn_id", "run_id", "instance_id", "launch_call_id", "call_id", "operation_id", "request_id", "input_revision"]
-        return keys.compactMap { option.target[$0] == .null ? nil : option.target[$0].stringValue }.joined(separator: " · ")
     }
 }
 
@@ -723,60 +704,30 @@ private struct SummonEditorForm<Fields: View>: View {
 
 private struct SummonExecutionEditor: View {
     @Environment(SummonStore.self) private var store
-    @State private var connections: [SummonJSONValue] = []
     @State private var directories: [SummonJSONValue] = []
-    @State private var engine = ""
     @State private var directory = ""
     @State private var input = ""
-    @State private var json = false
-    @State private var model = ""
-    @State private var effort = ""
     @State private var clientID = SummonStore.newID()
-    private var isCodex: Bool { connections.first { $0["id"].string == engine }?["protocol"].string == "codex" }
 
     var body: some View {
-        SummonEditorForm(title: "打开执行会话", canSave: !engine.isEmpty && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, load: {
-            async let engines = store.list("/api/connections")
-            async let workspaces = store.list("/api/workspaces")
-            connections = try await engines.filter { $0["id"].string != "pi" && $0["available"].bool != false }
-            directories = (try? await workspaces) ?? []
-            engine = connections.first?["id"].string ?? ""
+        SummonEditorForm(title: "打开本机执行会话", canSave: !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, load: {
+            directories = (try? await store.list("/api/workspaces")) ?? []
         }, save: {
-            let value: SummonJSONValue
-            if isCodex {
-                var binding: [String: SummonJSONValue] = ["text": .string(input)]
-                let modelID = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                let level = effort.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !modelID.isEmpty { binding["model"] = .string(modelID) }
-                if !level.isEmpty { binding["effort"] = .string(level) }
-                value = .object(binding)
-            } else {
-                value = json ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(input.utf8)) : .string(input)
-            }
-            var body: [String: SummonJSONValue] = ["engine": .string(engine), "input": value]
+            var body: [String: SummonJSONValue] = [
+                "engine": .string("exec"),
+                "input": .object(["shell": .string(input)])
+            ]
             if !directory.isEmpty { body["workspace"] = SummonReference(kind: "workspace", id: directory).json }
             _ = try await store.request(path: "/api/executions", method: "POST", body: .object(body), clientID: clientID)
         }) {
-            Picker("连接", selection: $engine) {
-                Text("选择连接").tag("")
-                ForEach(connections, id: \.prettyPrinted) { item in Text(item["name"].string ?? item["id"].stringValue).tag(item["id"].stringValue) }
-            }
             Picker("执行目录", selection: $directory) {
-                Text("选择目录").tag("")
+                Text("默认目录").tag("")
                 ForEach(directories, id: \.prettyPrinted) { item in Text(item["name"].stringValue).tag(item["id"].stringValue) }
             }
-            if isCodex {
-                TextField("模型", text: $model, prompt: Text("留空使用连接配置")).textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("推理强度", text: $effort, prompt: Text("留空使用连接默认值")).textInputAutocapitalization(.never).autocorrectionDisabled()
-            } else { Toggle("JSON 输入", isOn: $json) }
-            TextField("输入", text: $input, axis: .vertical).lineLimit(5...12)
+            TextField("Shell 命令", text: $input, axis: .vertical).lineLimit(4...12).autocorrectionDisabled().textInputAutocapitalization(.never)
         }
-        .onChange(of: engine) { _, _ in clientID = SummonStore.newID() }
         .onChange(of: directory) { _, _ in clientID = SummonStore.newID() }
         .onChange(of: input) { _, _ in clientID = SummonStore.newID() }
-        .onChange(of: json) { _, _ in clientID = SummonStore.newID() }
-        .onChange(of: model) { _, _ in clientID = SummonStore.newID() }
-        .onChange(of: effort) { _, _ in clientID = SummonStore.newID() }
     }
 }
 
@@ -947,82 +898,6 @@ private struct SummonWakeupEditor: View {
     }
 }
 
-private struct SummonConnectionEditor: View {
-    @Environment(SummonStore.self) private var store
-    let item: SummonJSONValue
-    @State private var name = ""
-    @State private var kind = "codex"
-    @State private var description = ""
-    @State private var config = "{}"
-    @State private var enabled = true
-    @State private var allowed: Set<String> = []
-    @State private var allBots = false
-
-    var body: some View {
-        SummonEditorForm(title: item == .null ? "新增连接" : "执行连接设置",
-                          canSave: !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, save: save) {
-            TextField("名称", text: $name)
-            TextField("说明", text: $description, axis: .vertical)
-            if item == .null {
-                Picker("协议", selection: $kind) {
-                    ForEach(["codex", "cli", "mcp", "http"], id: \.self) { Text($0).tag($0) }
-                }
-            }
-            TextField(item == .null ? "连接配置 JSON" : "要修改的连接配置（JSON）", text: $config,
-                      prompt: item == .null ? nil : Text("留空保留连接配置"), axis: .vertical)
-                .lineLimit(4...12).autocorrectionDisabled().textInputAutocapitalization(.never)
-            Toggle("启用", isOn: $enabled)
-            Section("允许使用的 Bot") {
-                Toggle("允许所有 Bot 使用", isOn: $allBots)
-                if !allBots {
-                    ForEach(store.bots) { bot in grant(bot.id, title: bot.name) }
-                    ForEach(hiddenGrants, id: \.self) { id in grant(id, title: id + " · 现有授权") }
-                }
-            }
-        }.onAppear {
-            name = item["name"].string ?? ""; description = item["description"].string ?? ""
-            enabled = item["enabled"].bool ?? true
-            let previous = Set((item["allowed_bot_ids"].array ?? []).compactMap(\.string))
-            allBots = previous.contains("*")
-            allowed = previous.subtracting(["*"])
-            config = item == .null ? "{}" : ""
-        }
-    }
-
-    private var hiddenGrants: [String] {
-        let visible = Set(store.bots.map(\.id))
-        return (item["allowed_bot_ids"].array ?? []).compactMap(\.string)
-            .filter { $0 != "*" && !visible.contains($0) }.sorted()
-    }
-
-    private func grant(_ id: String, title: String) -> some View {
-        Toggle(title, isOn: Binding(get: { allowed.contains(id) }, set: {
-            if $0 { allowed.insert(id) } else { allowed.remove(id) }
-        }))
-    }
-
-    private func save() async throws {
-        var body: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
-            "description": .string(description), "enabled": .bool(enabled),
-            "allowed_bot_ids": .array((allBots ? ["*"] : allowed.sorted()).map(SummonJSONValue.string))]
-        let configText = config.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let id = item["id"].string, let revision = item["revision"].int {
-            body["revision"] = .number(Double(revision))
-            if !configText.isEmpty { body["config_patch"] = try parseConfig(configText) }
-            _ = try await store.request(path: "/api/connections/" + SummonAPIClient.component(id), method: "PATCH", body: .object(body))
-        } else {
-            body["kind"] = .string(kind); body["config"] = try parseConfig(configText)
-            _ = try await store.request(path: "/api/connections", method: "POST", body: .object(body))
-        }
-    }
-
-    private func parseConfig(_ text: String) throws -> SummonJSONValue {
-        guard let value = try? JSONDecoder().decode(SummonJSONValue.self, from: Data(text.utf8)),
-              value.object != nil else { throw SummonAPIError.http(0, "连接配置需要一个 JSON 对象。") }
-        return value
-    }
-}
-
 private struct SummonDirectoryEditor: View {
     @Environment(SummonStore.self) private var store
     let item: SummonJSONValue
@@ -1044,36 +919,6 @@ private struct SummonDirectoryEditor: View {
             Toggle("允许写入", isOn: $writable)
         }.onAppear {
             name = item["name"].string ?? ""; path = item["path"].string ?? ""; writable = item["write"].bool ?? false
-        }
-    }
-}
-
-private struct SummonLimitsEditor: View {
-    @Environment(SummonStore.self) private var store
-    @State private var revision: Int?
-    @State private var values: [String: String] = [:]
-
-    var body: some View {
-        SummonEditorForm(title: "宿主额度", canSave: revision != nil, load: {
-            let response = try await store.request(path: "/api/connections/limits")
-            values = response["limits"].object?.mapValues(\.stringValue) ?? [:]
-            revision = response["revision"].int
-        }, save: {
-            guard let revision else { return }
-            var limits: [String: SummonJSONValue] = [:]
-            for (key, value) in values {
-                guard let count = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)), count >= (key == "period_ms" ? 1000 : 0),
-                      count <= 9_007_199_254_740_991 else { throw SummonAPIError.http(0, "请输入有效的 \(resourceName(key))。") }
-                limits[key] = .number(Double(count))
-            }
-            _ = try await store.request(path: "/api/connections/limits", method: "PATCH", body: .object([
-                "revision": .number(Double(revision)), "limits": .object(limits)
-            ]))
-        }) {
-            ForEach(values.keys.sorted(), id: \.self) { key in
-                TextField(resourceName(key), text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 }))
-                    .keyboardType(.numberPad).accessibilityLabel(resourceName(key))
-            }
         }
     }
 }

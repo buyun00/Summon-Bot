@@ -82,12 +82,10 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
     var connection by remember(botID) { mutableStateOf(current?.model?.get("connection_id")?.string.orEmpty()) }
     var model by remember(botID) { mutableStateOf(current?.model?.get("id")?.string.orEmpty()) }
     var thinking by remember(botID) { mutableStateOf(current?.model?.get("thinking_level")?.string.orEmpty()) }
-    var index by remember(botID) { mutableStateOf(current?.materialIndex?.id.orEmpty()) }
     var avatar by remember(botID) { mutableStateOf(current?.resolvedAvatar ?: SummonAvatar()) }
     var access by remember(botID) { mutableStateOf<SummonJson>(SummonJson.Null) }
     var models by remember(botID) { mutableStateOf<List<SummonJson>>(emptyList()) }
     var directories by remember(botID) { mutableStateOf<List<SummonJson>>(emptyList()) }
-    var files by remember(botID) { mutableStateOf<List<SummonJson>>(emptyList()) }
     var selectedModels by remember(botID) { mutableStateOf<Set<String>>(emptySet()) }
     var selectedDirs by remember(botID) { mutableStateOf<Set<String>>(emptySet()) }
     var detail by remember(botID) { mutableStateOf<ResourceSection?>(null) }
@@ -125,12 +123,10 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
                 connection = latest.model["connection_id"].string.orEmpty()
                 model = latest.model["id"].string.orEmpty()
                 thinking = latest.model["thinking_level"].string.orEmpty()
-                index = latest.materialIndex?.id.orEmpty()
             }
             current = latest
             models = store.request("/api/model-settings")["connections"].array.orEmpty()
             directories = store.list("/api/workspaces")
-            files = store.list("/api/files?bot=" + SummonApiClient.component(botID))
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.localizedMessage }
     }
@@ -168,14 +164,6 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
             val known = model.isBlank() || model == entry?.get("model")?.string
             ModelThinkingField("推理强度", "继承连接", thinking, entry?.get("thinkingLevels")?.array.takeIf { known }) { thinking = it }
         }
-        val indexes = listOf("" to "未选择") + files.mapNotNull { file ->
-            file["id"].string?.let { it to (file["path"].string ?: it) }
-        }
-        val existingIndex = current?.materialIndex?.id
-        val indexOptions = if (existingIndex != null && indexes.none { it.first == existingIndex }) {
-            indexes + (existingIndex to "$existingIndex · 当前索引")
-        } else indexes
-        SummonChoice("选材索引", index, indexOptions) { index = it }
         Button(enabled = enabled && name.isNotBlank(), onClick = {
             val before = current ?: return@Button
             val changes = mutableMapOf<String, SummonJson>("name" to SummonJson.Str(name.trim()), "instructions" to SummonJson.Str(instructions))
@@ -186,9 +174,6 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
                     if (model.isNotBlank()) put("id", SummonJson.Str(model.trim()))
                     if (thinking.isNotBlank()) put("thinking_level", SummonJson.Str(thinking.trim()))
                 })
-            }
-            if (index != before.materialIndex?.id.orEmpty()) {
-                changes["material_index_ref"] = if (index.isEmpty()) SummonJson.Null else SummonReference("file", index).toJson()
             }
             run { current = store.updateBot(before, *changes.toList().toTypedArray()) }
         }) { Text("保存 Bot 设置") }
@@ -214,14 +199,11 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
             }
             Text("控制 · " + if (bot.isPaused) "已暂停" else "启用")
             if (bot.isPaused) bot.control["stop_status"].string?.let { Text("停止结果 · " + summonStatus(it)) }
-            if (!bot.isPaused || (bot.resumeRef.obj != null && bot.control["stop_status"].string == "stopped")) {
-                Button(enabled = enabled, onClick = {
-                    run {
-                        current = if (bot.isPaused) store.updateBot(bot, "enabled" to SummonJson.Bool(true), "resume_ref" to bot.resumeRef)
-                        else store.updateBot(bot, "enabled" to SummonJson.Bool(false))
-                    }
-                }) { Text(if (bot.isPaused) "恢复 Bot" else "暂停 Bot") }
-            }
+            Button(enabled = enabled, onClick = {
+                run {
+                    current = store.updateBot(bot, "enabled" to SummonJson.Bool(bot.isPaused))
+                }
+            }) { Text(if (bot.isPaused) "恢复 Bot" else "暂停 Bot") }
         }
         access["revision"].int?.let { revision ->
             Text("资源权限", style = MaterialTheme.typography.titleMedium)

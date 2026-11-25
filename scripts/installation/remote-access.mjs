@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { readJson, writeJson } from '../build/files.mjs';
+import { readJson, writeJson } from './files.mjs';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { cloudflareInstall, installedBinary, safeEnvironment, tailscaleInstall, tunnelTokenPath } from './auxiliaries.mjs';
 import { acquireServiceLock } from './service-lock.mjs';

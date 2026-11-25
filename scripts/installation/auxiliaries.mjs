@@ -3,7 +3,7 @@ import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
-import { readJson } from '../build/files.mjs';
+import { readJson } from './files.mjs';
 import { bundledNode, launchService, serviceRoot } from './system.mjs';
 import { readRemoteAccess, registerCustomRemote, remoteCandidate, usableRemoteAccess } from './remote-config.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';

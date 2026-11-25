@@ -1,8 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { githubBase, releaseTag, releaseTargets, validTarget } from '../../scripts/release/targets.mjs';
-import { validateRelease } from '../../scripts/release/repository.mjs';
+import { githubBase, releaseTag, releaseTargets, validateRelease, validTarget } from './release-meta.mjs';
 import { openPublishedFile } from './game-exports.mjs';
 
 const prefix = '/api/releases';

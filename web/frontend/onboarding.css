@@ -666,72 +666,6 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   font-size: 13.5px;
 }
 
-/* =========================================================
-   Act 3: Focus-Mode Onboarding Chat (Sidebar Hidden!)
-   ========================================================= */
-body.onboarding-focus #contact-sidebar {
-  width: 0 !important;
-  min-width: 0 !important;
-  max-width: 0 !important;
-  flex: 0 0 0px !important;
-  opacity: 0 !important;
-  border-inline-end-width: 0 !important;
-  padding-inline: 0 !important;
-  overflow: hidden !important;
-  pointer-events: none !important;
-  transform: translateX(-24px);
-}
-
-body.onboarding-focus .sidebar-toggle-btn,
-body.onboarding-focus .mobile-back {
-  display: none !important;
-}
-
-body.onboarding-focus .chat-title-pill {
-  pointer-events: none;
-}
-
-body.onboarding-focus .detail-panel {
-  display: none !important;
-}
-
-/* Smooth grand reveal when unlocking the full workspace */
-body.onboarding-unlocking #contact-sidebar {
-  transition:
-    width 560ms var(--ob-ease),
-    min-width 560ms var(--ob-ease),
-    max-width 560ms var(--ob-ease),
-    flex-basis 560ms var(--ob-ease),
-    opacity 480ms ease 100ms,
-    transform 560ms var(--ob-ease);
-}
-
-.ob-focus-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 560;
-  color: var(--ink-2, var(--muted));
-  background: var(--ob-tile-bg);
-  border: 1px solid var(--ob-card-border);
-}
-
-.ob-focus-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent, #7d824b);
-  animation: ob-dot-pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes ob-dot-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
-}
-
 @media (max-width: 560px) {
   .ob-provider-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -750,8 +684,7 @@ body.onboarding-unlocking #contact-sidebar {
   .ob-portal-backdrop,
   .ob-stage,
   .ob-intro-center,
-  .ob-root,
-  body.onboarding-unlocking #contact-sidebar {
+  .ob-root {
     transition: none !important;
     animation: none !important;
   }

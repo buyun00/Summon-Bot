@@ -55,7 +55,6 @@ data class SummonReference(
                 "file" -> "/api/files/$part"
                 "room" -> "/api/rooms/$part"
                 "bot" -> "/api/bots/$part"
-                "connection" -> "/api/connections/$part"
                 "call" -> "/api/calls/$part"
                 "workspace" -> "/api/workspaces/$part"
                 else -> null
@@ -90,8 +89,6 @@ data class SummonBot(
     val revision: Int?,
     val enabled: Boolean?,
     val control: SummonJson,
-    val resumeRef: SummonJson,
-    val materialIndex: SummonReference?,
     val avatar: SummonAvatar?,
     val memoryItems: List<SummonJson> = emptyList(),
     val activity: String? = null,
@@ -112,8 +109,7 @@ data class SummonBot(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name),
         "instructions" to instructions.strOrNull(), "model" to model,
         "revision" to revision.numOrNull(), "enabled" to (enabled?.let(SummonJson::Bool) ?: SummonJson.Null),
-        "control" to control, "resume_ref" to resumeRef,
-        "material_index_ref" to (materialIndex?.toJson() ?: SummonJson.Null),
+        "control" to control,
         "avatar" to (avatar?.toJson() ?: SummonJson.Null),
         "memory_items" to SummonJson.Arr(memoryItems),
         "activity" to activity.strOrNull(),
@@ -125,7 +121,7 @@ data class SummonBot(
         fun parse(json: SummonJson): SummonBot {
             val id = json["id"].string ?: throw SummonApiException.invalidResponse
             return SummonBot(id, json["name"].string ?: id, json["instructions"].string, json["model"], json["revision"].int,
-                json["enabled"].bool, json["control"], json["resume_ref"], SummonReference.parse(json["material_index_ref"]),
+                json["enabled"].bool, json["control"],
                 json["avatar"].takeIf { it.obj != null }?.let(SummonAvatar::parse),
                 json["memory_items"].array.orEmpty(),
                 json["activity"].string,
@@ -360,7 +356,7 @@ data class SummonBootstrap(val protocolVersion: Int, val updating: Boolean, val 
     }
 }
 
-data class SummonInputOption(val kind: String, val target: SummonJson, val question: String?, val choices: List<SummonJson>) {
+data class SummonInputOption(val kind: String, val requestId: String? = null, val question: String? = null, val choices: List<SummonJson> = emptyList()) {
     val label: String get() = when (kind) {
         "reply" -> "回答"
         "steer" -> "运行中补充"
@@ -368,15 +364,15 @@ data class SummonInputOption(val kind: String, val target: SummonJson, val quest
     }
 
     companion object {
-        fun options(detail: SummonJson): List<SummonInputOption> = detail["input_targets"].array.orEmpty().flatMap { option ->
-            val target = option["input_target"]
-            if (target.obj == null) return@flatMap emptyList()
-            val request = target["request_id"].string?.let { id -> detail["pending_input"].array?.firstOrNull { it["id"].string == id } }
-            val question = option["question"].string ?: request?.get("question")?.string ?: request?.get("prompt")?.string
-            val choices = option["choices"].array ?: request?.get("choices")?.array.orEmpty()
-            option["kinds"].array.orEmpty().mapNotNull { value ->
-                value.string?.takeIf { it in listOf("reply", "steer", "next") }?.let { SummonInputOption(it, target, question, choices) }
+        fun options(detail: SummonJson): List<SummonInputOption> = buildList {
+            val pending = detail["pending_requests"].array ?: detail["pending_input"].array.orEmpty()
+            pending.forEach { req ->
+                val rid = req["request_id"].string ?: req["id"].string
+                val question = req["question"].string ?: req["text"].string ?: req["prompt"].string
+                add(SummonInputOption("reply", rid, question, req["choices"].array.orEmpty()))
             }
+            if (detail["can_steer"].bool == true) add(SummonInputOption("steer"))
+            if (detail["can_continue"].bool == true) add(SummonInputOption("next"))
         }
     }
 }

@@ -205,10 +205,9 @@ export class Calls {
 
   saveReceiptEvent(call, receipt, target, position) {
     const result = { kind: 'call', id: call.id, status: receipt.status, target, output: receipt.output,
-      input_targets: receipt.input_targets, native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
+      native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
       ...(receipt.input_status ? { input_status: receipt.input_status } : {}),
       ...(receipt.session_status ? { session_status: receipt.session_status } : {}),
-      ...(receipt.remote_outcome ? { remote_outcome: receipt.remote_outcome } : {}),
       ...(receipt.partial_snapshot ? { partial_snapshot: receipt.partial_snapshot } : {}),
       ...(Number.isInteger(receipt.exit_code) ? { exit_code: receipt.exit_code } : {}),
       ...(receipt.exit_signal ? { exit_signal: receipt.exit_signal } : {}),
@@ -288,7 +287,7 @@ export class Calls {
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));
     const summaryResult = !call.result ? call.result : {
-      status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,
+      status: call.status, output: call.result.output, native: call.result.native,
       event: call.result.event, error: call.result.error,
     };
     return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor,

@@ -251,8 +251,7 @@ function renderSettingsPanelBody(tab) {
     }
     const isDesktop = Boolean(window.SummonDesktop?.openConnectionSettings);
     const localInstance = document.documentElement.dataset.localInstance === 'true' || location.hostname === '127.0.0.1' || location.hostname === 'localhost';
-    const usage = state.resourceUsage;
-    const connections = state.connections || [];
+    const bundledBots = state.bundledBots || [];
     const workspaces = state.workspaces || [];
     const hubSection = window.SummonHub?.renderHubSettingsSection?.() || '';
     return `${renderSettingsNodeSelector()}${hubSection}<div class="settings-section">
@@ -302,28 +301,23 @@ function renderSettingsPanelBody(tab) {
     </div>
     <div class="settings-section">
       <div class="settings-group-head">
-        <h3 class="settings-group-label">外部执行连接</h3>
-        <button type="button" class="secondary-button small-button" data-action="edit-connection">${icon('plus', 14)}新增连接</button>
+        <h3 class="settings-group-label">预置专职 Bot 库</h3>
       </div>
       <div class="settings-card">
-        ${connections.length ? connections.map(item => `<div class="settings-row">
+        ${bundledBots.length ? bundledBots.map(item => `<div class="settings-row">
           <div class="settings-row-copy">
-            <strong>${esc(item.name || item.id)}</strong>
-            <small>${esc(item.protocol || item.kind || item.id)}${item.maintainer ? ' · ' + esc(item.maintainer.name || nameOf(item.maintainer.id)) : ''}</small>
+            <strong>${esc(item.name)} ${item.installed ? '<span class="settings-pill">已激活</span>' : ''}</strong>
+            <small>${esc(item.public_duty || item.id)}${item.scripts?.length ? ` · ${item.scripts.length} 个脚本` : ''}${item.skills?.length ? ` · ${item.skills.length} 份技能` : ''}</small>
           </div>
           <div class="settings-row-actions">
-            <button type="button" class="text-button" data-action="open-connection" data-id="${esc(item.id)}">接入信息</button>
-            ${item.id !== 'pi' ? `<button type="button" class="secondary-button small-button" data-action="edit-connection" data-id="${esc(item.id)}">设置</button>` : ''}
+            ${item.installed && item.bot_id
+              ? `<button type="button" class="secondary-button small-button" data-action="open-bot-details" data-id="${esc(item.bot_id)}">查看 Bot</button>`
+              : `<button type="button" class="primary-button small-button" data-action="activate-bundled-bot" data-id="${esc(item.id)}">激活</button>`}
           </div>
-        </div>`).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无外部执行连接</strong></div></div>'}
+        </div>`).join('') : '<div class="settings-row"><div class="settings-row-copy"><strong>暂无预置 Bot</strong></div></div>'}
       </div>
-    </div>
-    ${usage ? `<div class="settings-section">
-      <h3 class="settings-group-label">宿主资源</h3>
-      <div class="settings-card">
-        <div class="settings-row"><dl class="settings-resource-grid">${Object.entries(resourceLabels).map(([key, label]) => `<div><dt>${esc(label)}</dt><dd>${esc(usage[key] ?? 0)}</dd></div>`).join('')}</dl></div>
-      </div>
-    </div>` : ''}`;
+      <p class="settings-footnote">每个 Bot 都是独立文件夹（含 instructions.md、skills/、scripts/），通过宿主内置 Node 与 exec 原语直接调用本机工具。</p>
+    </div>`;
   }
   return `<div class="settings-section">
     <h3 class="settings-group-label">客户端下载与更新</h3>
@@ -394,10 +388,8 @@ async function loadSettingsTabData(tab) {
     } catch {}
   } else if (tab === 'connection') {
     try {
-      const first = await api('/api/connections');
-      Object.assign(state, { connections: first.items, resourceUsage: first.usage });
-      const [connections, workspaces] = await Promise.allSettled([readList('/api/connections', first), readList('/api/workspaces')]);
-      if (connections.status === 'fulfilled') state.connections = connections.value;
+      const [bundledRes, workspaces] = await Promise.allSettled([api('/api/bundled-bots'), readList('/api/workspaces')]);
+      if (bundledRes.status === 'fulfilled' && Array.isArray(bundledRes.value?.items)) state.bundledBots = bundledRes.value.items;
       if (workspaces.status === 'fulfilled') state.workspaces = workspaces.value;
       refreshOpenSettingsBody();
     } catch {}
@@ -504,7 +496,7 @@ const NEW_GROUP_SUGGESTIONS = [
     prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
   },
 ];
-const state = { bots: [], archivedBots: [], roles: [], rooms: [], archivedRooms: [], executions: [], detached: [], files: [], wakeups: [], connections: [], workspaces: [] };
+const state = { bots: [], archivedBots: [], bundledBots: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [] };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
@@ -1212,16 +1204,6 @@ async function refresh(force = false) {
     globalThis.SummonModels.sync(state.modelSettings);
     globalThis.SummonModels.start({ api,render,toast,refresh });
     window.SummonOnboarding?.syncState?.(state.onboarding);
-    if (window.SummonOnboarding?.isFocusLocked?.()) {
-      const targetRoomId = state.onboarding?.roomId || window.SummonOnboarding.SUMMON_ROOM_ID;
-      ui.view = 'chat';
-      ui.detailOpen = false;
-      ui.creatingRoom = false;
-      if (targetRoomId && roomById(targetRoomId) && ui.roomId !== targetRoomId) {
-        ui.roomId = targetRoomId;
-        await restoreRoomMessages(ui.roomId);
-      }
-    }
     void globalThis.SummonCache?.writeState(synced);
     if (!ui.creatingRoom && (!roomById(ui.roomId) || directRoom(roomById(ui.roomId)))) {
       const nextGroup = defaultGroupRoom();
@@ -1260,15 +1242,13 @@ async function loadCurrent() {
   if (!ui.protocolReady) return;
   if (ui.view === 'usage') return globalThis.SummonUsage.load(api);
   if (ui.view === 'overview') {
-    const [execPage, detached, filesPage, workspaces] = await Promise.allSettled([
+    const [execPage, filesPage, workspaces] = await Promise.allSettled([
       api('/api/executions'),
-      api('/api/executions/detached'),
       api('/api/files'),
       state.workspaces?.length ? Promise.resolve(state.workspaces) : readList('/api/workspaces'),
     ]);
     if (!current()) return;
     if (execPage.status === 'fulfilled') setListPage('executions', execPage.value);
-    if (detached.status === 'fulfilled') state.detached = detached.value.items || [];
     if (filesPage.status === 'fulfilled') setListPage('files', filesPage.value);
     if (workspaces.status === 'fulfilled' && Array.isArray(workspaces.value)) state.workspaces = workspaces.value;
     return;
@@ -1662,14 +1642,14 @@ async function selectRoom(id, nodeId = null) {
 }
 
 function isBuiltinGroupBot(bot) {
-  return ['eggbot', 'tool-onboarding'].includes(bot?.role_id);
+  return bot?.role_id === 'eggbot';
 }
 
 function memberChoices(selected = [], { excludeBuiltin = false, legend = 'Bot 成员' } = {}) {
   const list = excludeBuiltin ? state.bots.filter(bot => !isBuiltinGroupBot(bot)) : state.bots;
   if (!list.length) return '';
   return `<fieldset class="form-field member-options"><legend>${esc(legend)}</legend>${list.map(bot => {
-    const roleTag = bot.role_id === 'group-lead' ? '主控' : bot.role_id === 'eggbot' ? '团队孵化' : bot.role_id === 'tool-onboarding' ? '接口' : '';
+    const roleTag = bot.role_id === 'group-lead' ? '主控' : bot.role_id === 'eggbot' ? '团队孵化' : '';
     return `<label class="member-choice">${avatar(bot.id,32)}
     <span>${esc(bot.name)}${roleTag ? ` <em class="member-role-badge">${esc(roleTag)}</em>` : ''}</span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`;
   }).join('')}</fieldset>`;
@@ -1777,25 +1757,17 @@ async function openBotEdit(bot) {
   const model = bot.model && typeof bot.model === 'object' ? bot.model : null;
   const initialMode = !model ? 'none' : model.mode === 'follow_default' ? 'follow_default' : model.mode === 'follow_connection' ? 'follow_connection' : 'custom';
   const path = '/api/bots/' + encodeURIComponent(bot.id);
-  const [settings, files] = await Promise.all([
-    api('/api/model-settings').catch(() => ({ connections:[] })),
-    readList('/api/files?bot=' + encodeURIComponent(bot.id)).catch(() => []),
-  ]);
+  const settings = await api('/api/model-settings').catch(() => ({ connections:[] }));
   const currentId = model?.connection_id || settings.activeId || settings.connections[0]?.id || '';
   const connOptions = settings.connections.map(item => ({ value:item.id, label:`${item.name || item.id}${item.active ? '（默认）' : ''}` }));
   if (currentId && !connOptions.some(item => item.value === currentId)) connOptions.push({ value:currentId, label:currentId + ' · 当前绑定' });
   const optionalConnOptions = [{ value:'', label:'沿用主连接' }, ...connOptions];
-  const materialId = bot.material_index_ref?.id || '';
-  const materialOptions = [{ value:'',label:'未选择' }, ...files.map(item => ({ value:item.id,label:item.path || item.name || item.id }))];
-  if (materialId && !materialOptions.some(item => item.value === materialId)) materialOptions.push({ value:materialId,label:materialId + ' · 当前索引' });
   const role = bot.role_id || '';
   const catalogRoles = (state.roles || []).map(item => ({ value: item.id, label: `${item.name} (${item.id})` }));
   const roles = [{ value:'', label:'未指定内置角色' }, ...(catalogRoles.length ? catalogRoles : [
     { value:'default', label:'默认成员 (default)' },
     { value:'group-lead', label:'群主控 (group-lead)' },
     { value:'eggbot', label:'EggBot (eggbot)' },
-    { value:'tool-onboarding', label:'接口 Bot (tool-onboarding)' },
-    { value:'catalog-maintainer', label:'连接维护者 (catalog-maintainer)' },
   ])];
   if (role && !roles.some(item => item.value === role)) roles.push({ value:role, label:role });
   const modes = [
@@ -1826,7 +1798,7 @@ async function openBotEdit(bot) {
     purposeOverridesHtml +
     '<datalist id="bot-thinking-levels"></datalist><datalist id="bot-all-thinking-levels">' +
     ['off','minimal','low','medium','high','xhigh','max'].map(v => `<option value="${v}"></option>`).join('') +
-    '</datalist>' + selectField('选材索引','material_index',materialOptions,materialId), async data => {
+    '</datalist>', async data => {
     const mode = data.get('model_mode');
     const connection_id = data.get('connection_id');
     const id = data.get('model_id').trim(), thinking_level = data.get('thinking_level').trim();
@@ -1856,7 +1828,6 @@ async function openBotEdit(bot) {
       revision:bot.revision, name:data.get('name').trim(), instructions:data.get('instructions'), ...(sameBinding ? {} : { model:binding }),
       ...(data.get('public_duty').trim() !== (bot.public_duty || '') ? {public_duty:data.get('public_duty').trim()} : {}),
       ...(data.get('role_id') !== role ? { role_id:data.get('role_id') || null } : {}),
-      ...(data.get('material_index') !== materialId ? { material_index_ref:data.get('material_index') ? { kind:'file',id:data.get('material_index') } : null } : {}),
     });
   });
   const form = $('#modal-form'), levels = $('#bot-thinking-levels', form);
@@ -1909,71 +1880,90 @@ function editWorkspace(item) {
   });
 }
 
-function editConnection(item) {
-  const available = state.bots.map(bot => ({ id:bot.id,name:bot.name }));
-  const basic = field('名称','name',item?.name || '',{ required:true }) + field('说明','description',item?.description || '') +
-    `<label class="checkbox-line"><input type="checkbox" name="enabled" ${item?.enabled !== false ? 'checked' : ''}>启用</label>`;
-  const configuration = item ? field('要修改的连接配置（JSON）','config','',{ type:'textarea',rows:6,placeholder:'留空保留连接配置' })
-    : selectField('协议','kind',['codex','cli','ssh','mcp','http'].map(value => ({value,label:value})),'codex') +
-    `<div data-native-connection>${field('可执行文件','file','',{ placeholder:'绝对路径' })}
-    ${field('实际可执行文件','canonical_file','',{ placeholder:'如果已通过链接安装，填写其实际路径' })}</div>` +
-    field('其他连接设置（JSON）','config','{}',{ type:'textarea',rows:6,required:true });
-  const maintainer = [{ value:'',label:'未分配' }, ...botOptions()];
-  const controls = selectField('专责维护者（自动拥有该连接调用、维修与绑定工作区实调权）','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '');
-  openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + controls,async data => {
-    const input = { name:data.get('name').trim(), description:data.get('description'), enabled:data.has('enabled'),
-      maintainer_bot_id:data.get('maintainer_bot_id') || null };
-    const raw = data.get('config').trim();
-    if (raw || !item) {
-      const config = JSON.parse(raw);
-      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('连接设置须为 JSON 对象。');
-      if (item) input.config_patch = config;
-      else {
-        const kind = data.get('kind');
-        if (['codex','cli','ssh'].includes(kind)) {
-          const file = data.get('file').trim(), canonical = data.get('canonical_file').trim();
-          if (file) config.file = file;
-          if (canonical || file) config.canonical_file = canonical || file;
-        }
-        Object.assign(input,{ kind,config });
-      }
+function openBotTrustModal(preview, onTrust) {
+  const renderFileGroup = (title, files) => files?.length
+    ? `<div style="margin-top:12px"><strong style="font-size:13px">${esc(title)}（${files.length}）</strong>${files.map(f => `
+        <details style="margin-top:6px;border:1px solid var(--border);border-radius:10px;padding:8px 10px">
+          <summary style="cursor:pointer;font-size:12.5px;font-weight:500">${esc(f.path)}</summary>
+          <pre style="margin:8px 0 0;max-height:220px;overflow:auto;font-size:11.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word">${esc(f.content || '')}</pre>
+        </details>`).join('')}</div>`
+    : '';
+  const envHtml = preview.env_slots?.length
+    ? `<p class="subtle" style="margin:6px 0 0;font-size:12.5px">声明环境变量：<code>${esc(preview.env_slots.join(', '))}</code>（通过宿主安全存储注入，绝不进聊天上下文）</p>`
+    : '';
+  const body = `<div style="display:flex;flex-direction:column;gap:8px">
+    ${preview.public_duty ? `<p style="margin:0;font-size:13.5px">${esc(preview.public_duty)}</p>` : ''}
+    ${envHtml}
+    ${preview.instructions ? `<details open style="margin-top:4px;border:1px solid var(--border);border-radius:10px;padding:8px 10px">
+      <summary style="cursor:pointer;font-size:12.5px;font-weight:500">instructions.md（行为说明）</summary>
+      <pre style="margin:8px 0 0;max-height:180px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(preview.instructions)}</pre>
+    </details>` : ''}
+    ${renderFileGroup('技能手册（skills/）', preview.skills)}
+    ${renderFileGroup('可执行脚本（scripts/，请审查后信任）', preview.scripts)}
+    <p class="subtle" style="margin:10px 0 0;font-size:12.5px">信任并激活后，将写入本机 Bot 文件夹、加入当前会话，并自动唤醒该 Bot 自检本机环境与登录态。</p>
+  </div>`;
+  openModal(`信任并激活 · ${preview.name || preview.id}`, '激活前可展开审查该 Bot 的说明与所有脚本内容', body, onTrust, '信任并激活');
+}
+
+async function activateBundledBot(bundledId) {
+  if (!bundledId) return;
+  const preview = await api(`/api/bundled-bots/${encodeURIComponent(bundledId)}`);
+  openBotTrustModal(preview, async () => {
+    const roomId = ui.roomId || 'room-default-bot-maintenance';
+    const result = await api('/api/bundled-bots/activate', 'POST', { id: bundledId, room_id: roomId, wake: true });
+    ui.returnToSettingsTab = null;
+    toast(`已信任并激活「${result?.bot?.name || bundledId}」，正在唤醒自检…`);
+    if (result?.room_id) {
+      ui.view = 'chat';
+      ui.roomId = result.room_id;
     }
-    if (item) input.revision = item.revision;
-    await api('/api/connections' + (item ? '/' + encodeURIComponent(item.id) : ''),item ? 'PATCH' : 'POST',input);
   });
-  if (!item) {
-    const form = $('#modal-form');
-    const sync = () => { $('[data-native-connection]',form).hidden = !['codex','cli','ssh'].includes(form.elements.kind.value); };
-    form.elements.kind.addEventListener('change',sync); sync();
+}
+
+async function openBotFolderFileModal(botId, relPath = null) {
+  const bot = botById(botId) || (state.archivedBots || []).find(item => item.id === botId);
+  if (!bot) return;
+  let initialContent = '';
+  if (relPath) {
+    const file = await api(`/api/bots/${encodeURIComponent(botId)}/file?path=${encodeURIComponent(relPath)}`);
+    initialContent = file.content || '';
   }
+  const title = relPath ? `${bot.name} · ${relPath}` : `新增 Bot 文件 · ${bot.name}`;
+  const pathField = relPath
+    ? `<p class="subtle" style="margin:0 0 8px">${esc(relPath)}</p>`
+    : field('文件路径（相对 Bot 目录）', 'path', 'skills/', { required: true, placeholder: '例如 skills/guide.md 或 scripts/run.mjs' });
+  openModal(title, '', pathField + field('文件内容', 'content', initialContent, { type: 'textarea', rows: 14 }), async data => {
+    const targetPath = relPath || data.get('path').trim();
+    await api(`/api/bots/${encodeURIComponent(botId)}/file`, 'PUT', { path: targetPath, content: data.get('content') });
+    toast(`已保存 ${targetPath}`);
+  });
+}
+
+function renderBotFolderSection(bot) {
+  if (!bot) return '';
+  const files = Array.isArray(bot.folder_files) ? bot.folder_files : [];
+  const rows = files.map(file => `<div class="pin-row">
+    <button type="button" class="profile-record record-button" data-action="open-bot-folder-file" data-bot-id="${esc(bot.id)}" data-path="${esc(file.path)}">
+      <strong>${esc(file.path)}</strong><small>${Math.max(1, Math.round((file.size || 0) / 1024 * 10) / 10)} KB</small>
+    </button></div>`).join('');
+  return `<div class="profile-section-heading" style="margin-top:14px"><span>Bot 目录文件（skills / scripts / memory）</span>
+    ${!bot.archived_at ? `<button type="button" class="icon-button" data-action="new-bot-folder-file" data-bot-id="${esc(bot.id)}" aria-label="新增 Bot 文件">${icon('plus', 18)}</button>` : ''}</div>
+    ${rows || '<p class="panel-empty">暂无目录文件</p>'}`;
 }
 
 async function openExecutionForm() {
-  const [connections, workspaces] = await Promise.all([readList('/api/connections'),readList('/api/workspaces')]);
-  const engines = connections.filter(item => item.id !== 'pi' && item.available !== false);
-  if (!engines.length) { toast('先配置一个可用的执行连接。'); return; }
-  const choices = [{ value:'',label:'选择目录' }, ...workspaces.map(item => ({ value:item.id,label:item.name + ' · ' + item.path }))];
-  const engineOptions = engines.map(item => ({ value:item.id,label:item.name || item.id }));
-  const codex = `<div class="form-row" data-codex-binding>${field('模型','model','',{ placeholder:'留空采用连接配置' })}${field('推理强度','effort','',{ placeholder:'留空使用连接默认值' })}</div>`;
-  openModal('打开执行会话','',selectField('连接','engine',engineOptions,engineOptions[0].value) + selectField('执行目录','workspace',choices,'') +
-    codex + selectField('输入格式','format',[{value:'text',label:'文本'},{value:'json',label:'JSON'}],'text') +
-    field('输入','input','',{ type:'textarea',rows:6,required:true }),async data => {
-    const engine = data.get('engine'), workspace = data.get('workspace'), raw = data.get('input');
-    const isCodex = engines.find(item => item.id === engine).protocol === 'codex';
-    const model = data.get('model').trim(), effort = data.get('effort').trim();
-    const input = data.get('format') === 'json' && !isCodex ? JSON.parse(raw) : isCodex
-      ? { text:raw, ...(model ? { model } : {}), ...(effort ? { effort } : {}) } : raw;
-    const detail = await api('/api/executions','POST',{ engine,input,
-      ...(workspace ? { workspace:{ kind:'workspace',id:workspace } } : {}) },{ clientId:newClientId() });
+  const workspaces = await readList('/api/workspaces');
+  const choices = [{ value:'', label:'默认工作区' }, ...workspaces.map(item => ({ value:item.id, label:item.name + ' · ' + item.path }))];
+  openModal('执行本机命令', '', selectField('执行目录', 'workspace', choices, '') +
+    field('命令（Shell）', 'shell', '', { type:'textarea', rows:4, required:true, placeholder:'输入要在本机执行的命令' }), async data => {
+    const workspace = data.get('workspace');
+    const detail = await api('/api/executions', 'POST', {
+      engine: 'exec',
+      input: { shell: data.get('shell').trim() },
+      ...(workspace ? { workspace: { kind: 'workspace', id: workspace } } : {}),
+    }, { clientId: newClientId() });
     ui.executionRef = detail.execution_ref; ui.executionDetail = detail;
-  },'打开会话');
-  const form = $('#modal-form');
-  const sync = () => {
-    const isCodex = engines.find(item => item.id === form.elements.engine.value)?.protocol === 'codex';
-    $('[data-codex-binding]',form).hidden = !isCodex;
-    form.elements.format.closest('.form-field').hidden = isCodex;
-  };
-  form.elements.engine.addEventListener('change',sync); sync();
+  }, '执行');
 }
 
 function openFileEdit(element) {
@@ -2284,7 +2274,6 @@ async function openReference(ref) {
   }
   let value;
   if (ref.kind === 'event') value = await api('/api/events/' + encodeURIComponent(ref.id));
-  else if (ref.kind === 'connection') value = await api('/api/connections/' + encodeURIComponent(ref.id));
   else if (ref.kind === 'call') {
     value = await api('/api/calls/' + encodeURIComponent(ref.id));
     const status = typeof value.result?.status === 'string' ? value.result.status : (value.status || 'unknown');
@@ -2434,9 +2423,6 @@ async function act(action, element) {
     }
     return;
   }
-  if (window.SummonOnboarding?.isFocusLocked?.() && ['navigate', 'open-settings', 'open-panel', 'open-panel-room', 'select-room', 'new-group', 'toggle-details', 'client-downloads', 'display-settings'].includes(action)) {
-    return;
-  }
   if (action === 'navigate') return navigate(element.dataset.view);
   if (action === 'refresh') return refresh(true);
   if (action === 'close-modal') return closeModal();
@@ -2559,12 +2545,6 @@ async function act(action, element) {
     const conversationId = element.dataset.conversation, runId = element.dataset.run;
     await api('/api/executions/retry', 'POST', { target: { kind: 'conversation', id: conversationId }, run_id: runId });
     toast('已重新排队重试');
-    return refresh();
-  }
-  if (action === 'kill-detached' || action === 'dismiss-detached') {
-    const dismiss = action === 'dismiss-detached';
-    await api('/api/executions/detached/' + encodeURIComponent(id) + '/kill', 'POST', { dismiss });
-    toast(dismiss ? '已从后台脱钩列表归档清理' : '已发送进程树强杀指令');
     return refresh();
   }
   if (action === 'avatar-greet') return window.SummonAvatars?.greet(element);
@@ -2729,8 +2709,9 @@ async function act(action, element) {
     if (navigation === ui.navigationSeq && ui.listPages[kind]?.next_cursor === page.next_cursor) { setListPage(kind,next,true); render(); }
     return;
   }
-  if (action === 'open-connection') return openReference({ kind:'connection',id });
-  if (action === 'edit-connection') return editConnection(state.connections.find(item => item.id === id));
+  if (action === 'activate-bundled-bot') return activateBundledBot(id);
+  if (action === 'open-bot-folder-file') return openBotFolderFileModal(element.dataset.botId, element.dataset.path);
+  if (action === 'new-bot-folder-file') return openBotFolderFileModal(element.dataset.botId, null);
   if (action === 'edit-workspace') return editWorkspace(state.workspaces.find(item => item.id === id));
 }
 function field(label, name, value = '', options = {}) {
@@ -3019,7 +3000,7 @@ async function submitExecutionInput(form) {
   try {
     await persistClientSession();
     const receipt = await api('/api/executions/input','POST',{ target:detail.execution_ref,kind:option.kind,control_version:detail.control_version,
-      input_target:option.input_target,input },{ clientId:entry.clientId });
+      ...(option.request_id ? { request_id: option.request_id } : {}), input },{ clientId:entry.clientId });
     entry.receipt = { status:receipt.status, call_id:receipt.call_id };
     entry.submitted = !['unknown','prepared','not_submitted','failed','unsupported'].includes(receipt.status);
     await refresh();
@@ -3432,7 +3413,7 @@ function botMention(id, label) {
   const bot = botById(id); if (!bot) return esc(label || nameOf(id));
   return `<button type="button" class="bot-mention" data-action="open-bot-details" data-id="${esc(id)}" style="--member-color:${esc(botAvatar(bot).color)}">@${esc(label || bot.name)}</button>`;
 }
-const refType = { room:'会话', event:'消息', file:'文件', workspace_file:'工作区活文件', bot:'Bot', session:'执行会话', conversation:'内部对话', call:'调用', wakeup:'订阅', connection:'连接' };
+const refType = { room:'会话', event:'消息', file:'文件', workspace_file:'工作区活文件', bot:'Bot', session:'执行会话', conversation:'内部对话', call:'调用', wakeup:'订阅' };
 const roomRef = id => ({ kind:'room', id });
 const messageRef = id => ({ kind:'event', id });
 
@@ -3470,19 +3451,15 @@ function formatMemoryScope(appliesTo = []) {
 
 function renderBotMemorySection(bot) {
   const items = bot?.memory_items || [];
-  if (!items.length && !bot?.material_index_ref) return '';
+  if (!items.length) return '';
   const rows = items.map(item => `<div class="wakeup-row" style="flex-direction:column;align-items:flex-start;gap:4px">
     <div style="display:flex;justify-content:space-between;width:100%;gap:8px;align-items:center">
-      <strong>${esc(item.item_id)} · v${esc(item.revision ?? 1)}</strong>
-      <small class="summary-badge">${esc(formatMemoryScope(item.applies_to))}</small>
+      <strong>${esc(item.item_id)}</strong>
+      <button type="button" class="text-button" data-action="open-bot-folder-file" data-bot-id="${esc(bot.id)}" data-path="${esc(item.path)}">编辑</button>
     </div>
-    ${item.note ? `<div style="font-size:var(--text-caption);white-space:pre-wrap">${esc(item.note)}</div>` : ''}
-    ${item.supersedes || item.deprecated_note ? `<small class="subtle">失效/退役说明：${esc([item.supersedes, item.deprecated_note].filter(Boolean).join(' · '))}</small>` : ''}
-    ${item.source_refs?.length ? `<div class="reference-list">${item.source_refs.map(ref => renderReference(ref)).join('')}</div>` : ''}
+    ${item.note ? `<div style="font-size:var(--text-caption);white-space:pre-wrap">${esc(item.note.slice(0, 260))}</div>` : ''}
   </div>`).join('');
-  return `<div class="profile-section-heading" style="margin-top:12px"><span>长期记忆与约定（${items.length}）</span>
-    ${bot?.material_index_ref?.id ? `<button type="button" class="text-button" data-action="open-file" data-id="${esc(bot.material_index_ref.id)}">查看索引文件</button>` : ''}</div>
-    ${rows || '<p class="panel-empty">已挂接索引文件，暂无条目</p>'}`;
+  return `<div class="profile-section-heading" style="margin-top:12px"><span>私有记忆（.local/memory · ${items.length}）</span></div>${rows}`;
 }
 
 function renderDelivery(message) {
@@ -3765,7 +3742,7 @@ function activeRoomPendingRequests() {
   for (const exec of ui.roomExecutions || []) {
     if (!exec?.pending_requests?.length) continue;
     for (const req of exec.pending_requests) {
-      const key = JSON.stringify([exec.execution_ref, exec.control_version, req.input_target]);
+      const key = JSON.stringify([exec.execution_ref, exec.control_version, req.request_id]);
       items.push({ exec, req, key });
     }
   }
@@ -3845,7 +3822,7 @@ async function submitExecPromptCard(key, overrideValue = null) {
           kind: 'session_input',
           session_id: item.exec.execution_ref.id,
           control_version: item.exec.control_version,
-          input_target: item.req.input_target,
+          request_id: item.req.request_id,
         },
         fields: { input: val },
       }, { clientId: newClientId() });
@@ -3854,7 +3831,7 @@ async function submitExecPromptCard(key, overrideValue = null) {
         target: item.exec.execution_ref,
         kind: 'reply',
         control_version: item.exec.control_version,
-        input_target: item.req.input_target,
+        request_id: item.req.request_id,
         input: val,
       }, { clientId: newClientId() });
     }
@@ -4034,7 +4011,7 @@ function renderNewGroupDraft() {
           <div class="draft-group-bubble">
             <span class="draft-group-sender">${esc(egg?.name || 'EggBot')} · 团队孵化</span>
             <h1>${ui.creatingRoomBusy ? '正在为你建群并安排伙伴…' : '你想要建一个什么群呢？'}</h1>
-            <p>${ui.creatingRoomBusy ? '群主控、EggBot 与接口 Bot 正在就位，马上进入对话。' : '直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。'}</p>
+            <p>${ui.creatingRoomBusy ? '群主控与 EggBot 正在就位，马上进入对话。' : '直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。'}</p>
           </div>
           <div class="draft-group-suggestions" role="group" aria-label="默认建群建议">
             ${suggestions}
@@ -4089,9 +4066,7 @@ function renderChat() {
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
     ${room ? `<button type="button" class="chat-title-pill ${liveWork ? 'is-working' : ''}" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitleHtml}</span></button>` : ''}
-    <div class="chat-header-actions">${window.SummonOnboarding?.isFocusLocked?.()
-      ? window.SummonOnboarding.renderFocusHeaderActions()
-      : room && archived
+    <div class="chat-header-actions">${room && archived
         ? `<button type="button" class="secondary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button>`
         : ''}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
@@ -4174,7 +4149,7 @@ function collectRoomActivityItems(room, members) {
     seen.add(botId);
     const needsInput = ['needs_input', 'awaiting_input'].includes(exec.status);
     const text = needsInput
-      ? (exec.waiting_summary ? `等待输入：${exec.waiting_summary}` : '等待你的输入')
+      ? (exec.pending_requests?.[0]?.question ? `等待输入：${exec.pending_requests[0].question}` : '等待你的输入')
       : formatLiveStatusText(exec.live_progress || exec.work_summary || '正在执行任务');
     items.push({
       botId,
@@ -4345,8 +4320,8 @@ function renderRoomExecutionDrawer(room, liveItems) {
     const needsInput = ['needs_input', 'awaiting_input'].includes(item.status);
     const statusLabel = needsInput ? '等待输入' : isLive ? '进行中' : (labels[item.status] || item.status || '未知');
     const summary = needsInput
-      ? (item.waiting_summary || '等待确认或输入')
-      : (item.live_progress || item.work_summary || item.waiting_summary || item.last_output_summary || '');
+      ? (item.pending_requests?.[0]?.question || '等待确认或输入')
+      : (item.live_progress || item.work_summary || '');
     const error = executionError(item);
     return `<button type="button" class="bot-execution-item ${isLive ? 'is-live' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
       ${botId && botById(botId) ? avatar(botId, 24, '') : `<span class="bot-execution-dot ${isLive ? 'live' : ''}"></span>`}
@@ -4484,7 +4459,7 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
 
 function renderDetailPanel(room, bot) {
   const tab = ui.detailTab;
-  const tabs = bot ? [{ id:'details', label:'详情' }, { id:'library', label:'资料' }] :
+  const tabs = bot ? [{ id:'details', label:'详情' }] :
     [{ id:'members', label:'成员' }, { id:'library', label:'资料' }, { id:'pins', label:'置顶' }, { id:'details', label:'订阅' }];
   let body;
   if (bot && ui.avatarEditing) body = renderAvatarPicker('edit');
@@ -4492,24 +4467,23 @@ function renderDetailPanel(room, bot) {
     body = `<div class="profile-members">${room.members.map(id => {
       const memberBot = botById(id);
       const badge = room.lead_bot_id === id || memberBot?.role_id === 'group-lead' ? '主控'
-        : memberBot?.role_id === 'eggbot' ? '孵化'
-        : memberBot?.role_id === 'tool-onboarding' ? '接口' : '';
+        : memberBot?.role_id === 'eggbot' ? '孵化' : '';
       return `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44)}<span>${esc(nameOf(id))}${badge ? ` <em class="member-role-badge">${esc(badge)}</em>` : ''}</span></button>`;
     }).join('')}
       ${isArchivedRoom(room) ? '' : `<button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button>`}</div>`;
   } else if (tab === 'library') {
-    const space = bot ? { kind:'bot', id:bot.id } : roomRef(room.id);
-    const filesList = (ui.roomFiles && ui.roomFiles.length) ? ui.roomFiles : (bot ? (bot.bot_files || []) : (room.room_files || []));
-    body = `<div class="profile-section-heading"><span>${bot ? 'Bot 私有资料（仅本人与宿主可读）' : '本群共享资料與约定'}</span><button class="icon-button" data-action="edit-file" data-kind="${space.kind}" data-space="${esc(space.id)}" aria-label="新增资料">${icon('plus',20)}</button></div>
+    const space = roomRef(room.id);
+    const filesList = (ui.roomFiles && ui.roomFiles.length) ? ui.roomFiles : (room.room_files || []);
+    body = `<div class="profile-section-heading"><span>本群共享资料与约定</span><button class="icon-button" data-action="edit-file" data-kind="${space.kind}" data-space="${esc(space.id)}" aria-label="新增资料">${icon('plus',20)}</button></div>
       ${filesList.map(file => {
-        const pinned = !bot && room.pins.some(ref => sameRef(ref,file.ref));
+        const pinned = room.pins.some(ref => sameRef(ref,file.ref));
         return `<div class="pin-row"><button class="profile-record record-button" data-action="open-file" data-id="${esc(file.id)}"><strong>${esc(file.name || file.path)}</strong><small>v${esc(file.revision ?? 1)}</small></button>
-          ${!bot ? `<button class="text-button" data-action="${pinned ? 'unpin' : 'pin'}" data-kind="file" data-id="${esc(file.id)}">${pinned ? '取消置顶' : '置顶'}</button>` : ''}</div>`;
-      }).join('') || '<p class="panel-empty">没有资料</p>'}${bot ? renderBotMemorySection(bot) : ''}`;
+          <button class="text-button" data-action="${pinned ? 'unpin' : 'pin'}" data-kind="file" data-id="${esc(file.id)}">${pinned ? '取消置顶' : '置顶'}</button></div>`;
+      }).join('') || '<p class="panel-empty">没有资料</p>'}`;
   } else if (tab === 'pins') {
     body = room.pins.map(ref => `<div class="pin-row">${renderReference(ref)}<button class="text-button" data-action="unpin" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">取消置顶</button></div>`).join('') || '<p class="panel-empty">没有置顶</p>';
   } else if (bot) {
-    body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div>${renderBotMemorySection(bot)}<div class="profile-more-actions">
+    body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div>${renderBotFolderSection(bot)}${renderBotMemorySection(bot)}<div class="profile-more-actions">
       <button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>${renderBotControls(bot)}</div>`;
   } else {
     const wakeups = ui.roomWakeups || [];
@@ -4543,8 +4517,7 @@ function renderDetailPanel(room, bot) {
 }
 
 const inputActions = { reply:'回答', steer:'追加输入', next:'继续输入' };
-const inputLabels = { codex_turn:'Codex 轮次', pi_run:'Pi 运行', cli_process:'CLI 进程', service_call:'服务调用', idle_input:'下次输入位置' };
-const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', detached:'已本地脱钩（远端未知）', unsupported:'连接不支持远程取消' };
+const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', unsupported:'不支持取消' };
 const executionLabel = item => item.kind === 'conversation' ? '内部对话' : item.engine === 'pi' ? 'Pi 会话' : (item.engine || '执行会话');
 const executionTitle = item => [executionLabel(item), item.space?.kind === 'room' ? roomById(item.space.id)?.name : null].filter(Boolean).join(' · ');
 const executionError = item => [item.last_error?.exit_code != null ? `退出码 ${item.last_error.exit_code}` : null, item.last_error?.code, item.last_error?.message].filter(Boolean).join(' · ');
@@ -4553,7 +4526,7 @@ function renderExecutionRow(item) {
   const ref = item.execution_ref;
   const status = item.status || 'unknown';
   const error = executionError(item);
-  const progress = item.live_progress || item.work_summary || item.waiting_summary || '';
+  const progress = item.live_progress || item.work_summary || item.pending_requests?.[0]?.question || '';
   const selected = sameRef(ui.executionRef, ref);
   return `<button class="profile-record record-button execution-row ${selected ? 'selected' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
     <strong>${esc(executionTitle(item))}</strong>
@@ -4590,28 +4563,36 @@ async function loadExecution(ref) {
 }
 
 function inputOptions(detail) {
-  return (detail.input_targets || []).flatMap(option => (option.kinds || []).filter(kind => Object.hasOwn(inputActions, kind))
-    .map(kind => {
-      const requestId = option.input_target?.request_id;
-      const request = requestId == null ? null : detail.pending_input?.find(item => item.id === requestId);
-      return { ...option, kind, question:request?.text ?? option.question, choices:request?.choices ?? option.choices,
-        key:JSON.stringify([detail.execution_ref,detail.control_version,kind,option.input_target]) };
-    }));
+  const options = [];
+  for (const req of detail.pending_requests || []) {
+    options.push({
+      kind: 'reply',
+      request_id: req.request_id,
+      question: req.question,
+      choices: req.choices || [],
+      key: JSON.stringify([detail.execution_ref, detail.control_version, 'reply', req.request_id]),
+    });
+  }
+  if (detail.can_steer) {
+    options.push({ kind: 'steer', key: JSON.stringify([detail.execution_ref, detail.control_version, 'steer']) });
+  }
+  if (detail.can_continue) {
+    options.push({ kind: 'next', key: JSON.stringify([detail.execution_ref, detail.control_version, 'next']) });
+  }
+  return options;
 }
 
 function renderInputOption(option, index) {
-  const target = option.input_target, pending = ui.executionInputs.get(option.key);
-  const nativeId = target.turn_id ?? target.run_id ?? target.instance_id ?? target.operation_id ?? target.call_id ?? target.input_revision;
+  const pending = ui.executionInputs.get(option.key);
   const id = 'execution-input-' + index;
   const question = option.question;
   const choices = option.choices || [];
   return `<form class="execution-input-form" data-input="${esc(option.key)}"><label for="${id}">${inputActions[option.kind]}</label>
-    <small>${esc(inputLabels[target.kind] || target.kind)} · ${esc(nativeId)}${target.request_id ? ` · 请求 ${esc(target.request_id)}` : ''}</small>
+    ${option.request_id ? `<small>请求 ${esc(option.request_id)}</small>` : ''}
     ${question ? `<p class="execution-input-question">${esc(question)}</p>` : ''}
     ${choices.length ? `<select name="input" id="${id}" required><option value="">选择回答</option>${choices.map(choice => `<option value="${esc(choice.id)}" ${pending?.text === choice.id ? 'selected' : ''}>${esc(choice.label || choice.id)}</option>`).join('')}</select>`
-      : `<textarea id="${id}" name="input" rows="2" required>${esc(pending?.text || '')}</textarea>
-        ${target.kind === 'service_call' ? `<label class="checkbox-line"><input type="checkbox" name="structured" ${pending?.structured ? 'checked' : ''}>JSON 输入</label>` : ''}`}
-    ${pending?.receipt?.status ? `<small>原输入回执 · ${esc(labels[pending.receipt.status] || pending.receipt.status)}</small>` : ''}
+      : `<textarea id="${id}" name="input" rows="2" required>${esc(pending?.text || '')}</textarea>`}
+    ${pending?.receipt?.status ? `<small>回执 · ${esc(labels[pending.receipt.status] || pending.receipt.status)}</small>` : ''}
     <button class="primary-button" type="submit" ${!ui.protocolReady || pending?.busy || pending?.submitted ? 'disabled' : ''}>${pending?.submitted ? '已提交' : inputActions[option.kind]}</button></form>`;
 }
 
@@ -4649,21 +4630,6 @@ function renderExecutionDetail(detail) {
     ${detail.next_cursor ? '<button data-action="more-execution-output" class="text-button">读取后续日志</button>' : ''}`;
 }
 
-function renderDetachedSection() {
-  const items = state.detached || [];
-  if (!items.length) return '';
-  return `<div class="detached-tasks"><h3>后台脱钩任务（${items.length}）</h3>${items.map(item => `<div class="wakeup-row">
-    <div class="wakeup-copy"><strong>${esc(item.connection_name || item.connection_id)}${item.method ? ' · ' + esc(item.method) : ''}</strong>
-      <span>${esc(item.protocol)} · ${item.alive ? '进程/请求仍在运行' : '本地已退出'} · ${esc(item.remote_outcome || '')}</span>
-      ${item.child_pid || item.runner_pid ? `<small>PID ${esc(item.child_pid || item.runner_pid)}</small>` : ''}
-      ${item.partial_snapshot?.touched_files?.length ? `<small>中断前触及文件：${esc(item.partial_snapshot.touched_files.slice(0, 5).join(', '))}</small>` : ''}
-      ${item.late_receipt ? `<small>迟到回执（已隔离审计）：${esc(item.late_receipt.status)} · ${esc(formatTime(item.late_receipt.at, true))}</small>` : ''}
-    </div>
-    ${item.alive ? `<button class="secondary-button" data-action="kill-detached" data-id="${esc(item.id)}">强杀</button>` : ''}
-    <button class="text-button" data-action="dismiss-detached" data-id="${esc(item.id)}">归档清理</button>
-  </div>`).join('')}</div>`;
-}
-
 function trackedList(kind, endpoint, renderRow) {
   const page = ui.listPages?.[kind];
   const rows = state[kind].map(renderRow).join('') || '<p class="panel-empty">暂无记录</p>';
@@ -4671,7 +4637,7 @@ function trackedList(kind, endpoint, renderRow) {
 }
 
 function renderExecutions() {
-  return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-execution">打开会话</button>')}<div class="object-layout"><section class="object-list">${trackedList('executions','/api/executions',renderExecutionRow)}${renderDetachedSection()}</section>
+  return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-execution">打开会话</button>')}<div class="object-layout"><section class="object-list">${trackedList('executions','/api/executions',renderExecutionRow)}</section>
     <section class="object-detail">${renderExecutionDetail(ui.executionDetail)}</section></div></div>`;
 }
 
@@ -4702,7 +4668,7 @@ function renderMembers() {
     <p class="subtle" style="margin:0 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p>
     ${bot.public_duty ? `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-meta);color:var(--ink-2)">${esc(bot.public_duty)}</p>` : ''}
     ${groupsHtml}
-    <p class="profile-prompt">${esc(bot.instructions || '')}</p>${renderBotMemorySection(bot)}<div class="execution-actions">
+    <p class="profile-prompt">${esc(bot.instructions || '')}</p>${renderBotFolderSection(bot)}${renderBotMemorySection(bot)}<div class="execution-actions">
     ${!bot.archived_at ? `<button class="primary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>` : ''}${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
     <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}${archived}</section><section class="object-detail">${controls}</section></div></div>`;
@@ -4800,19 +4766,6 @@ function renderWakeups() {
     ${ui.listPages?.wakeups?.next_cursor ? '<button class="text-button" data-action="more-list" data-kind="wakeups" data-endpoint="/api/wakeups">加载更多</button>' : ''}</section></div></div>`;
 }
 
-function renderConnections() {
-  const usage = state.resourceUsage;
-  return `<div class="page">${pageHeader('<button class="secondary-button" data-action="edit-workspace">登记执行目录</button><button class="primary-button" data-action="edit-connection">新增连接</button>')}<div class="object-layout">
-    <section class="object-list">${state.connections.map(item => `<div class="profile-record"><strong>${esc(item.name || item.id)}</strong><small>${esc(item.protocol || item.kind || item.id)}${item.maintainer ? ' · ' + esc(item.maintainer.name || nameOf(item.maintainer.id)) : ''}</small>
-      <div class="connection-actions"><button class="text-button" data-action="open-connection" data-id="${esc(item.id)}">接入信息</button>
-      ${item.id !== 'pi' ? `<button class="text-button" data-action="edit-connection" data-id="${esc(item.id)}">设置</button>` : ''}</div></div>`).join('') || '<p class="panel-empty">暂无执行连接</p>'}</section>
-    <section class="object-detail"><div class="profile-section-heading"><h2>宿主资源</h2></div>
-    ${usage ? `<dl class="resource-facts">${Object.entries(resourceLabels).map(([key, label]) => `<dt>${esc(label)}</dt>
-      <dd>${esc(usage[key] ?? 0)}</dd>`).join('')}</dl>` : '<p class="panel-empty">等待资源状态</p>'}
-    ${usage?.resets_at ? `<p>当前统计期至 ${esc(formatTime(usage.resets_at,true))}</p>` : ''}<h3>执行目录</h3>
-    ${state.workspaces.map(item => `<div class="wakeup-row"><div class="wakeup-copy"><strong>${esc(item.name)}</strong><small>${esc(item.path)}</small>
-      <span>${item.write ? '可写' : '只读'}</span></div>${item.revision != null ? `<button class="text-button" data-action="edit-workspace" data-id="${esc(item.id)}">编辑</button>` : ''}</div>`).join('') || '<p class="panel-empty">未登记执行目录</p>'}</section></div></div>`;
-}
 function renderAvatarPicker(mode = 'create') {
   const selected = window.SummonAvatars.normalize(ui.avatarDraft || botAvatar(profileBot())), tab = ui.avatarTab || 'bot';
   const save = mode === 'edit' ? avatarSaves.get(profileBot()?.id) : null;

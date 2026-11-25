@@ -1,5 +1,5 @@
 import { join, resolve } from 'node:path';
-import { readJson, writeJson } from '../build/files.mjs';
+import { readJson, writeJson } from './files.mjs';
 
 export const dataFormat = 3;
 export const installationStatePath = dataRoot => join(resolve(dataRoot), 'config', 'installation_state.json');

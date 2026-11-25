@@ -63,7 +63,6 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
     val scope = rememberCoroutineScope()
     val path = section.path + (space?.let { "?" + it.kind + "=" + SummonApiClient.component(it.id) }).orEmpty()
     var items by remember(path) { mutableStateOf<List<SummonJson>>(emptyList()) }
-    var hosts by remember(path) { mutableStateOf<SummonJson>(SummonJson.Null) }
     var directories by remember(path) { mutableStateOf<List<SummonJson>>(emptyList()) }
     var detail by remember(path) { mutableStateOf<SummonReference?>(null) }
     var editor by remember(path) { mutableStateOf<EditorRoute?>(null) }
@@ -76,11 +75,10 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
         loading = true; error = null
         try {
             if (section == ResourceSection.Bots) store.refresh()
-            else items = store.list(path)
-            if (section == ResourceSection.Connections) {
-                hosts = store.request("/api/connections")
+            else if (section == ResourceSection.Connections) {
+                items = store.request("/api/bundled-bots")["items"].array.orEmpty()
                 directories = store.list("/api/workspaces")
-            }
+            } else items = store.list(path)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.localizedMessage }
         finally { loading = false }
@@ -106,7 +104,6 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
                 ResourceSection.Files -> TextButton(onClick = { editor = EditorRoute("file") }) { Text("新增资料") }
                 ResourceSection.Wakeups -> TextButton(onClick = { editor = EditorRoute("wakeup") }) { Text("新增订阅或提醒") }
                 ResourceSection.Connections -> {
-                    TextButton(onClick = { editor = EditorRoute("connection") }) { Text("新增连接") }
                     TextButton(onClick = { editor = EditorRoute("directory") }) { Text("登记执行目录") }
                 }
             }
@@ -136,24 +133,33 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
                 Text("各群聊的基础消息关注规则请在对应群聊详情中调整。", color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
             ResourceSection.Connections -> {
-                Text("执行连接", style = MaterialTheme.typography.titleMedium)
+                Text("预置专职 Bot 库", style = MaterialTheme.typography.titleMedium)
                 items.forEach { item ->
                     val id = item["id"].string ?: return@forEach
+                    val installed = item["installed"].bool == true
+                    val botId = item["bot_id"].string
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { detail = SummonReference("connection", id) }, modifier = Modifier.weight(1f)) { Text(item["name"].string ?: id) }
-                        if (id != "pi" && item["revision"].int != null) {
-                            TextButton(enabled = store.protocolReady, onClick = { editor = EditorRoute("connection", item) }) { Text("设置") }
+                        Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                            Text(item["name"].string ?: id, style = MaterialTheme.typography.titleSmall)
+                            item["public_duty"].string?.takeIf { it.isNotEmpty() }?.let {
+                                Text(it, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        if (installed && botId != null) {
+                            TextButton(onClick = { detail = SummonReference("bot", botId) }) { Text("查看") }
+                        } else {
+                            TextButton(enabled = store.protocolReady && !loading, onClick = {
+                                scope.launch {
+                                    try {
+                                        store.request("/api/bundled-bots/activate", "POST", SummonJson.obj("id" to SummonJson.Str(id), "wake" to SummonJson.Bool(true)))
+                                        store.refresh()
+                                        reload()
+                                    } catch (failure: Exception) { error = failure.localizedMessage }
+                                }
+                            }) { Text("激活") }
                         }
                     }
                 }
-                Text("宿主额度", style = MaterialTheme.typography.titleMedium)
-                hosts["limits"].obj.orEmpty().forEach { (key, limit) ->
-                    val used = hosts["usage"][key].takeUnless { it == SummonJson.Null }?.stringValue
-                    Text(resourceName(key) + " · " + (used?.let { "$it / " } ?: "") + limit.stringValue)
-                }
-                hosts["usage"]["resets_at"].string?.let { Text("本周期截止 · " + formatSummonDate(it, full = true)) }
-                TextButton(enabled = store.protocolReady && hosts["limits_revision"].int != null,
-                    onClick = { editor = EditorRoute("limits") }) { Text("编辑额度") }
                 Text("执行目录", style = MaterialTheme.typography.titleMedium)
                 directories.forEach { item ->
                     SummonRecordRow(item["name"].stringValue, item["path"].stringValue) {
@@ -172,9 +178,7 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
             "execution" -> ExecutionEditor(store, close)
             "file" -> FileEditor(store, space = space, close = close)
             "wakeup" -> WakeupEditor(store, route.record, space, close)
-            "connection" -> ConnectionEditor(store, route.record, close)
             "directory" -> DirectoryEditor(store, route.record, close)
-            "limits" -> LimitsEditor(store, close)
         }
     }
 }
@@ -461,7 +465,7 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
             next["messages"].array.orEmpty().isNotEmpty() || next["output_events"].array.orEmpty().isNotEmpty()) pages = pages + next
     }
 
-    fun command(kind: String, input: SummonJson? = null, target: SummonJson? = null, stopScope: String? = null) {
+    fun command(kind: String, input: SummonJson? = null, requestId: String? = null, stopScope: String? = null) {
         val version = detail["control_version"].int ?: return
         val execution = SummonReference.parse(detail["execution_ref"]) ?: return
         if (execution != ref || busy || !store.protocolReady) return
@@ -470,8 +474,8 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
             if (kind == "stop" && stopScope != null) put("scope", SummonJson.Str(stopScope))
             else {
                 put("kind", SummonJson.Str(kind))
-                if (kind == "resume") put("resume_ref", detail["resume_ref"])
-                else if (input != null && target != null) { put("input", input); put("input_target", target) }
+                if (input != null) put("input", input)
+                if (!requestId.isNullOrEmpty()) put("request_id", SummonJson.Str(requestId))
             }
         })
         val request = pending?.takeIf { it.kind == kind && it.body == body } ?: ExecutionRequest(kind, body, SummonStore.newID())
@@ -492,9 +496,6 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
             TextButton(enabled = !busy && store.protocolReady, onClick = { run { load() } }) { Text("刷新") }
             if (detail["can_stop"].bool == true && detail["control"]["state"].string != "paused") {
                 TextButton(enabled = !busy && store.protocolReady, onClick = { showStop = true }) { Text("暂停并请求停止") }
-            }
-            if (detail["resume_ref"].obj != null && detail["control"]["stop_status"].string == "stopped") {
-                TextButton(enabled = !busy && store.protocolReady, onClick = { command("resume") }) { Text("恢复控制") }
             }
         }
         if (busy) CircularProgressIndicator()
@@ -530,8 +531,8 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
             Text(store.label(target) + " · " + summonStatus(row["control"]["stop_status"].stringValue))
         }
         SummonInputOption.options(detail).forEach { option ->
-            key(detail["control_version"], option.kind, option.target) {
-                NativeInput(option, busy || !store.protocolReady) { value -> command(option.kind, value, option.target) }
+            key(detail["control_version"], option.kind, option.requestId) {
+                NativeInput(option, busy || !store.protocolReady) { value -> command(option.kind, value, option.requestId) }
             }
         }
         if (pages.isNotEmpty() || detail["native"].obj != null) {
@@ -571,29 +572,18 @@ private data class ExecutionRequest(val kind: String, val body: SummonJson, val 
 @Composable
 private fun NativeInput(option: SummonInputOption, disabled: Boolean, submit: (SummonJson) -> Unit) {
     var input by remember { mutableStateOf("") }
-    var json by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     HorizontalDivider()
     Text(option.label, style = MaterialTheme.typography.titleMedium)
-    val target = listOf("kind", "turn_id", "run_id", "instance_id", "launch_call_id", "call_id", "operation_id", "request_id", "input_revision")
-        .mapNotNull { option.target[it].takeUnless { it == SummonJson.Null }?.stringValue }
-    SelectionContainer { Text(target.joinToString(" · "), color = Color.Gray, style = MaterialTheme.typography.bodySmall) }
+    option.requestId?.takeIf { it.isNotEmpty() }?.let {
+        SelectionContainer { Text(it, color = Color.Gray, style = MaterialTheme.typography.bodySmall) }
+    }
     option.question?.let { Text(it) }
-    val structured = option.choices.isEmpty() && option.target["kind"].string == "service_call"
     if (option.choices.isEmpty()) {
         SummonTextField("输入", input, { input = it }, multiline = true, enabled = !disabled)
-        if (structured) SummonToggle("JSON 输入", json) { json = it }
     } else SummonChoice("回答", input, option.choices.mapNotNull {
         it["id"].string?.let { id -> id to (it["label"].string ?: id) }
     }) { input = it }
-    Button(enabled = !disabled && input.isNotBlank(), onClick = {
-        try {
-            val value = if (structured && json) SummonJson.parse(input) else SummonJson.Str(input)
-            error = null
-            submit(value)
-        } catch (_: Exception) { error = "JSON 输入格式无效。" }
-    }) { Text(option.label) }
-    error?.let { SummonError(it) }
+    Button(enabled = !disabled && input.isNotBlank(), onClick = { submit(SummonJson.Str(input)) }) { Text(option.label) }
 }
 
 private val overviewLiveStatuses = setOf(

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
-import { readJson, writeJson } from '../build/files.mjs';
+import { readJson, writeJson } from './files.mjs';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { instanceProof } from '../../web/backend/instance-probe.mjs';
 import { acquireServiceLock } from './service-lock.mjs';

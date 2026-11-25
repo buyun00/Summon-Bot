@@ -15,10 +15,8 @@ struct BotDetailsView: View {
     @State private var access = SummonJSONValue.null
     @State private var workspaces: [SummonJSONValue] = []
     @State private var models: [SummonJSONValue] = []
-    @State private var files: [SummonJSONValue] = []
     @State private var selectedModels: Set<String> = []
     @State private var selectedWorkspaces: Set<String> = []
-    @State private var materialIndex = ""
     @State private var busy = false
     @State private var error: String?
 
@@ -60,31 +58,17 @@ struct BotDetailsView: View {
                     TextField("模型名称", text: $modelName, prompt: Text("留空使用连接配置")).autocorrectionDisabled()
                     ModelThinkingField(label: "推理强度", defaultLabel: "继承连接", suggestions: known ? entry?["thinkingLevels"].array : nil, value: $thinking)
                 }
-                Picker("选材索引", selection: $materialIndex) {
-                    Text("未选择").tag("")
-                    ForEach(files.filter { $0["id"].string != nil }, id: \.prettyPrinted) { file in
-                        Text(file["path"].stringValue).tag(file["id"].stringValue)
-                    }
-                    if let current = current?.material_index_ref,
-                       !files.contains(where: { $0["id"].string == current.id }) {
-                        Text(store.label(current)).tag(current.id)
-                    }
-                }
                 Button("保存 Bot 设置") { run { try await saveBot() } }.disabled(!canEdit || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if let current {
                 Section("控制") {
                     LabeledContent("运行控制", value: current.isPaused ? "已暂停" : "启用")
                     if current.isPaused, let stop = current.control?["stop_status"].string { LabeledContent("停止结果", value: SummonFormat.status(stop)) }
-                    if !current.isPaused || (current.resume_ref?.object != nil && current.control?["stop_status"].string == "stopped") {
-                        Button(current.isPaused ? "恢复 Bot" : "暂停 Bot") {
-                            run {
-                                var changes: [String: SummonJSONValue] = ["enabled": .bool(current.isPaused)]
-                                if current.isPaused, let resume = current.resume_ref { changes["resume_ref"] = resume }
-                                self.current = try await store.updateBot(current, changes: changes)
-                            }
-                        }.disabled(!canEdit)
-                    }
+                    Button(current.isPaused ? "恢复 Bot" : "暂停 Bot") {
+                        run {
+                            self.current = try await store.updateBot(current, changes: ["enabled": .bool(current.isPaused)])
+                        }
+                    }.disabled(!canEdit)
                 }
             }
             if access["revision"].int != nil {
@@ -164,7 +148,6 @@ struct BotDetailsView: View {
         modelConnection = value.model?["connection_id"].stringValue ?? ""
         modelName = value.model?["id"].stringValue ?? ""
         thinking = value.model?["thinking_level"].stringValue ?? ""
-        materialIndex = value.material_index_ref?.id ?? ""
     }
 
     private func reload() async throws {
@@ -172,7 +155,6 @@ struct BotDetailsView: View {
         async let policy = store.request(path: accessPath)
         async let catalog = store.request(path: "/api/model-settings")
         async let locations = store.list("/api/workspaces")
-        async let privateFiles = store.list("/api/files?bot=" + SummonAPIClient.component(botID))
         if let latestPolicy = try? await policy {
             access = latestPolicy
             selectedModels = Set((access["model_ids"].array ?? []).compactMap(\.string))
@@ -180,7 +162,6 @@ struct BotDetailsView: View {
         }
         if let configured = try? await catalog { models = configured["connections"].array ?? [] }
         if let directories = try? await locations { workspaces = directories }
-        if let documents = try? await privateFiles { files = documents }
         let value = try await latest
         if current == nil { populate(value) }
         current = value
@@ -199,9 +180,6 @@ struct BotDetailsView: View {
             if !modelID.isEmpty { binding["id"] = .string(modelID) }
             if !thinkingLevel.isEmpty { binding["thinking_level"] = .string(thinkingLevel) }
             changes["model"] = modelConnection.isEmpty ? .null : .object(binding)
-        }
-        if materialIndex != (current.material_index_ref?.id ?? "") {
-            changes["material_index_ref"] = materialIndex.isEmpty ? .null : SummonReference(kind: "file", id: materialIndex).json
         }
         self.current = try await store.updateBot(current, changes: changes)
     }

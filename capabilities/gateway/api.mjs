@@ -1,7 +1,8 @@
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
+import { listBotFolderFiles, listBotMemoryItems, previewBundledBot, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
+import { roleCatalog } from '../bot-management/roles.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
-import { roleCatalog } from '../../roles/index.mjs';
 
 const routeRef = (kind, id) => ({ kind, id: decodeURIComponent(id) });
 const preservedModelSettings = '/api/model-settings';
@@ -26,7 +27,7 @@ function callResponse(result, callId) {
   return callId ? { ...result, call_id: callId } : result;
 }
 
-export function createApi({ platform, room, attachments, models, connections, secrets, push, sync, historyEpoch, emit, getUsage }) {
+export function createApi({ platform, room, attachments, models, exec, secrets, push, sync, historyEpoch, emit, getUsage }) {
   return async function route(method, path, params, body, clientHeader) {
     const userContext = { actor: user };
     const list = (kind, params) => platform.find({ kind, scope: scopeOf(params), query: params.get('query') || undefined,
@@ -70,10 +71,10 @@ export function createApi({ platform, room, attachments, models, connections, se
       const visible = platform.listBots().filter(bot => platform.visibleBot(bot, userContext));
       const enrichBot = bot => {
         const view = platform.manager.view(bot, user);
-        const memory_items = platform.runtime?.materials?.inspectBot(bot, userContext) || [];
-        const bot_files = platform.files.list(userContext, { kind: 'bot', id: bot.id });
+        const memory_items = listBotMemoryItems(platform.dataRoot, bot.id);
+        const folder_files = listBotFolderFiles(platform.dataRoot, bot.id);
         const activity = platform.runtime?.botActivityState?.(bot) || (bot.enabled === false ? 'paused' : 'idle');
-        return { ...view, activity, memory_items, bot_files };
+        return { ...view, activity, memory_items, folder_files };
       };
       const enrichRoom = roomItem => {
         const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });
@@ -83,6 +84,7 @@ export function createApi({ platform, room, attachments, models, connections, se
       const state = {
         bots: visible.filter(bot => !bot.archivedAt).map(enrichBot),
         archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(enrichBot),
+        bundledBots: platform.manager.bundledCatalog(),
         roles: roleCatalog,
         rooms: allRooms.filter(item => !item.archived_at),
         archivedRooms: allRooms.filter(item => Boolean(item.archived_at)),
@@ -113,6 +115,49 @@ export function createApi({ platform, room, attachments, models, connections, se
     if (path === '/api/rooms') {
       if (method === 'GET') return list('room', params);
       if (method === 'POST') return mutation('create_room', args, clientId);
+    }
+    if (path === '/api/bundled-bots' && method === 'GET') {
+      return { items: platform.manager.bundledCatalog(), localLogins: await models.localLogins() };
+    }
+    if ((match = path.match(/^\/api\/bundled-bots\/([^/]+)$/)) && method === 'GET') {
+      const id = decodeURIComponent(match[1]);
+      const preview = previewBundledBot(platform.releaseRoot, id);
+      const active = platform.manager.findByBundledId(id) || (id === 'eggbot' ? platform.manager.eggBot() : null);
+      return { ...preview, installed: Boolean(active), bot_id: active?.id || null };
+    }
+    if (path === '/api/bundled-bots/activate' && method === 'POST') {
+      if (typeof args.id !== 'string' || !args.id.trim()) reject('invalid_arguments', 'Specify a bundled Bot id');
+      return platform.activateBundledBot(args.id.trim(), { roomId: args.room_id || args.roomId || null, wake: args.wake !== false });
+    }
+    if ((match = path.match(/^\/api\/bots\/([^/]+)\/files$/)) && method === 'GET') {
+      const id = decodeURIComponent(match[1]);
+      if (!platform.visibleBot(platform.getBot(id), userContext)) reject('bot_not_found', 'Bot not found', 404);
+      return { bot_id: id, items: listBotFolderFiles(platform.dataRoot, id) };
+    }
+    if ((match = path.match(/^\/api\/bots\/([^/]+)\/file$/))) {
+      const id = decodeURIComponent(match[1]);
+      const bot = platform.getBot(id);
+      if (!platform.visibleBot(bot, userContext)) reject('bot_not_found', 'Bot not found', 404);
+      if (method === 'GET') {
+        return { bot_id: id, ...readBotFolderFile(platform.dataRoot, id, params.get('path') || '') };
+      }
+      if (method === 'PUT' || method === 'POST') {
+        const written = writeBotFolderFile(platform.dataRoot, id, args.path, args.content);
+        if (written.path === 'instructions.md') {
+          platform.store.save(botRecords, { id, instructions: args.content, revision: bot.revision + 1 });
+        } else if (written.path === 'bot.json') {
+          try {
+            const parsed = JSON.parse(args.content);
+            const patch = { id, revision: bot.revision + 1 };
+            if (typeof parsed.name === 'string' && parsed.name.trim()) patch.name = parsed.name.trim().slice(0, 100);
+            if (typeof parsed.public_duty === 'string') patch.public_duty = parsed.public_duty.trim().slice(0, 600);
+            if (Array.isArray(parsed.env_slots)) patch.env_slots = parsed.env_slots;
+            platform.store.save(botRecords, patch);
+          } catch {}
+        }
+        emit('bot');
+        return { bot_id: id, ...written };
+      }
     }
     if ((match = path.match(/^\/api\/bots\/([^/]+)\/(archive|restore)$/))) {
       const id = decodeURIComponent(match[1]);
@@ -207,14 +252,6 @@ export function createApi({ platform, room, attachments, models, connections, se
       return { event: ref, deliveries: platform.eventDeliveries(ref.id) };
     }
     if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)$/))) return read(routeRef('event', match[1]), params);
-    if (method === 'GET' && path === '/api/executions/detached') {
-      return { items: connections.listDetached() };
-    }
-    if (method === 'POST' && (match = path.match(/^\/api\/executions\/detached\/([^/]+)\/kill$/))) {
-      const result = await connections.killDetached(decodeURIComponent(match[1]), { dismiss: args.dismiss === true });
-      emit('execution');
-      return result;
-    }
     if (method === 'POST') {
       if (path === '/api/executions') return mutation('open_session', args, clientId);
       if (path === '/api/executions/input') return mutation('send_input', args, clientId);
@@ -253,27 +290,6 @@ export function createApi({ platform, room, attachments, models, connections, se
       room.attachment(id, user.id);
       return file;
     }
-    if (path === '/api/connections') {
-      if (method === 'GET') {
-        const usage = platform.resources.snapshot();
-        const items = connections.settings(userContext);
-        const result = { ...await list('connection', params), usage };
-        return { ...result, items: result.items.map(item => ({ ...item, ...items.find(connection => connection.id === item.id) })) };
-      }
-      if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
-    }
-    if (path === '/api/connections/initialize' && method === 'POST') return platform.startConnectionSetup(args, userContext, clientId);
-    if (path === '/api/connections/usage' && method === 'GET') {
-      const period = params.has('from') || params.has('to') ? { from: params.get('from'), to: params.get('to') } :
-        params.get('period') ?? undefined;
-      return platform.find({ kind: 'connection_usage', scope: scopeOf(params), period, query: params.get('query') || undefined,
-        cursor: params.get('cursor') || undefined }, userContext);
-    }
-    if ((match = path.match(/^\/api\/connections\/([^/]+)$/))) {
-      const ref = routeRef('connection', match[1]);
-      if (method === 'GET') return read(ref, params);
-      if (method === 'PATCH') return platform.configureExecutionConnection({ ...args, id: ref.id }, userContext);
-    }
     if (path === '/api/workspaces') {
       if (method === 'GET') return list('workspace', params);
       if (method === 'POST') return platform.configureWorkspace(args);
@@ -299,8 +315,9 @@ export function createApi({ platform, room, attachments, models, connections, se
       }
     }
     if (path === '/api/onboarding' && method === 'GET') return platform.onboardingState();
-    if (path === '/api/onboarding/start' && method === 'POST') return platform.startOnboarding({ force: args.force === true });
-    if (path === '/api/onboarding/complete' && method === 'POST') return platform.completeOnboarding(args);
+    if (path === '/api/onboarding/start' && method === 'POST') {
+      return platform.startOnboarding({ activateBundled: args.activateBundled || args.activate_bundled || null });
+    }
     if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
     if (path === preservedModelSettings + '/local/import' && method === 'POST') {
