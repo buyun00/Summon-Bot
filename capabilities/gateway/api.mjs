@@ -316,6 +316,11 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
     }
     if (path === '/api/onboarding' && method === 'GET') return platform.onboardingState();
     if (path === '/api/onboarding/start' && method === 'POST') {
+      if (args.connectionId) {
+        await models.select(args.connectionId);
+        platform.initializeDefaults();
+        platform.runtime.resumeRecoveredRuns({ kind: 'model', id: args.connectionId });
+      }
       return platform.startOnboarding({ activateBundled: args.activateBundled || args.activate_bundled || null });
     }
     if (path === '/api/onboarding/finish' && method === 'POST') {

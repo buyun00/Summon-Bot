@@ -20,10 +20,13 @@
     preview: false,
     stage: 'model', // 'model' | 'bot'
     morphing: false,
-    selectedProvider: 'deepseek',
+    selectedProvider: 'codex',
+    userPickedProvider: false,
     localSources: [],
+    localLoaded: false,
+    localLoading: false,
     catalog: null,
-    draft: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', api: 'openai-completions', model: 'deepseek-chat', apiKey: '', allowNoKey: false },
+    draft: { name: 'Codex 订阅', baseUrl: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses', model: 'gpt-6.1-terra', apiKey: '', allowNoKey: false },
     busy: false,
     phase: 'idle',
     statusText: '',
@@ -40,6 +43,8 @@
     botMessages: [],
     botActivities: [],
     botExecutions: [],
+    botMilestones: [],
+    botExecSeenAt: new Map(),
     botSending: false,
     botPollTimer: null,
     botTickTimer: null,
@@ -114,8 +119,9 @@
       : '';
   }
 
-  function selectProvider(id) {
+  function selectProvider(id, { userInitiated = true } = {}) {
     stopOAuthPoll();
+    if (userInitiated) ob.userPickedProvider = true;
     ob.selectedProvider = id;
     const def = providerDef(id);
     const models = providerModels(id);
@@ -134,19 +140,48 @@
     render();
   }
 
-  async function loadCatalogAndLocal() {
+  async function loadCatalogAndLocal({ force = false } = {}) {
     const api = ob.callbacks?.api;
-    if (!api) return;
-    const [catalog, local] = await Promise.all([
-      api('/api/model-settings').catch(() => null),
-      api('/api/model-settings/local').catch(() => ({ sources: [] })),
-    ]);
-    ob.catalog = catalog;
-    ob.localSources = (local?.sources || []).filter(item => item.available);
-    if (ob.localSources.some(s => s.kind === 'codex')) ob.selectedProvider = 'codex';
-    else if (ob.localSources.some(s => s.kind === 'grok')) ob.selectedProvider = 'grok';
-    const models = providerModels(ob.selectedProvider);
-    if (!ob.draft.model && models[0]?.id) ob.draft.model = models[0].id;
+    if (!api || ob.localLoading) return;
+    if (ob.localLoaded && !force) return;
+    ob.localLoading = true;
+    if (force && ob.open && ob.stage === 'model') render();
+    try {
+      const [catalogRes, localRes] = await Promise.allSettled([
+        api('/api/model-settings'),
+        api('/api/model-settings/local'),
+      ]);
+      if (catalogRes.status === 'fulfilled' && catalogRes.value) {
+        ob.catalog = catalogRes.value;
+      }
+      if (localRes.status === 'fulfilled' && Array.isArray(localRes.value?.sources)) {
+        ob.localSources = localRes.value.sources.filter(item => item.available);
+        ob.localLoaded = true;
+        if (!ob.userPickedProvider) {
+          const nextId = ob.localSources.some(s => s.kind === 'codex')
+            ? 'codex'
+            : ob.localSources.some(s => s.kind === 'grok')
+              ? 'grok'
+              : 'deepseek';
+          ob.selectedProvider = nextId;
+          const def = providerDef(nextId);
+          const models = providerModels(nextId);
+          ob.draft = {
+            name: def.name,
+            baseUrl: def.baseUrl,
+            api: def.api,
+            model: models[0]?.id || def.defaultModel || '',
+            apiKey: '',
+            allowNoKey: false,
+          };
+        }
+      }
+      const models = providerModels(ob.selectedProvider);
+      if (!ob.draft.model && models[0]?.id) ob.draft.model = models[0].id;
+    } finally {
+      ob.localLoading = false;
+      if (ob.open && ob.stage === 'model') render();
+    }
   }
 
   function ensureOverlayElement() {
@@ -170,19 +205,6 @@
     const faceState = ob.phase === 'testing' || ob.phase === 'saving' ? 'work' : 'idle';
     const faceClass = ob.phase === 'testing' || ob.phase === 'saving' ? 'is-testing' : ob.phase === 'success' ? 'is-success' : '';
 
-    const localBanner = ob.localSources.length
-      ? `<div class="ob-local-list">${ob.localSources.map(src => `
-          <div class="ob-local-card">
-            <div class="ob-local-copy">
-              <strong>检测到本机已有 ${esc(src.name)} 订阅</strong>
-              <small>直接复用本机登录态，并自动衔接对接专职 Bot</small>
-            </div>
-            <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="${esc(src.kind)}" ${ob.busy ? 'disabled' : ''}>
-              ${ob.busy && ob.phase !== 'idle' ? '<span class="ob-spinner"></span>检测中…' : '复用并继续'}
-            </button>
-          </div>`).join('')}</div><div class="ob-divider">或者选择其他接入方式</div>`
-      : '';
-
     const previewActiveBanner = ob.preview && activeExisting
       ? `<div class="ob-preview-existing">
           <span>当前已接入 <strong>${esc(activeExisting.name)}</strong>（${esc(activeExisting.model)}）</span>
@@ -190,32 +212,53 @@
         </div>`
       : '';
 
-    const providerGrid = `<div class="ob-provider-grid" role="tablist" aria-label="选择 AI 服务商">${PROVIDERS.map(item => `
-      <button type="button" role="tab" aria-selected="${item.id === ob.selectedProvider}" class="ob-provider-tile ${item.id === ob.selectedProvider ? 'is-selected' : ''}" data-ob-action="pick-provider" data-provider="${esc(item.id)}" ${ob.busy ? 'disabled' : ''}>
+    const providerGrid = `<div class="ob-provider-grid" role="tablist" aria-label="选择 AI 服务商">${PROVIDERS.map(item => {
+      const detected = (item.id === 'codex' && hasLocalCodex) || (item.id === 'grok' && hasLocalGrok);
+      return `
+      <button type="button" role="tab" aria-selected="${item.id === ob.selectedProvider}" class="ob-provider-tile ${item.id === ob.selectedProvider ? 'is-selected' : ''} ${detected ? 'has-local' : ''}" data-ob-action="pick-provider" data-provider="${esc(item.id)}" ${ob.busy ? 'disabled' : ''}>
         <span class="ob-provider-head">${renderProviderIcon(item)}<strong>${esc(item.name)}</strong></span>
-        <small>${esc((item.id === 'codex' && hasLocalCodex) || (item.id === 'grok' && hasLocalGrok) ? '已登录 · 直接复用' : item.subtitle)}</small>
-      </button>`).join('')}</div>`;
+        <small>${esc(detected ? '已登录 · 直接复用' : item.subtitle)}</small>
+      </button>`;
+    }).join('')}</div>`;
 
     let formBody = '';
     if (def.kind === 'codex' || def.kind === 'grok') {
       const hasLocal = def.kind === 'codex' ? hasLocalCodex : hasLocalGrok;
       const subLabel = def.kind === 'codex' ? 'Codex' : 'Grok';
-      if (!hasLocal) {
-        const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
+      const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
+      if (waiting) {
         formBody = `<div class="ob-oauth-box">
-          ${waiting ? `
-            <small>${ob.oauthState.status === 'starting' ? '正在获取授权信息…' : '请在打开的浏览器页面中完成登录'}</small>
-            ${ob.oauthState.userCode ? `<div class="ob-device-code">${esc(ob.oauthState.userCode)}</div>` : ''}
-            <div class="ob-oauth-actions">
-              ${ob.oauthState.verificationUri ? `<a class="ob-primary-btn" href="${esc(ob.oauthState.verificationUri)}" target="_blank" rel="noopener noreferrer">打开登录页面</a>` : ''}
-              <button type="button" class="ob-secondary-btn" data-ob-action="cancel-oauth">取消</button>
-            </div>
-          ` : `
-            <small>未检测到本机 ${subLabel} 登录，你可以登录 ${subLabel} 订阅账号，或在上方改用 DeepSeek / OpenAI / Anthropic / 自定义 API Key。</small>
-            <div class="ob-oauth-actions">
-              <button type="button" class="ob-primary-btn" data-ob-action="start-sub-oauth" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>登录 ${subLabel} 订阅</button>
-            </div>
-          `}
+          <small>${ob.oauthState.status === 'starting' ? '正在获取授权信息…' : '请在打开的浏览器页面中完成登录'}</small>
+          ${ob.oauthState.userCode ? `<div class="ob-device-code">${esc(ob.oauthState.userCode)}</div>` : ''}
+          <div class="ob-oauth-actions">
+            ${ob.oauthState.verificationUri ? `<a class="ob-primary-btn" href="${esc(ob.oauthState.verificationUri)}" target="_blank" rel="noopener noreferrer">打开登录页面</a>` : ''}
+            <button type="button" class="ob-secondary-btn" data-ob-action="cancel-oauth">取消</button>
+          </div>
+        </div>`;
+      } else if (!ob.localLoaded) {
+        formBody = `<div class="ob-oauth-box">
+          <small class="ob-detecting"><span class="ob-spinner"></span>正在检测本机 ${subLabel} 登录态…</small>
+        </div>`;
+      } else if (hasLocal) {
+        formBody = `<div class="ob-oauth-box is-detected">
+          <div class="ob-oauth-detected-head">
+            <strong>检测到本机已有 ${subLabel} 订阅</strong>
+            <small>直接复用本机登录态，并自动衔接对接专职 Bot</small>
+          </div>
+          <div class="ob-oauth-actions">
+            <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>
+              ${ob.busy && ob.phase !== 'idle' ? '<span class="ob-spinner"></span>正在接入…' : '复用并继续'}
+            </button>
+            <button type="button" class="ob-secondary-btn" data-ob-action="start-sub-oauth" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>改用其他账号</button>
+          </div>
+        </div>`;
+      } else {
+        formBody = `<div class="ob-oauth-box">
+          <small>未检测到本机 ${subLabel} 登录，你可以登录 ${subLabel} 订阅账号，或在上方改用 DeepSeek / OpenAI / Anthropic / 自定义 API Key。</small>
+          <div class="ob-oauth-actions">
+            <button type="button" class="ob-primary-btn" data-ob-action="start-sub-oauth" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>登录 ${subLabel} 订阅</button>
+            <button type="button" class="ob-secondary-btn" data-ob-action="redetect-local" ${ob.busy || ob.localLoading ? 'disabled' : ''}>重新检测</button>
+          </div>
         </div>`;
       }
     } else {
@@ -280,7 +323,6 @@
           <p>选择本机订阅或任意模型 API，接通后即可直接建群开工。</p>
         </header>
         ${previewActiveBanner}
-        ${localBanner}
         ${providerGrid}
         ${formBody}
         ${statusBar}
@@ -288,88 +330,272 @@
     `;
   }
 
+  function formatClock(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function isAutoWakeMessage(msg) {
+    if (!msg) return false;
+    if (ob.wakeMessageId && msg.id === ob.wakeMessageId) return true;
+    const sender = msg.senderId || msg.author?.id;
+    const text = String(msg.content || '').trim();
+    return sender === 'user' && /^@[^\s]+\s+请在后台自检本机环境/.test(text);
+  }
+
   function botStageSnapshot() {
     const botId = ob.botId;
-    const wakeIdx = ob.wakeMessageId ? ob.botMessages.findIndex(m => m.id === ob.wakeMessageId) : -1;
+    const wakeMsg = ob.botMessages.find(isAutoWakeMessage) || null;
+    if (wakeMsg && !ob.wakeMessageId) ob.wakeMessageId = wakeMsg.id;
+    const wakeIdx = wakeMsg ? ob.botMessages.indexOf(wakeMsg) : -1;
     const relevant = (wakeIdx >= 0 ? ob.botMessages.slice(wakeIdx + 1) : ob.botMessages)
       .filter(m => {
-        if (m.id === ob.wakeMessageId) return false;
+        if (isAutoWakeMessage(m)) return false;
         const sender = m.senderId || m.author?.id;
         return !botId || sender === botId || sender === 'user';
       });
+    const botSessions = (ob.botExecutions || []).filter(e =>
+      e.kind === 'session' && (!botId || (e.execution_actor?.id || e.bot_id) === botId)
+    );
     const activeActivity = (ob.botActivities || []).find(a => !botId || a.bot_id === botId);
-    const liveExec = (ob.botExecutions || []).find(e => LIVE_STATUSES.has(e.status) && (!botId || (e.execution_actor?.id || e.bot_id) === botId));
+    const liveExec = botSessions.find(e => LIVE_STATUSES.has(e.status)) || null;
     const pendingExec = liveExec && ['needs_input', 'awaiting_input'].includes(liveExec.status) ? liveExec : null;
     const pendingPromptMsg = [...relevant].reverse().find(m => m.prompt && !m.prompt_response);
     const hasBotReply = relevant.some(m => (m.senderId || m.author?.id) === botId && (m.content || '').trim());
+    const hasAck = Boolean(
+      wakeMsg?.acks?.some(a => !botId || a.botId === botId) ||
+      botSessions.length ||
+      activeActivity ||
+      hasBotReply
+    );
+    const ackAt = wakeMsg?.acks?.find(a => !botId || a.botId === botId)?.at || null;
     const isWorking = Boolean(activeActivity || (liveExec && !pendingExec));
     const isReady = hasBotReply && !isWorking && !pendingExec && !pendingPromptMsg;
     const progressText = pendingExec
       ? (pendingExec.pending_requests?.[0]?.question || '等待你的确认或输入')
-      : (activeActivity?.text || liveExec?.live_progress || liveExec?.work_summary || '正在检查本机 CLI、登录态与桥接脚本…');
-    return { relevant, activeActivity, liveExec, pendingExec, pendingPromptMsg, hasBotReply, isWorking, isReady, progressText };
+      : (activeActivity?.text || liveExec?.live_progress || liveExec?.work_summary || (hasAck ? '正在分析环境与执行自检…' : '正在唤醒专职 Bot…'));
+    return { wakeMsg, relevant, botSessions, activeActivity, liveExec, pendingExec, pendingPromptMsg, hasBotReply, hasAck, ackAt, isWorking, isReady, progressText };
   }
 
-  function renderBotStage() {
-    const snap = botStageSnapshot();
-    const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
-    const avatarId = ob.botId || 'bot-default-eggbot-local';
-    const elapsed = formatElapsed(Date.now() - (ob.botStartedAt || Date.now()));
-    const badgeClass = snap.isReady ? 'is-done' : 'is-live';
-    const badgeText = snap.isReady
-      ? '已就绪 ✓'
-      : snap.pendingExec || snap.pendingPromptMsg
-        ? '需要你确认'
-        : `对接中 ${elapsed}`;
+  function recordBotProgressSnapshot() {
+    const botId = ob.botId;
+    const now = Date.now();
+    const wakeMsg = ob.botMessages.find(isAutoWakeMessage);
+    const baseTs = wakeMsg?.createdAt ? Date.parse(wakeMsg.createdAt) : (ob.botStartedAt || now);
+    if (wakeMsg?.createdAt && Number.isFinite(baseTs)) {
+      ob.botStartedAt = baseTs;
+    }
+    const sessions = (ob.botExecutions || []).filter(e =>
+      e.kind === 'session' && (!botId || (e.execution_actor?.id || e.bot_id) === botId)
+    );
+    sessions.forEach((exec, idx) => {
+      if (!exec.id || ob.botExecSeenAt.has(exec.id)) return;
+      const parsed = Date.parse(exec.started_at || exec.created_at || '');
+      if (Number.isFinite(parsed)) {
+        ob.botExecSeenAt.set(exec.id, parsed);
+      } else if (!LIVE_STATUSES.has(exec.status)) {
+        // Already completed before first poll (e.g. after reload): place right after wake, before final reply
+        ob.botExecSeenAt.set(exec.id, baseTs + 1000 + idx * 1000);
+      } else {
+        ob.botExecSeenAt.set(exec.id, now + idx);
+      }
+    });
+    const execSummaries = new Set(
+      sessions.map(e => String(e.work_summary || '').trim()).filter(Boolean)
+    );
+    for (const act of (ob.botActivities || [])) {
+      if (botId && act.bot_id && act.bot_id !== botId) continue;
+      const text = String(act.text || '').trim();
+      if (!text || execSummaries.has(text)) continue;
+      const last = ob.botMilestones.at(-1);
+      if (!last || last.text !== text) {
+        ob.botMilestones.push({ id: `ms-${ob.botMilestones.length + 1}`, text, time: now });
+      }
+    }
+  }
 
-    const feedItems = [];
-    if (!snap.relevant.length) {
-      feedItems.push(`<div class="ob-bot-empty">
-        <span class="ob-spinner" style="width:20px;height:20px;color:var(--accent,#7d824b)"></span>
-        <div>正在自动验证本机 <strong>${esc(label)}</strong> CLI、登录态与桥接脚本，完成后会在这里直接回报。</div>
-      </div>`);
-    } else {
-      for (const msg of snap.relevant) {
+  function buildBotFeedItems(snap, label, avatarId) {
+    const items = [];
+    const botMiniAvatar = avatarSvg(avatarId, 28, 'idle');
+    const startedTs = snap.wakeMsg?.createdAt ? Date.parse(snap.wakeMsg.createdAt) : (ob.botStartedAt || Date.now());
+
+    // 1. Friendly kickoff bubble on the user side
+    items.push({
+      key: 'kickoff',
+      sig: `kickoff:${label}`,
+      html: `<div class="ob-chat-row is-user">
+        <div class="ob-chat-col">
+          <div class="ob-chat-meta"><span>你</span><span>${esc(formatClock(startedTs))}</span></div>
+          <div class="ob-bubble is-user">开始对接本机 <strong>${esc(label)}</strong> 并执行环境自检</div>
+        </div>
+      </div>`,
+    });
+
+    // 2. Immediate Bot acknowledgement bubble once Bot wakes / acks
+    if (snap.hasAck) {
+      const ackTime = snap.ackAt || startedTs;
+      items.push({
+        key: 'ack',
+        sig: `ack:${label}`,
+        html: `<div class="ob-chat-row is-bot">
+          <div class="ob-chat-avatar">${botMiniAvatar}</div>
+          <div class="ob-chat-col">
+            <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(ackTime))}</span></div>
+            <div class="ob-bubble is-bot">收到，开始检查本机 CLI、登录态与桥接脚本…</div>
+          </div>
+        </div>`,
+      });
+    }
+
+    // 3. Chronological stream of exec step bubbles, activity milestones, and room messages
+    const timeline = [];
+    for (const exec of snap.botSessions) {
+      const ts = ob.botExecSeenAt.get(exec.id) || Date.parse(exec.started_at || exec.created_at || '') || startedTs + 1;
+      timeline.push({ kind: 'exec', ts, id: exec.id, data: exec });
+    }
+    for (const ms of ob.botMilestones) {
+      timeline.push({ kind: 'milestone', ts: ms.time, id: ms.id, data: ms });
+    }
+    for (const msg of snap.relevant) {
+      const ts = Date.parse(msg.createdAt || '') || Date.now();
+      timeline.push({ kind: 'msg', ts, id: msg.id, data: msg });
+    }
+    timeline.sort((a, b) => a.ts - b.ts);
+
+    for (const entry of timeline) {
+      if (entry.kind === 'exec') {
+        const exec = entry.data;
+        const isLive = LIVE_STATUSES.has(exec.status);
+        const isNeedsInput = ['needs_input', 'awaiting_input'].includes(exec.status);
+        const isFailed = ['failed', 'error', 'cancelled', 'stopped'].includes(exec.status);
+        const stateLabel = isNeedsInput ? '等待确认' : isLive ? '执行中' : isFailed ? '需关注' : '已完成';
+        const stateClass = isNeedsInput ? 'is-warn' : isLive ? 'is-live' : isFailed ? 'is-err' : 'is-done';
+        const title = exec.work_summary || '执行本机自检任务';
+        const detail = isLive && exec.live_progress && exec.live_progress !== title ? exec.live_progress : '';
+        const reqs = isNeedsInput && exec.pending_requests?.length ? exec.pending_requests : [];
+        const sig = `exec:${exec.id}:${exec.status}:${title}:${detail}:${reqs.length}`;
+        items.push({
+          key: `exec:${exec.id}`,
+          sig,
+          html: `<div class="ob-chat-row is-bot">
+            <div class="ob-chat-avatar">${botMiniAvatar}</div>
+            <div class="ob-chat-col">
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              <div class="ob-step-bubble ${stateClass}">
+                <div class="ob-step-head">
+                  <span class="ob-step-pill ${stateClass}">
+                    ${isLive && !isNeedsInput ? '<span class="ob-spinner"></span>' : isFailed ? '!' : isNeedsInput ? '?' : '✓'}
+                    ${esc(stateLabel)}
+                  </span>
+                  <span class="ob-step-title">${esc(title)}</span>
+                </div>
+                ${detail ? `<div class="ob-step-detail">${esc(detail)}</div>` : ''}
+                ${reqs.map(req => `
+                  <div class="ob-step-prompt">
+                    ${req.question ? `<div>${esc(req.question)}</div>` : ''}
+                    ${req.choices?.length ? `<div class="ob-prompt-choices">${req.choices.map(c => `
+                      <button type="button" class="ob-secondary-btn" data-ob-action="reply-exec-req" data-exec-id="${esc(exec.execution_ref?.id || exec.id)}" data-req-id="${esc(req.request_id || '')}" data-val="${esc(c.id)}">${esc(c.label || c.id)}</button>`).join('')}</div>` : ''}
+                  </div>`).join('')}
+              </div>
+            </div>
+          </div>`,
+        });
+        continue;
+      }
+
+      if (entry.kind === 'milestone') {
+        const ms = entry.data;
+        const isCurrent = !snap.isReady && snap.activeActivity?.text === ms.text;
+        const sig = `ms:${ms.id}:${isCurrent ? 'live' : 'done'}:${ms.text}`;
+        items.push({
+          key: `ms:${ms.id}`,
+          sig,
+          html: `<div class="ob-chat-row is-bot">
+            <div class="ob-chat-avatar">${botMiniAvatar}</div>
+            <div class="ob-chat-col">
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              <div class="ob-step-bubble ${isCurrent ? 'is-live' : 'is-done'}">
+                <div class="ob-step-head">
+                  <span class="ob-step-pill ${isCurrent ? 'is-live' : 'is-done'}">${isCurrent ? '<span class="ob-spinner"></span>进展' : '✓ 已完成'}</span>
+                  <span class="ob-step-title">${esc(ms.text)}</span>
+                </div>
+              </div>
+            </div>
+          </div>`,
+        });
+        continue;
+      }
+
+      if (entry.kind === 'msg') {
+        const msg = entry.data;
         const isUser = (msg.senderId || msg.author?.id) === 'user';
         const bodyHtml = renderSimpleMarkdown(msg.content);
-        if (bodyHtml) {
-          feedItems.push(`<div class="ob-bubble ${isUser ? 'is-user' : 'is-bot'}">${bodyHtml}</div>`);
-        }
-        if (msg.prompt && !msg.prompt_response) {
+        const hasPendingPrompt = Boolean(msg.prompt && !msg.prompt_response);
+        if (!bodyHtml && !hasPendingPrompt) continue;
+        let promptHtml = '';
+        if (hasPendingPrompt) {
           const p = msg.prompt;
           if (p.kind === 'secret') {
-            feedItems.push(`<div class="ob-prompt-card">
+            promptHtml = `<div class="ob-prompt-card">
               <strong>${esc(p.title || '需要安全录入凭据')}</strong>
               ${p.description ? `<div style="font-size:12.5px;color:var(--muted)">${esc(p.description)}</div>` : ''}
               <div><button type="button" class="ob-primary-btn" data-ob-action="open-secret-prompt" data-msg-id="${esc(msg.id)}">${esc(p.submit_label || '打开隐私输入窗')}</button></div>
-            </div>`);
+            </div>`;
           } else {
             const q = p.questions?.[0];
             const opts = q?.options || [];
-            feedItems.push(`<div class="ob-prompt-card">
+            promptHtml = `<div class="ob-prompt-card">
               <strong>${esc(p.title || q?.label || '请确认')}</strong>
               ${opts.length ? `<div class="ob-prompt-choices">${opts.map(opt => `
                 <button type="button" class="ob-secondary-btn" data-ob-action="reply-prompt-opt" data-msg-id="${esc(msg.id)}" data-label="${esc(opt.label)}">${esc(opt.label)}</button>`).join('')}</div>` : ''}
-            </div>`);
+            </div>`;
           }
         }
+        const sig = `msg:${msg.id}:${msg.content || ''}:${hasPendingPrompt ? 'p1' : 'p0'}`;
+        items.push({
+          key: `msg:${msg.id}`,
+          sig,
+          html: `<div class="ob-chat-row ${isUser ? 'is-user' : 'is-bot'}">
+            ${isUser ? '' : `<div class="ob-chat-avatar">${botMiniAvatar}</div>`}
+            <div class="ob-chat-col">
+              <div class="ob-chat-meta"><strong>${esc(isUser ? '你' : label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              ${bodyHtml ? `<div class="ob-bubble ${isUser ? 'is-user' : 'is-bot'}">${bodyHtml}</div>` : ''}
+              ${promptHtml}
+            </div>
+          </div>`,
+        });
       }
     }
 
-    if (snap.pendingExec?.pending_requests?.length) {
-      const req = snap.pendingExec.pending_requests[0];
-      const execRef = snap.pendingExec.execution_ref;
-      feedItems.push(`<div class="ob-prompt-card">
-        <strong>${esc(req.kind === 'approval' ? '执行权限确认' : '执行会话等待输入')}</strong>
-        ${req.question ? `<div style="font-size:13px">${esc(req.question)}</div>` : ''}
-        ${req.choices?.length ? `<div class="ob-prompt-choices">${req.choices.map(c => `
-          <button type="button" class="ob-secondary-btn" data-ob-action="reply-exec-req" data-exec-id="${esc(execRef?.id || snap.pendingExec.id)}" data-req-id="${esc(req.request_id || '')}" data-val="${esc(c.id)}">${esc(c.label || c.id)}</button>`).join('')}</div>` : ''}
-      </div>`);
+    // 4. Bottom live typing bubble while Bot is still working (keeps feed alive, never blank!)
+    if (!snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg) {
+      items.push({
+        key: 'typing',
+        sig: `typing:${snap.progressText}`,
+        html: `<div class="ob-chat-row is-bot">
+          <div class="ob-chat-avatar">${botMiniAvatar}</div>
+          <div class="ob-chat-col">
+            <div class="ob-typing-bubble">
+              <span class="ob-typing-dots"><i></i><i></i><i></i></span>
+              <span class="ob-typing-text">${esc(snap.progressText)}</span>
+            </div>
+          </div>
+        </div>`,
+      });
     }
 
-    return `
+    return items;
+  }
+
+  function mountBotStage(stage) {
+    const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
+    const avatarId = ob.botId || 'bot-default-eggbot-local';
+    stage.dataset.mountedStage = 'bot';
+    stage.innerHTML = `
       <div class="ob-window-bar">
-        <span class="ob-window-brand">Summon Bot · 接入 ${esc(label)} <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
+        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(label)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
         <div class="ob-window-controls">
           ${ob.preview
             ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>'
@@ -379,37 +605,128 @@
       <div class="ob-bot-shell">
         <div class="ob-bot-header">
           <div class="ob-bot-identity">
-            ${avatarSvg(avatarId, 44, snap.isWorking ? 'work' : 'idle')}
+            <div data-ob-bot-avatar>${avatarSvg(avatarId, 44, 'work')}</div>
             <div class="ob-bot-titles">
-              <h2>${snap.isReady ? `${esc(label)} 已就绪` : `正在对接 ${esc(label)}`}</h2>
-              <p>${snap.isReady ? '本机自检与桥接已完成，可以直接建群开始工作' : '单步自检本机环境与桥接脚本，无需进入单独聊天室'}</p>
+              <h2 data-ob-bot-title>正在对接 ${esc(label)}</h2>
+              <p data-ob-bot-subtitle>实时同步自检进展，完成后直接进入新建群聊</p>
             </div>
           </div>
-          <span class="ob-bot-badge ${badgeClass}">
-            ${snap.isReady ? '' : '<span class="ob-live-dot"></span>'}
-            <span data-ob-badge-text>${esc(badgeText)}</span>
+          <span class="ob-bot-badge is-live" data-ob-badge>
+            <span class="ob-live-dot" data-ob-live-dot></span>
+            <span data-ob-badge-text>对接中 00:00</span>
           </span>
         </div>
-        ${!snap.isReady ? `
-          <div class="ob-bot-progress">
-            <span class="ob-bot-progress-left">
-              <span class="ob-spinner" style="color:var(--accent,#7d824b)"></span>
-              <span class="ob-bot-progress-text">${esc(snap.progressText)}</span>
-            </span>
-            <span class="ob-bot-timer" data-ob-timer>${esc(elapsed)}</span>
-          </div>` : ''}
-        <div class="ob-bot-feed" id="ob-bot-feed">${feedItems.join('')}</div>
-        ${snap.isReady ? `
-          <div class="ob-ready-bar">
-            <span>✓ ${esc(label)} 对接完成，现在可以创建你的第一个群聊</span>
-            <button type="button" class="ob-primary-btn" data-ob-action="finish-to-main">进入工作台，新建群聊 →</button>
-          </div>` : ''}
+        <div class="ob-bot-feed" id="ob-bot-feed"></div>
+        <div class="ob-ready-bar" data-ob-ready-bar hidden>
+          <span data-ob-ready-text>✓ ${esc(label)} 对接完成，现在可以创建你的第一个群聊</span>
+          <button type="button" class="ob-primary-btn" data-ob-action="finish-to-main">进入工作台，新建群聊 →</button>
+        </div>
         <form class="ob-bot-composer" id="ob-bot-reply-form">
-          <input name="text" type="text" placeholder="${snap.isReady ? '还需要让它顺手检查点什么？或直接点上方进入…' : `给 ${esc(label)} 补充说明或回答…`}" autocomplete="off" ${ob.botSending ? 'disabled' : ''}>
-          <button type="submit" class="ob-primary-btn" ${ob.botSending ? 'disabled' : ''}>发送</button>
+          <input name="text" type="text" placeholder="给 ${esc(label)} 补充说明或回答…" autocomplete="off">
+          <button type="submit" class="ob-primary-btn">发送</button>
         </form>
       </div>
     `;
+  }
+
+  function patchBotStage(stage) {
+    if (stage.dataset.mountedStage !== 'bot') {
+      mountBotStage(stage);
+    }
+    const snap = botStageSnapshot();
+    const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
+    const avatarId = ob.botId || 'bot-default-eggbot-local';
+    const elapsed = formatElapsed(Date.now() - (ob.botStartedAt || Date.now()));
+
+    const brandEl = stage.querySelector('[data-ob-brand-text]');
+    const nextBrand = `Summon Bot · 接入 ${label}`;
+    if (brandEl && brandEl.textContent !== nextBrand) brandEl.textContent = nextBrand;
+
+    const titleEl = stage.querySelector('[data-ob-bot-title]');
+    const nextTitle = snap.isReady ? `${label} 已就绪` : `正在对接 ${label}`;
+    if (titleEl && titleEl.textContent !== nextTitle) titleEl.textContent = nextTitle;
+
+    const subEl = stage.querySelector('[data-ob-bot-subtitle]');
+    const nextSub = snap.isReady ? '本机自检与桥接已完成，可以直接建群开始工作' : '实时同步自检进展，完成后直接进入新建群聊';
+    if (subEl && subEl.textContent !== nextSub) subEl.textContent = nextSub;
+
+    const avatarWrap = stage.querySelector('[data-ob-bot-avatar]');
+    const avatarKey = `${avatarId}:${snap.isWorking ? 'work' : 'idle'}`;
+    if (avatarWrap && avatarWrap.dataset.avatarKey !== avatarKey) {
+      avatarWrap.dataset.avatarKey = avatarKey;
+      avatarWrap.innerHTML = avatarSvg(avatarId, 44, snap.isWorking ? 'work' : 'idle');
+    }
+
+    const badgeEl = stage.querySelector('[data-ob-badge]');
+    const badgeDot = stage.querySelector('[data-ob-live-dot]');
+    const badgeTextEl = stage.querySelector('[data-ob-badge-text]');
+    const nextBadgeText = snap.isReady
+      ? '已就绪 ✓'
+      : snap.pendingExec || snap.pendingPromptMsg
+        ? '需要你确认'
+        : `对接中 ${elapsed}`;
+    if (badgeEl) {
+      badgeEl.classList.toggle('is-done', snap.isReady);
+      badgeEl.classList.toggle('is-live', !snap.isReady);
+    }
+    if (badgeDot) badgeDot.hidden = snap.isReady;
+    if (badgeTextEl && badgeTextEl.textContent !== nextBadgeText) badgeTextEl.textContent = nextBadgeText;
+
+    const readyBar = stage.querySelector('[data-ob-ready-bar]');
+    const readyText = stage.querySelector('[data-ob-ready-text]');
+    if (readyBar) readyBar.hidden = !snap.isReady;
+    const nextReadyText = `✓ ${label} 对接完成，现在可以创建你的第一个群聊`;
+    if (readyText && readyText.textContent !== nextReadyText) readyText.textContent = nextReadyText;
+
+    const inputEl = stage.querySelector('#ob-bot-reply-form input[name=text]');
+    const submitBtn = stage.querySelector('#ob-bot-reply-form button[type=submit]');
+    if (inputEl) {
+      const nextPh = snap.isReady ? '还需要让它顺手检查点什么？或直接点上方进入…' : `给 ${label} 补充说明或回答…`;
+      if (inputEl.placeholder !== nextPh) inputEl.placeholder = nextPh;
+      inputEl.disabled = ob.botSending;
+    }
+    if (submitBtn) submitBtn.disabled = ob.botSending;
+
+    // Incremental diff of #ob-bot-feed so existing bubbles NEVER flicker or re-animate!
+    const feed = stage.querySelector('#ob-bot-feed');
+    if (!feed) return;
+    const wasNearBottom = (feed.scrollHeight - feed.scrollTop - feed.clientHeight) < 60;
+    const nextItems = buildBotFeedItems(snap, label, avatarId);
+    const nextKeySet = new Set(nextItems.map(item => item.key));
+    const existingByKey = new Map();
+    for (const child of [...feed.children]) {
+      const key = child.dataset.feedKey;
+      if (!key || !nextKeySet.has(key)) {
+        child.remove();
+      } else {
+        existingByKey.set(key, child);
+      }
+    }
+
+    let appended = false;
+    nextItems.forEach((item, idx) => {
+      let node = existingByKey.get(item.key);
+      if (!node) {
+        node = document.createElement('div');
+        node.className = 'ob-feed-item is-enter';
+        node.dataset.feedKey = item.key;
+        node.dataset.feedSig = item.sig;
+        node.innerHTML = item.html;
+        appended = true;
+      } else if (node.dataset.feedSig !== item.sig) {
+        node.dataset.feedSig = item.sig;
+        node.classList.remove('is-enter');
+        node.innerHTML = item.html;
+      }
+      const currentAtIdx = feed.children[idx];
+      if (currentAtIdx !== node) {
+        feed.insertBefore(node, currentAtIdx || null);
+      }
+    });
+
+    if (appended || wasNearBottom) {
+      feed.scrollTop = feed.scrollHeight;
+    }
   }
 
   function render() {
@@ -418,18 +735,12 @@
     const stage = root.querySelector('#ob-stage');
     if (!stage) return;
     root.classList.toggle('is-stage-bot', ob.stage === 'bot');
-    const prevInput = document.activeElement?.closest('#ob-bot-reply-form')?.querySelector('input[name=text]');
-    const savedReplyText = prevInput ? prevInput.value : '';
-    const hadReplyFocus = Boolean(prevInput);
-    stage.innerHTML = ob.stage === 'bot' ? renderBotStage() : renderModelStage();
     if (ob.stage === 'bot') {
-      const feed = stage.querySelector('#ob-bot-feed');
-      if (feed) feed.scrollTop = feed.scrollHeight;
-      if (hadReplyFocus) {
-        const nextInput = stage.querySelector('#ob-bot-reply-form input[name=text]');
-        if (nextInput) { nextInput.value = savedReplyText; nextInput.focus(); }
-      }
+      patchBotStage(stage);
+      return;
     }
+    stage.dataset.mountedStage = 'model';
+    stage.innerHTML = renderModelStage();
   }
 
   async function pollBotStage() {
@@ -450,6 +761,7 @@
       if (execRes) {
         ob.botExecutions = execRes.items || [];
       }
+      recordBotProgressSnapshot();
       render();
     } finally {
       ob.botRefreshPending = false;
@@ -463,8 +775,6 @@
     ob.botTickTimer = setInterval(() => {
       if (!ob.open || ob.stage !== 'bot') return;
       const elapsed = formatElapsed(Date.now() - (ob.botStartedAt || Date.now()));
-      const timerEl = document.querySelector('[data-ob-timer]');
-      if (timerEl) timerEl.textContent = elapsed;
       const snap = botStageSnapshot();
       const badgeEl = document.querySelector('[data-ob-badge-text]');
       if (badgeEl && !snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg) {
@@ -484,11 +794,23 @@
     ob.roomId = roomId || SUMMON_ROOM_ID;
     ob.wakeMessageId = wakeMessageId || null;
     ob.botStartedAt = Date.now();
+    ob.botMilestones = [];
+    ob.botExecSeenAt = new Map();
     ob.botMessages = preview
-      ? [{ id: 'preview-reply', senderId: ob.botId || 'preview-codex', content: '**自检完成**\n- Codex CLI 已就绪\n- 本机登录态与 `scripts/app-server.mjs` 桥接验证通过\n\n随时可以建群开始干活。' }]
+      ? [{ id: 'preview-reply', senderId: ob.botId || 'preview-codex', createdAt: new Date().toISOString(), content: '**自检完成**\n- Codex CLI 已就绪\n- 本机登录态与 `scripts/app-server.mjs` 桥接验证通过\n\n随时可以建群开始干活。' }]
       : [];
     ob.botActivities = [];
-    ob.botExecutions = [];
+    ob.botExecutions = preview
+      ? [
+          { kind: 'session', id: 'preview-exec-1', bot_id: 'preview-codex', status: 'completed', work_summary: '检查本机 Codex CLI 与 ChatGPT 登录态' },
+          { kind: 'session', id: 'preview-exec-2', bot_id: 'preview-codex', status: 'completed', work_summary: '验证桥接脚本 scripts/app-server.mjs 端到端响应' },
+        ]
+      : [];
+    const stageEl = document.querySelector('#ob-stage');
+    if (stageEl) delete stageEl.dataset.mountedStage;
+    if (window.SummonDesktop && !preview) {
+      try { history.replaceState(null, '', '/?onboarding_window=bot'); } catch {}
+    }
     render();
     void window.SummonDesktop?.morphWindow?.('bot', { duration: 400 });
     if (!preview) startBotWatchers();
@@ -535,7 +857,6 @@
     render();
     try {
       const test = await api(`/api/model-settings/connections/${encodeURIComponent(connId)}/test`, 'POST', {});
-      await api('/api/model-settings/active', 'POST', { id: connId });
       ob.phase = 'success';
       ob.statusText = `连接成功 · ${test.model}（${test.latencyMs}ms）`;
       render();
@@ -548,7 +869,11 @@
         }
         return;
       }
-      const started = await api('/api/onboarding/start', 'POST', activateBundled ? { activateBundled } : {});
+      // Atomically activate model + start onboarding in a single request so SSE never transiently sees status='completed'.
+      const started = await api('/api/onboarding/start', 'POST', {
+        connectionId: connId,
+        ...(activateBundled ? { activateBundled } : {}),
+      });
       if (started?.status === 'configuring_bot' && started.botId) {
         await morphToBotStage({
           botId: started.botId,
@@ -577,7 +902,7 @@
     ob.statusText = `正在导入本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅…`;
     render();
     try {
-      const res = await api('/api/model-settings/local/import', 'POST', { kind, activate: true });
+      const res = await api('/api/model-settings/local/import', 'POST', { kind, activate: false });
       const connId = res.importedId || `${kind}-local`;
       const activateBundled = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
       await verifyAndContinue(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { activateBundled });
@@ -681,7 +1006,7 @@
       const saved = await api('/api/model-settings/connections', 'POST', {
         kind: 'api',
         name: def.id === 'openai-compatible' ? (model || '自定义 API') : def.name,
-        provider: def.provider, api: apiProto, baseUrl, model, apiKey, allowNoKey, activate: true,
+        provider: def.provider, api: apiProto, baseUrl, model, apiKey, allowNoKey, activate: false,
       });
       const connId = saved.savedId || saved.activeId || saved.connections?.at(-1)?.id;
       if (!connId) throw new Error('未能保存模型配置');
@@ -725,6 +1050,8 @@
     ob.busy = false;
     ob.phase = 'idle';
     ob.statusText = '';
+    ob.localLoaded = false;
+    ob.userPickedProvider = false;
     if (window.SummonDesktop) {
       document.documentElement.classList.add('desktop-onboarding-window');
     }
@@ -741,8 +1068,7 @@
       return;
     }
     render();
-    await loadCatalogAndLocal();
-    if (ob.open && ob.stage === 'model') render();
+    await loadCatalogAndLocal({ force: true });
   }
 
   async function closePreview() {
@@ -761,13 +1087,30 @@
       }
       return;
     }
-    if (ob.preview || ob.morphing || !onboarding) return;
+    if (ob.preview || ob.morphing || ob.busy || !onboarding) return;
     if (onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel) {
-      if (!ob.open || ob.stage !== 'model') void openOverlay({ stage: 'model', preview: false, onboarding });
+      if (!ob.open || ob.stage !== 'model') {
+        void openOverlay({ stage: 'model', preview: false, onboarding });
+      } else if (!ob.localLoaded && !ob.localLoading) {
+        void loadCatalogAndLocal();
+      }
       return;
     }
     if (onboarding.status === 'configuring_bot') {
-      if (!ob.open || ob.stage !== 'bot') void openOverlay({ stage: 'bot', preview: false, onboarding });
+      if (!ob.open || ob.stage !== 'bot') {
+        void openOverlay({ stage: 'bot', preview: false, onboarding });
+      } else {
+        const prevBotId = ob.botId;
+        const prevWakeId = ob.wakeMessageId;
+        if (onboarding.botId && !ob.botId) ob.botId = onboarding.botId;
+        if (onboarding.botName && !ob.botName) ob.botName = onboarding.botName;
+        if (onboarding.bundledId && !ob.bundledId) ob.bundledId = onboarding.bundledId;
+        if (onboarding.roomId) ob.roomId = onboarding.roomId;
+        if (onboarding.wakeMessageId && !ob.wakeMessageId) ob.wakeMessageId = onboarding.wakeMessageId;
+        if (ob.botId !== prevBotId || ob.wakeMessageId !== prevWakeId || !ob.botMessages.length) {
+          void pollBotStage();
+        }
+      }
       return;
     }
     if (ob.open && onboarding.status === 'completed') {
@@ -787,6 +1130,7 @@
     const action = btn.dataset.obAction;
     if (action === 'pick-provider') return selectProvider(btn.dataset.provider);
     if (action === 'import-local') return void handleImportLocal(btn.dataset.kind);
+    if (action === 'redetect-local') { ob.localLoaded = false; return void loadCatalogAndLocal({ force: true }); }
     if (action === 'start-sub-oauth' || action === 'start-codex-oauth') return void handleStartSubOAuth(btn.dataset.kind || 'codex');
     if (action === 'cancel-oauth') return void handleCancelOAuth();
     if (action === 'close-preview') return void closePreview();

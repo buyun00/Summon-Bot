@@ -40,14 +40,24 @@ async function runBridge(startPayload) {
   const finish = (status, error) => {
     if (ending) return;
     ending = true;
+    const code = status === 'completed' || status === 'stopped' ? 0 : 1;
+    process.exitCode = code;
     for (const req of requests.values()) { clearTimeout(req.timer); req.reject(new Error(error || status)); }
     requests.clear();
     for (const id of prompts.keys()) emit('withdrawn', { id });
     prompts.clear();
     emit('outcome', { status, ...(error ? { error } : {}) });
-    process.exitCode = status === 'completed' || status === 'stopped' ? 0 : 1;
+    try { stdinRl.close(); } catch {}
     try { server.stdin.end(); } catch {}
-    setTimeout(() => { try { server.kill(); } catch {} output.close(); }, 800).unref();
+    const doneExit = () => {
+      try { output.close(); } catch {}
+      process.exit(code);
+    };
+    server.once('exit', doneExit);
+    setTimeout(() => {
+      try { server.kill(); } catch {}
+      doneExit();
+    }, 250).unref();
   };
 
   const interrupt = async () => {
