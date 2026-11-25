@@ -282,7 +282,7 @@ final class SummonStore {
     }
 
     func setUserName(_ name: String) {
-        settings.userName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Lin"
+        settings.userName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "本地账户"
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
     }
 

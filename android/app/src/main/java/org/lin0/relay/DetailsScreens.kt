@@ -381,11 +381,11 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                                                     horizontalAlignment = Alignment.CenterHorizontally,
                                                     verticalArrangement = Arrangement.spacedBy(6.dp),
                                                 ) {
-                                                    Image(
-                                                        painterResource(R.drawable.owner_avatar),
-                                                        null,
-                                                        Modifier.size(48.dp).clip(CircleShape).border(0.8.dp, palette.bubbleStroke, CircleShape),
-                                                        contentScale = ContentScale.Crop,
+                                                    OwnerAvatar(
+                                                        name = store.settings.hubUsername ?: store.settings.userName,
+                                                        signedIn = store.settings.hubUsername != null,
+                                                        size = 48.dp,
+                                                        modifier = Modifier.border(0.8.dp, palette.bubbleStroke, CircleShape),
                                                     )
                                                     Text(store.name(memberId), style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 }

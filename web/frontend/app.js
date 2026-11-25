@@ -146,6 +146,8 @@ function renderSettingsPanelBody(tab) {
   const connected = ui.streamConnected && ui.protocolReady;
   if (tab === 'general') {
     const hostLabel = location.host || location.origin;
+    const identity = ownerIdentity();
+    const profile = readLocalProfile();
     return `<div class="settings-section">
       <h3 class="settings-group-label">账户</h3>
       <div class="settings-card">
@@ -153,11 +155,28 @@ function renderSettingsPanelBody(tab) {
           <div class="settings-account-main">
             ${avatar('user', 42)}
             <div class="settings-row-copy">
-              <strong>${esc(ownerName())}</strong>
-              <small><i class="settings-status-dot ${connected ? 'is-ok' : 'is-warn'}" aria-hidden="true"></i>${connected ? '已连接' : '连接中断'} · ${esc(hostLabel)}</small>
+              <strong>${esc(identity.signedIn ? identity.name : (profile.name || '本地账户'))}</strong>
+              <small><i class="settings-status-dot ${connected ? 'is-ok' : 'is-warn'}" aria-hidden="true"></i>${identity.signedIn ? `@${esc(identity.username || '')} · 云端账号` : '未登录云端账号 · 仅本机使用'} · ${esc(hostLabel)}</small>
             </div>
           </div>
-          ${!connected ? '<button type="button" class="secondary-button small-button" data-action="refresh">重新连接</button>' : ''}
+          <div class="settings-row-actions">
+            ${!connected ? '<button type="button" class="secondary-button small-button" data-action="refresh">重新连接</button>' : ''}
+            ${identity.signedIn
+              ? '<button type="button" class="secondary-button small-button" data-hub-action="logout">退出账号</button>'
+              : '<button type="button" class="primary-button small-button" data-action="open-account-login">登录云端账号</button>'}
+          </div>
+        </div>
+        <div class="settings-row settings-row-stack">
+          <div class="settings-row-copy">
+            <strong>本地资料</strong>
+            <small>自定义本机显示的昵称与头像（保存在本机浏览器）</small>
+          </div>
+          <form class="settings-profile-form" id="local-profile-form">
+            <input name="name" type="text" maxlength="32" value="${esc(profile.name || '')}" placeholder="${esc(identity.signedIn ? identity.name : '本地账户')}" autocomplete="off">
+            <button type="submit" class="secondary-button small-button">保存昵称</button>
+            <label class="secondary-button small-button settings-upload-btn">更换头像<input type="file" accept="image/png,image/jpeg,image/webp" data-action="upload-owner-avatar" hidden></label>
+            ${profile.avatar ? '<button type="button" class="text-button" data-action="clear-owner-avatar">恢复默认</button>' : ''}
+          </form>
         </div>
       </div>
     </div>
@@ -2453,6 +2472,28 @@ async function act(action, element) {
   if (action === 'display-preset') return changeDisplayPreference('zoom',Number(element.dataset.zoom));
   if (action === 'display-reset') { displayPreferences[displayMode()] = { ...displayDefaults[displayMode()] }; return changeDisplayPreference('zoom',displayDefaults[displayMode()].zoom); }
   if (action === 'toggle-search') { ui.searchOpen = !ui.searchOpen; if (!ui.searchOpen) ui.roomQuery = ''; renderTopbar(); $('#room-search')?.focus(); return; }
+  if (action === 'open-account-login') {
+    closeFloatingMenus();
+    await closeModal($('#modal'), { suppressReturn: true });
+    window.SummonHub?.openAuthOverlay?.({ mode: 'login', dismissible: window.SummonHub?.state?.mode === 'local' });
+    return;
+  }
+  if (action === 'clear-owner-avatar') {
+    saveLocalProfile({ avatar: '' });
+    ui.lastSidebarHtml = null;
+    refreshOpenSettingsBody();
+    render();
+    return toast('已恢复默认头像');
+  }
+  if (action === 'owner-click') {
+    const identity = ownerIdentity();
+    if (!identity.signedIn && !identity.localAccepted && window.SummonHub?.openAuthOverlay) {
+      window.SummonHub.openAuthOverlay({ mode: 'login', dismissible: true });
+      return;
+    }
+    ui.menu = ui.menu === 'apps' ? null : 'apps';
+    return render();
+  }
   if (['toggle-apps','toggle-chat-menu','toggle-mention-menu','toggle-draft-workspace'].includes(action)) {
     const menu = action === 'toggle-mention-menu' ? 'mentions' : action === 'toggle-draft-workspace' ? 'draft-workspace' : action.slice(7);
     ui.menu = ui.menu === menu ? null : menu; return render();
@@ -2748,7 +2789,7 @@ function closeFloatingMenus() {
   ui.menu = null;
   if (hadMenu) ui.lastSidebarHtml = null;
   for (const menu of document.querySelectorAll('.context-menu,.floating-context-menu')) menu.remove();
-  for (const button of document.querySelectorAll('[data-action="toggle-apps"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"],[data-action="toggle-draft-workspace"]')) button.setAttribute('aria-expanded', 'false');
+  for (const button of document.querySelectorAll('[data-action="owner-click"],[data-action="toggle-apps"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"],[data-action="toggle-draft-workspace"]')) button.setAttribute('aria-expanded', 'false');
 }
 function openFloatingContextMenu(x, y, html) {
   closeFloatingMenus();
@@ -2965,6 +3006,16 @@ document.addEventListener('drop', event => {
 });
 document.addEventListener('submit', event => {
   const form = event.target;
+  if (form.id === 'local-profile-form') {
+    event.preventDefault();
+    const name = String(form.elements.name?.value || '').trim().slice(0, 32);
+    saveLocalProfile({ name, localAccepted: true });
+    ui.lastSidebarHtml = null;
+    refreshOpenSettingsBody();
+    render();
+    toast(name ? '本地昵称已保存' : '已恢复默认名称');
+    return;
+  }
   if (form.id !== 'message-form' && !form.matches('.execution-input-form')) return;
   event.preventDefault();
   const action = form.id === 'message-form' ? submitRoomMessage(form) : submitExecutionInput(form);
@@ -3038,15 +3089,64 @@ function botAvatar(botOrId) {
   return window.SummonAvatars.normalize({ ...window.SummonAvatars.defaults(bot?.id || '', index), ...(bot?.avatar || {}) });
 }
 function face(config, size = 60, options = {}) { return window.SummonAvatars ? window.SummonAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
+const localProfileKey = 'summon:local-profile:v1';
+function readLocalProfile() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(localProfileKey) || '{}');
+    return {
+      name: typeof raw.name === 'string' ? raw.name.trim().slice(0, 32) : '',
+      avatar: typeof raw.avatar === 'string' && /^data:image\/(?:png|jpeg|webp);base64,/i.test(raw.avatar) ? raw.avatar : '',
+      localAccepted: Boolean(raw.localAccepted),
+    };
+  } catch {
+    return { name: '', avatar: '', localAccepted: false };
+  }
+}
+function saveLocalProfile(patch) {
+  const next = { ...readLocalProfile(), ...patch };
+  try { localStorage.setItem(localProfileKey, JSON.stringify(next)); } catch {}
+  return next;
+}
+function ownerIdentity() {
+  const hubState = window.SummonHub?.state;
+  const signedIn = Boolean(hubState?.authenticated && hubState?.user);
+  const hubUser = signedIn ? hubState.user : null;
+  const profile = readLocalProfile();
+  const cloudName = String(hubUser?.displayName || hubUser?.username || '').trim();
+  const name = profile.name || cloudName || state.user?.name || state.owner?.name || (signedIn ? '用户' : '本地账户');
+  const sidebarLabel = signedIn ? (profile.name || cloudName || '用户') : (profile.name || (profile.localAccepted ? '本地账户' : '登录'));
+  return {
+    signedIn,
+    username: hubUser?.username || '',
+    name,
+    sidebarLabel,
+    customAvatar: profile.avatar,
+    localAccepted: profile.localAccepted,
+  };
+}
+function renderUserAvatar(size) {
+  const identity = ownerIdentity();
+  if (identity.customAvatar) {
+    return `<img class="user-avatar" src="${esc(identity.customAvatar)}" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
+  }
+  if (identity.signedIn) {
+    const ch = [...(identity.name || identity.username || 'U')][0]?.toUpperCase() || 'U';
+    const fontSize = Math.max(11, Math.round(size * 0.44));
+    return `<span class="user-avatar is-initial" style="width:${size}px;height:${size}px;font-size:${fontSize}px" aria-hidden="true">${esc(ch)}</span>`;
+  }
+  const iconSize = Math.max(14, Math.round(size * 0.56));
+  return `<span class="user-avatar is-guest" style="width:${size}px;height:${size}px" aria-hidden="true"><svg viewBox="0 0 24 24" width="${iconSize}" height="${iconSize}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.2" r="3.6"/><path d="M5.2 19.2c.9-3.2 3.5-5 6.8-5s5.9 1.8 6.8 5"/></svg></span>`;
+}
 function avatar(id, large = false, key = '') {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
-  if (id === 'user') return `<img class="user-avatar" src="/icons/user-avatar.jpg?v=owner-20261028" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
+  if (id === 'user') return renderUserAvatar(size);
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
   const motion = key ? (botActivity(botById(id)).motion || 'idle') : 'idle';
   return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, static: !key, identity: `bot:${id}`, state: motion })}</span>`;
 }
 function groupAvatar(room, size = 96, _key = '') {
-  const members = (room?.members || []).filter(id => id === 'user' || botById(id)).slice(0, 4);
+  const bots = (room?.members || []).filter(id => botById(id));
+  const members = (bots.length ? bots : (room?.members || []).filter(id => id === 'user')).slice(0, 4);
   if (!members.length) return `<span class="group-avatar group-avatar-empty" style="width:${size}px;height:${size}px">${icon('chat', Math.round(size * .6))}</span>`;
   return `<span class="group-avatar" data-count="${members.length}" style="width:${size}px;height:${size}px">${members.map((id, index) => `<span class="group-face pos-${index}">${avatar(id, members.length === 1 ? size : Math.round(size * .64), '')}</span>`).join('')}</span>`;
 }
@@ -3056,7 +3156,7 @@ function currentBot() {
 }
 function profileBot() { return ui.profileBotId ? botById(ui.profileBotId) : currentBot(); }
 function currentAccent() { const bot = currentBot() || (roomById(ui.roomId)?.members || []).map(id => botById(id)).find(Boolean); return bot ? botAvatar(bot).color : '#222222'; }
-function ownerName() { return state.user?.name || state.owner?.name || 'Lin'; }
+function ownerName() { return ownerIdentity().name; }
 function directRoom(room) { return room?.mode ? room.mode === 'direct' : room?.members?.length === 2 && room.members.includes('user'); }
 function botActivity(bot) {
   if (!bot) return { kind:'idle', text:'在线', motion:'idle' };
@@ -3324,9 +3424,16 @@ function renderTopbar() {
         <div class="bot-contacts">${systemEntries.map(renderHomeEntryRow).join('')}</div></section>`;
     }
   }
+  const identity = ownerIdentity();
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
+    ${identity.signedIn
+      ? `<div class="apps-menu-account"><strong>${esc(identity.name)}</strong><small>@${esc(identity.username || '')} · 云端账号</small></div>`
+      : `<button class="apps-menu-login" data-action="open-account-login">${icon('link', 17)}<span>登录云端账号</span></button>`}
+    <div class="apps-menu-divider"></div>
     <button data-action="open-panel">${icon('layers', 18)}<span>面板</span></button>
-    <button data-action="open-settings">${icon('settings', 18)}<span>设置</span></button></div>` : '';
+    <button data-action="open-settings">${icon('settings', 18)}<span>设置</span></button>
+    ${identity.signedIn ? `<div class="apps-menu-divider"></div><button data-hub-action="logout">${icon('close', 16)}<span>退出账号</span></button>` : ''}
+  </div>` : '';
   const connected = ui.streamConnected && ui.protocolReady;
   const creatingActive = ui.view === 'chat' && ui.creatingRoom;
   const nodeStrip = hub?.renderNodeFilterBar?.() || '';
@@ -3343,10 +3450,10 @@ function renderTopbar() {
         <button type="button" class="rail-action-btn" data-action="open-settings" title="设置" aria-label="设置">${icon('settings', 18)}</button>
       </div>
     <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor">
-      <button class="sidebar-owner" data-action="toggle-apps" aria-label="设置" aria-expanded="${ui.menu === 'apps'}">
+      <button class="sidebar-owner ${identity.signedIn ? '' : 'is-guest'}" data-action="owner-click" title="${identity.signedIn ? esc(identity.name) : '点击登录云端账号或管理设置'}" aria-label="${identity.signedIn ? esc(identity.name) : '登录或设置'}" aria-expanded="${ui.menu === 'apps'}">
       <span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png" width="100" height="100" alt="">
-        ${avatar('user', 48)}<i class="presence-dot ${connected ? 'idle' : 'unknown'}" aria-hidden="true"></i></span></span>
-      <span class="sidebar-owner-name">${esc(ownerName())}</span></button>${settings}</div>
+        ${avatar('user', 48)}<i class="presence-dot ${connected ? (identity.signedIn ? 'idle' : 'local') : 'unknown'}" aria-hidden="true"></i></span></span>
+      <span class="sidebar-owner-name">${esc(identity.sidebarLabel)}</span></button>${settings}</div>
       ${globalThis.SummonModels.sidebar({ esc, icon, invalidate:() => { ui.lastSidebarHtml = null; } })}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) {
@@ -4837,6 +4944,27 @@ function updateAvatarPicker(mode) {
   else return persistAvatar();
 }
 document.addEventListener('change', async event => {
+  if (event.target.dataset.action === 'upload-owner-avatar') {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const source = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('无法读取图片。')); reader.readAsDataURL(file); });
+      const img = await new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('无法打开这张图片。')); image.src = source; });
+      const canvas = document.createElement('canvas'), side = Math.min(160, Math.max(img.width, img.height));
+      const ratio = side / Math.max(img.width, img.height);
+      canvas.width = Math.max(1, Math.round(img.width * ratio)); canvas.height = Math.max(1, Math.round(img.height * ratio));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+      if (dataUrl.length > 260000) throw new Error('图片过大，请选择较小的图片。');
+      saveLocalProfile({ avatar: dataUrl, localAccepted: true });
+      ui.lastSidebarHtml = null;
+      refreshOpenSettingsBody();
+      render();
+      toast('头像已更新');
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
   if (event.target.dataset.hubSelect === 'active-node') {
     const nextId = event.target.value;
     if (nextId && window.SummonHub) await window.SummonHub.switchNode(nextId);
@@ -4937,6 +5065,8 @@ renderTopbar();
     const initResult = await window.SummonHub.init({
       toast,
       onNodesUpdated: () => {
+        ui.lastSidebarHtml = null;
+        closeFloatingMenus();
         renderTopbar();
         refreshOpenSettingsBody();
         if (!window.SummonHub.onlineNodes().length) render();
@@ -4969,7 +5099,15 @@ renderTopbar();
       onAuthSuccess: () => {
         ui.stateSnapshot = null;
         ui.stateCursor = null;
+        ui.lastSidebarHtml = null;
+        refreshOpenSettingsBody();
         void refresh(true);
+      },
+      onChooseLocal: () => {
+        saveLocalProfile({ localAccepted: true });
+        ui.lastSidebarHtml = null;
+        renderTopbar();
+        toast('已切换为本地账户，随时可点左下角头像登录云端');
       },
     });
     if (initResult?.requiresAuth) {

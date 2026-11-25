@@ -728,11 +728,11 @@ fun ConversationListScreen(
                     },
                 ) {
                     Box(Modifier.fillMaxSize()) {
-                        Image(
-                            painterResource(R.drawable.owner_avatar),
-                            null,
-                            Modifier.align(Alignment.Center).size(34.dp).clip(CircleShape),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        OwnerAvatar(
+                            name = store.settings.hubUsername ?: store.settings.userName,
+                            signedIn = store.settings.hubUsername != null,
+                            size = 34.dp,
+                            modifier = Modifier.align(Alignment.Center),
                         )
                         Box(
                             Modifier.align(Alignment.BottomEnd).padding(2.dp).size(9.dp).clip(CircleShape)

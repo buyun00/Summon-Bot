@@ -327,7 +327,7 @@
       <div class="hub-auth-head">
         <div>
           <h1>Summon Bot</h1>
-          <p>${isLocal ? '登录云端中枢后，这台电脑将自动上线并与你的手机和其他电脑互联。' : '连接你的多台在线电脑，随时掌控所有群聊与 Agent。'}</p>
+          <p>${isLocal ? '登录云端账号即可在手机和其他电脑互联；也可以暂不登录，先使用本地账户。' : '连接你的多台在线电脑，随时掌控所有群聊与 Agent。'}</p>
         </div>
         ${dismissible ? '<button type="button" class="icon-button hub-auth-close" data-hub-action="close-auth" aria-label="关闭">✕</button>' : ''}
       </div>
@@ -345,7 +345,7 @@
         <p class="hub-auth-error" id="hub-auth-error" role="alert" hidden></p>
         <button type="submit" class="primary-button hub-auth-submit">${isReg ? '注册并连接' : '登录'}</button>
       </form>
-      ${dismissible ? '<button type="button" class="text-button hub-auth-skip" data-hub-action="close-auth">暂不登录，仅使用本机离线模式</button>' : ''}
+      ${dismissible ? '<button type="button" class="text-button hub-auth-skip" data-hub-action="choose-local">暂不登录，先使用本地账户</button>' : ''}
     </div>`;
 
     const form = root.querySelector('#hub-auth-form');
@@ -385,12 +385,9 @@
     const offline = offlineNodes();
     const total = hub.nodes.length;
 
-    // On local desktop when not signed in to Hub, show a compact one-click connect strip
+    // On local desktop when not signed in to Hub, keep the sidebar top clean (login entry lives on the bottom-left avatar & settings).
     if (hub.mode === 'local' && !hub.authenticated) {
-      return `<div class="hub-node-strip hub-connect-strip">
-        <span class="hub-strip-note"><i class="hub-dot is-local"></i>本机运行中</span>
-        <button type="button" class="hub-strip-link" data-hub-action="open-login">连接云端中枢</button>
-      </div>`;
+      return '';
     }
 
     if (total <= 1 && !offline.length) return '';
@@ -398,7 +395,7 @@
     const pills = [
       `<button type="button" class="hub-node-pill ${hub.filterNodeId === 'all' ? 'active' : ''}" data-hub-action="filter-node" data-node-id="all">全部 <span class="hub-pill-count">${online.length}</span></button>`,
       ...online.map(n => `<button type="button" class="hub-node-pill ${hub.filterNodeId === n.id ? 'active' : ''}" data-hub-action="filter-node" data-node-id="${esc(n.id)}" title="${esc(n.hostname || n.name)}"><i class="hub-dot is-online"></i><span>${esc(n.name)}</span></button>`),
-      ...offline.map(n => `<span class="hub-node-pill is-offline" title="离线电脑 · 开机后自动显示群聊"><i class="hub-dot is-offline"></i><span>${esc(n.name)}</span><em>离线</em></span>`),
+      ...offline.map(n => `<button type="button" class="hub-node-pill is-offline" data-action="open-settings" data-tab="connection" title="离线电脑 · 点击可在连接设置中管理或解绑"><i class="hub-dot is-offline"></i><span>${esc(n.name)}</span><em>离线</em></button>`),
     ];
     return `<div class="hub-node-strip" role="tablist" aria-label="电脑节点筛选">${pills.join('')}</div>`;
   }
@@ -511,6 +508,11 @@
     if (!btn) return;
     const action = btn.dataset.hubAction;
     if (action === 'close-auth') return closeAuthOverlay();
+    if (action === 'choose-local') {
+      closeAuthOverlay();
+      hub.callbacks?.onChooseLocal?.();
+      return;
+    }
     if (action === 'auth-tab') return openAuthOverlay({ mode: btn.dataset.mode, dismissible: hub.mode === 'local' });
     if (action === 'open-login') return openAuthOverlay({ mode: 'login', dismissible: hub.mode === 'local' });
     if (action === 'filter-node') return setFilterNode(btn.dataset.nodeId);

@@ -374,7 +374,7 @@ struct SummonHubNodesResponse: Codable, Sendable {
 
 struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
-    var userName: String = "Lin"
+    var userName: String = "本地账户"
     var hubUsername: String? = nil
     var activeNodeID: String? = nil
 }

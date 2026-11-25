@@ -8,7 +8,15 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -97,6 +105,41 @@ fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:
 
 
 @Composable
+fun OwnerAvatar(
+    name: String,
+    signedIn: Boolean,
+    size: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val palette = LocalSummonPalette.current
+    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString()
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(if (signedIn) palette.ok.copy(alpha = 0.16f) else palette.surface),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (signedIn && !initial.isNullOrEmpty()) {
+            Text(
+                text = initial,
+                color = palette.ok,
+                fontWeight = FontWeight.Bold,
+                fontSize = (size.value * 0.42f).coerceAtLeast(11f).sp,
+                maxLines = 1,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.Person,
+                contentDescription = null,
+                tint = palette.textTertiary,
+                modifier = Modifier.size(size * 0.56f),
+            )
+        }
+    }
+}
+
+@Composable
 fun RoomAvatar(
     room: SummonRoom,
     bots: List<SummonBot>,
@@ -126,12 +169,11 @@ fun RoomAvatar(
                 }
                 Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     if (id == "user") {
-                        Image(
-                            androidx.compose.ui.res.painterResource(R.drawable.owner_avatar),
-                            null,
-                            modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape)
-                                .then(if (showOutline) Modifier.border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape) else Modifier),
-                            contentScale = ContentScale.Crop,
+                        OwnerAvatar(
+                            name = "",
+                            signedIn = false,
+                            size = child * 0.86f,
+                            modifier = if (showOutline) Modifier.border(outlineWidth, background, CircleShape) else Modifier,
                         )
                     } else {
                         MemberAvatar(bots.first { it.id == id }, child, groupOutline = if (showOutline) background else null)

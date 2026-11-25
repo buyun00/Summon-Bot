@@ -432,7 +432,7 @@ data class SummonHubAuthResult(
 
 data class SummonConnectionSettings(
     val baseURL: String = "",
-    val userName: String = "Lin",
+    val userName: String = "本地账户",
     val hubUsername: String? = null,
     val activeNodeID: String? = null,
 ) {
@@ -446,7 +446,7 @@ data class SummonConnectionSettings(
     companion object {
         fun parse(json: SummonJson): SummonConnectionSettings = SummonConnectionSettings(
             baseURL = json["baseURL"].string ?: "",
-            userName = json["userName"].string?.ifBlank { "Lin" } ?: "Lin",
+            userName = json["userName"].string?.ifBlank { "本地账户" } ?: "本地账户",
             hubUsername = json["hubUsername"].string,
             activeNodeID = json["activeNodeID"].string,
         )

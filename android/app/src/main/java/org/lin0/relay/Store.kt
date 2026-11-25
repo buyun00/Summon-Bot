@@ -266,7 +266,7 @@ class SummonStore(private val app: Context) {
     }
 
     fun setUserName(name: String) {
-        settings = settings.copy(userName = name.trim().ifEmpty { "Lin" })
+        settings = settings.copy(userName = name.trim().ifEmpty { "本地账户" })
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
     }
 

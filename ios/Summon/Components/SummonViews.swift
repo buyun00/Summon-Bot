@@ -79,6 +79,30 @@ struct MemberAvatar: View {
     }
 }
 
+struct OwnerAvatarView: View {
+    let name: String
+    let signedIn: Bool
+    var size: CGFloat = 34
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(signedIn ? SummonTheme.ok.opacity(0.18) : SummonTheme.surface)
+            if signedIn, let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first {
+                Text(String(first).uppercased())
+                    .font(.system(size: max(11, size * 0.44), weight: .bold, design: .rounded))
+                    .foregroundStyle(SummonTheme.ok)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: max(12, size * 0.46), weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+}
+
 struct RoomAvatar: View {
     @Environment(SummonStore.self) private var store: SummonStore?
     let room: SummonRoom
@@ -108,11 +132,7 @@ struct RoomAvatar: View {
                     let outlineWidth = min(4, child * 0.08)
                     Group {
                         if id == "user" {
-                            Image("OwnerAvatar")
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: child * 0.86, height: child * 0.86)
-                                .clipShape(Circle())
+                            OwnerAvatarView(name: "", signedIn: false, size: child * 0.86)
                                 .overlay {
                                     if showOutline { Circle().stroke(background, lineWidth: outlineWidth) }
                                 }

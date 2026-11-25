@@ -479,11 +479,11 @@ struct RoomDetailsView: View {
     private func memberTile(id: String) -> some View {
         if id == "user" {
             VStack(spacing: 7) {
-                Image("OwnerAvatar")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 48, height: 48)
-                    .clipShape(Circle())
+                OwnerAvatarView(
+                    name: store.settings.hubUsername ?? store.settings.userName,
+                    signedIn: store.settings.hubUsername != nil,
+                    size: 48
+                )
                     .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 0.8) }
                 Text(store.name(for: id))
                     .summonFont(.caption2)

@@ -465,9 +465,11 @@ struct ConversationListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showProfileMenu.toggle() } label: {
-                        Image("OwnerAvatar").resizable().scaledToFill()
-                            .frame(width: 34, height: 34)
-                            .clipShape(.circle)
+                        OwnerAvatarView(
+                            name: store.settings.hubUsername ?? store.settings.userName,
+                            signedIn: store.settings.hubUsername != nil,
+                            size: 34
+                        )
                             .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 1) }
                             .overlay(alignment: .bottomTrailing) {
                                 Circle().fill(store.isConnected ? SummonTheme.ok : .gray)
