@@ -236,6 +236,7 @@ data class SummonRoom(
     val archivable: Boolean = false,
     val archivedAt: String? = null,
     val leadBotId: String? = null,
+    val autoTitlePending: Boolean = false,
     val mode: String? = null,
 ) {
     val isArchived: Boolean get() = !archivedAt.isNullOrBlank()
@@ -248,6 +249,7 @@ data class SummonRoom(
         "archivable" to SummonJson.Bool(archivable),
         "archived_at" to archivedAt.strOrNull(),
         "lead_bot_id" to leadBotId.strOrNull(),
+        "auto_title_pending" to SummonJson.Bool(autoTitlePending),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
         "createdAt" to createdAt.strOrNull(), "updatedAt" to updatedAt.strOrNull(),
@@ -267,6 +269,7 @@ data class SummonRoom(
             createdAt = json["createdAt"].string,
             updatedAt = json["updatedAt"].string,
             leadBotId = json["lead_bot_id"].string,
+            autoTitlePending = json["auto_title_pending"].bool == true,
             mode = json["mode"].string,
         )
     }

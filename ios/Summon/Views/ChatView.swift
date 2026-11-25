@@ -106,7 +106,8 @@ struct ChatView: View {
         if result.isEmpty, let optimistic = store.optimisticWorkForRoom(roomID) {
             let bot = store.bot(id: optimistic.botID)
             let name = bot?.name ?? store.name(for: optimistic.botID)
-            result.append(ActiveBotItem(id: optimistic.botID, bot: bot, name: name, status: "正在工作", ref: nil))
+            let status = room?.auto_title_pending == true ? "正在理解需求并命名群聊" : "正在工作"
+            result.append(ActiveBotItem(id: optimistic.botID, bot: bot, name: name, status: status, ref: nil))
         }
         return result
     }

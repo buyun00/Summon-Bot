@@ -352,12 +352,13 @@ export class ChatroomService {
   }
 
   projectRoom(room) {
-    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt } = room;
+    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt, auto_title_pending } = room;
     return { id, ref: { kind: 'room', id }, name, members, mode, pins,
       deletable: mode === 'group' && id !== botMaintenanceRoomId,
       archivable: mode === 'group' && id !== botMaintenanceRoomId,
       archived_at: archivedAt || null,
       ...(lead_bot_id ? { lead_bot_id } : {}),
+      ...(auto_title_pending ? { auto_title_pending: true } : {}),
       workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
@@ -589,9 +590,11 @@ export class ChatroomService {
       item.mode === 'group' && item.id !== excludeId && normalizeRoomNameKey(item.name) === targetKey) || null;
   }
 
-  uniqueGroupTitle(baseTitle) {
+  uniqueGroupTitle(baseTitle, excludeId = null) {
     const existingKeys = new Set(
-      this.store.list('rooms').filter(item => item.mode === 'group').map(item => normalizeRoomNameKey(item.name)),
+      this.store.list('rooms')
+        .filter(item => item.mode === 'group' && item.id !== excludeId)
+        .map(item => normalizeRoomNameKey(item.name)),
     );
     const base = String(baseTitle || '新群聊').trim().slice(0, 160) || '新群聊';
     if (!existingKeys.has(normalizeRoomNameKey(base))) return base;
@@ -614,26 +617,27 @@ export class ChatroomService {
       mode ??= directMembers(requested) ? 'direct' : 'group';
       if (mode === 'direct' && !directMembers(requested)) fail('私聊必须包含用户和一位 Bot');
       const isStandardGroup = mode === 'group' && id !== botMaintenanceRoomId;
+      const autoNameGroup = isStandardGroup && (
+        auto_title === true
+        || title === undefined
+        || (skip_welcome === true && requested.length === 1 && !lead_name)
+      );
       let roomName;
-      if (title !== undefined) {
+      if (autoNameGroup) {
+        roomName = this.uniqueGroupTitle('新群聊');
+      } else if (title !== undefined) {
         const requestedName = titleOf(title, '新会话');
         if (mode === 'group') {
-          if (auto_title) {
-            roomName = this.uniqueGroupTitle(requestedName);
-          } else {
-            const dup = this.findDuplicateGroup(requestedName);
-            if (dup) {
-              fail(dup.archivedAt
-                ? `已有同名已归档群聊「${dup.name}」，请换一个名称`
-                : `群聊名称「${dup.name}」已存在，请换一个名称`, 409);
-            }
-            roomName = requestedName;
+          const dup = this.findDuplicateGroup(requestedName);
+          if (dup) {
+            fail(dup.archivedAt
+              ? `已有同名已归档群聊「${dup.name}」，请换一个名称`
+              : `群聊名称「${dup.name}」已存在，请换一个名称`, 409);
           }
+          roomName = requestedName;
         } else {
           roomName = requestedName;
         }
-      } else if (isStandardGroup) {
-        roomName = this.uniqueGroupTitle('新群聊');
       } else {
         const fallback = requested.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
         roomName = fallback.slice(0, 160) || '新会话';
@@ -646,7 +650,12 @@ export class ChatroomService {
         if (existingLead) {
           leadBotId = existingLead;
         } else {
-          const leadBot = this.manager.createGroupLead({ roomId: id, roomName, leadName: lead_name });
+          const leadBot = this.manager.createGroupLead({
+            roomId: id,
+            roomName,
+            leadName: lead_name,
+            pendingAutoName: autoNameGroup && !lead_name,
+          });
           createdLead = leadBot;
           leadBotId = leadBot.id;
           const insertAt = included.includes('user') ? included.indexOf('user') + 1 : 0;
@@ -659,6 +668,7 @@ export class ChatroomService {
       const room = this.store.save('rooms', {
         id, name: roomName, members: included, mode, pins: [], revision: 1,
         ...(leadBotId ? { lead_bot_id: leadBotId } : {}),
+        ...(autoNameGroup ? { auto_title_pending: true } : {}),
         workspace: boundWorkspace,
       });
       if (isStandardGroup && leadBotId && !skip_welcome) {
@@ -732,6 +742,7 @@ export class ChatroomService {
       }
       const updated = this.store.save('rooms', {
         id, name: nextName, members, mode, pins: [...pins.values()], revision: room.revision + 1,
+        ...(input.title !== undefined && room.auto_title_pending ? { auto_title_pending: false } : {}),
         ...(input.workspace !== undefined && { workspace: this.platform.bindRoomWorkspace(input.workspace, actor, mode) }),
       });
       for (const member of removed) if (member !== 'user') this.platform.removeRoomBase(member, id);

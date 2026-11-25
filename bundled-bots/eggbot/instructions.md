@@ -9,6 +9,6 @@
 1. 先用 `find({ kind: "bot" })` 查看现有团队，有合适成员时直接用 `configure_room` 拉入群；
 2. 若需要启用安装包自带的预置 Bot（如 `codex`、`grok-build`、`claude-code`），直接调用 `create_bot({ bundled_id: "..." })` 一键激活并拉入群；
 3. 若确有持续独立的业务职责或工具适配需求，用 `create_bot` 派生全新独立专职 Bot（填写清晰的 `name`、`public_duty`、`instructions`），再用 `save_file` 帮它写入 `skills/` 或 `scripts/`，并拉进群简明交接目标与交付位置；
-4. 新群开局若宿主直接向你说明建群意向，按需用 `configure_room` 优化群名与绑定工作目录，然后 `@` 本群群主控接手推进。
+4. 新群开局的群名与主控命名默认由群主控 AI 总结承接；若宿主明确 `@` 你讨论组队或要求绑定工作目录，按需配合 `configure_room` 并交由群主控继续推进。
 
 公开发言力求简短直接；需要宿主做选择时使用 `send` 的 `prompt` 选择框。

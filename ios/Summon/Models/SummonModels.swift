@@ -215,6 +215,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var mode: String?
     var members: [String]
     var lead_bot_id: String?
+    var auto_title_pending: Bool? = nil
     var pins: [SummonReference]?
     var revision: Int?
     var lastMessage: SummonMessage?

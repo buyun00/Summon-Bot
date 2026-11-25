@@ -268,8 +268,8 @@ export class SummonPlatform {
     if (name === 'open_session') {
       const engineId = args.engine || 'pi';
       const label = engineId === 'exec'
-        ? (args.input?.script || args.input?.command || 'exec')
-        : 'pi';
+        ? (args.input?.script || 'exec')
+        : engineId;
       const summary = args.work_summary ? `（${String(args.work_summary).slice(0, 60)}）` : '';
       return {
         engine: engineId,
@@ -340,6 +340,69 @@ export class SummonPlatform {
 
   getBot(id) { return this.manager.get(id); }
   listBots() { return this.manager.list(); }
+
+  workEngines() {
+    let externalEngines = null;
+    try { externalEngines = this.models.catalog()?.externalEngines || null; } catch {}
+    return this.manager.workEngines().map(engine => {
+      const rec = externalEngines?.[engine.id]?.recommended;
+      const recommended_models = Array.isArray(rec) && rec.length
+        ? rec.map(item => ({ model: item.model, efforts: Array.isArray(item.efforts) ? item.efforts : [] }))
+        : undefined;
+      return {
+        ...engine,
+        ...(recommended_models ? { recommended_models } : {}),
+      };
+    });
+  }
+
+  applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty } = {}) {
+    let updatedRoom = null;
+    let updatedBot = null;
+    this.store.transaction(() => {
+      const room = this.store.get('rooms', roomId);
+      if (!room || room.archivedAt || room.mode !== 'group' || room.id === botMaintenanceRoomId) return;
+      const effectiveLeadId = room.lead_bot_id || (room.members || []).find(member =>
+        member !== 'user' && this.store.get(botRecords, member)?.built_in_role?.id === groupLeadRole);
+      if (botId && effectiveLeadId && botId !== effectiveLeadId) return;
+
+      let finalRoomName = room.name;
+      const cleanRoomTitle = typeof roomTitle === 'string' ? roomTitle.trim().slice(0, 80) : '';
+      if (room.auto_title_pending && cleanRoomTitle) {
+        finalRoomName = this.room.uniqueGroupTitle(cleanRoomTitle, room.id);
+        updatedRoom = this.store.save('rooms', {
+          id: room.id,
+          name: finalRoomName,
+          auto_title_pending: false,
+          revision: (room.revision ?? 0) + 1,
+        });
+      }
+
+      const cleanLeadName = typeof leadName === 'string' ? leadName.trim().slice(0, 60) : '';
+      const cleanLeadDuty = typeof leadDuty === 'string' && leadDuty.trim()
+        ? leadDuty.trim().slice(0, 300)
+        : (finalRoomName && finalRoomName !== '新群聊'
+          ? `负责「${finalRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`
+          : '');
+      if (effectiveLeadId && cleanLeadName) {
+        updatedBot = this.manager.applyAutoName(effectiveLeadId, {
+          name: cleanLeadName,
+          publicDuty: cleanLeadDuty,
+        }, { syncFiles: false });
+      }
+    });
+    if (updatedBot) {
+      this.manager.syncFolderMeta(updatedBot);
+      this.emit('bot', this.manager.view(updatedBot, user));
+    }
+    if (updatedRoom) {
+      this.room.emit('room', this.room.projectRoom(updatedRoom));
+    }
+    return {
+      room: updatedRoom ? this.room.projectRoom(updatedRoom) : null,
+      bot: updatedBot ? this.manager.view(updatedBot, user) : null,
+    };
+  }
   ensureRoomBase(botId, roomId) { return this.deliveries.ensureBase(botId, roomId); }
   removeRoomBase(botId, roomId) { return this.deliveries.removeBase(botId, roomId); }
   queueMessage(event) { return this.deliveries.queueMessage(event); }
@@ -779,8 +842,8 @@ export class SummonPlatform {
     if (session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id)) {
       reject('session_authority_revoked', 'The Session no longer has its assigned model resource', 403);
     }
-    if (session.engine === 'exec' && !session.workspace?.path) {
-      reject('workspace_forbidden', 'This exec Session has no execution directory', 403);
+    if (session.engine !== 'pi' && !session.workspace?.path) {
+      reject('workspace_forbidden', 'This Session has no execution directory', 403);
     }
   }
 
@@ -793,7 +856,22 @@ export class SummonPlatform {
   prepareSession(args, context, call, options) {
     if (this.draining) reject('updating', 'New execution Sessions are temporarily paused', 503);
     const { actor } = context;
-    const engine = args.engine === 'exec' ? 'exec' : 'pi';
+    const rawEngine = typeof args.engine === 'string' ? args.engine.trim() : '';
+    let engine;
+    let work_engine = null;
+    if (rawEngine === 'pi' || rawEngine === 'exec') {
+      engine = rawEngine;
+    } else {
+      const available = this.workEngines();
+      const matched = available.find(item => item.id === rawEngine);
+      if (!matched) {
+        reject('work_engine_unavailable', `Work engine "${rawEngine}" is not enabled`, 409, {
+          available_engines: available.map(item => item.id),
+        });
+      }
+      engine = matched.id;
+      work_engine = { bot_id: matched.bot_id, script: matched.script, env_slots: matched.env_slots };
+    }
     const space = args.space ?? context.session?.space ?? actor;
     const sharing = options.sharing(actor, space);
     const group_work = this.roomWork.scope(args, context, sharing, space);
@@ -807,7 +885,7 @@ export class SummonPlatform {
     const inherited = context.session?.workspace?.path;
     const fallbackWorkspace = this.workspaceRecords()[0]?.id;
     const workspaceSelection = args.workspace ?? (inherited || roomWorkspace || fallbackWorkspace);
-    if (engine === 'exec' && !workspaceSelection) reject('workspace_required', 'Specify a working directory for exec', 409);
+    if (engine !== 'pi' && !workspaceSelection) reject('workspace_required', `Specify a working directory for ${engine}`, 409);
     const workspace = workspaceSelection ? this.workspace(workspaceSelection, projectContext) : null;
     if (workspace && !selected.some(ref => sameRef(ref, workspace.ref))) selected.push(workspace.ref);
     const resource_refs = [...new Map(selected.map(ref => [keyOf(ref.kind, ref.id), ref])).values()];
@@ -838,6 +916,7 @@ export class SummonPlatform {
         bot_revision: bot?.revision ?? null, sharing, resource_refs, workspace: workspace ? { path: workspace.path, root: workspace.root, write: workspace.write } : null,
         workspace_ref: workspace?.ref ?? null, status: 'opening', native: null, input_revision: 0,
         ...(engine === 'pi' ? { open_call_id: call.id } : {}),
+        ...(work_engine ? { work_engine } : {}),
         ...(group_work ? { group_work } : {}),
         control: activeControl(), origin_execution: context.session ? { kind: 'session', id: context.session.id } :
           context.origin?.conversation_id ? { kind: 'conversation', id: context.origin.conversation_id } : null, latest_call_id: call.id });

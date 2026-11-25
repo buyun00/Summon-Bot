@@ -151,7 +151,7 @@ const model = { anyOf: [
   { type: 'null' },
 ] };
 
-const sessionEngine = { enum: ['pi', 'exec'], description: 'Use "pi" for an independent Pi AI Session, or "exec" to run a shell command or Bot scripts/*.mjs directly.' };
+const sessionEngine = { type: 'string', description: 'Execution engine: "pi" (lightweight AI session for research/reading/fallback), "exec" (direct shell or own Bot script), or an enabled work engine id listed in work_engines (e.g. "codex", "claude-code", "grok-build").' };
 const sessionWorkspace = { ...text, description: 'A workspace id from find(kind=workspace) or any absolute host directory path (e.g. D:\\Worktrees\\project).' };
 const openSessionInput = object({
   engine: sessionEngine,
@@ -203,11 +203,11 @@ const definitions = [
       role_id: oneOf(...roleIds, null),
       env_slots: array(text),
     }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members. Regular group Rooms automatically include the group lead Bot and EggBot, and can bind one writable project workspace.',
+  ['create_room', 'Create a Room with the specified members. Regular group Rooms automatically include the group lead Bot and EggBot, and can bind one writable project workspace. Supply concise AI-summarized title and lead_name when creating a group explicitly, or pass auto_title:true so the group lead AI summarizes both.',
     object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId, lead_name: text, skip_welcome: flag, auto_title: flag }, ['members'])],
   ['configure_room', 'Update the title, membership, pins, or project workspace in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal), pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
-  ['open_session', 'Open an async background Session. Set engine:"pi" for an independent Pi AI session, OR engine:"exec" to run a shell command ({shell, env?}) or Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}) directly using Summon’s built-in Node runtime. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn silently and deliver one concise reply once the completion receipt arrives.',
+  ['open_session', 'Open an async background Session. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?, sandbox?, approvalPolicy?, extraArgs?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn silently and deliver one concise reply once the completion receipt arrives.',
     openSessionInput],
   ['configure_session', 'Update work_summary on a Session.',
     configureSessionInput],

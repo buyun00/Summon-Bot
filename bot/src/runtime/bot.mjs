@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { assertInstallationWritable, readInstallationState } from '../../../scripts/installation/installation-state.mjs';
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
 import { botStateDbPath, readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
+import { botMaintenanceRoomId, groupLeadRole } from '../../../capabilities/bot-management/roles.mjs';
 import { tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sessionRecords } from '../../../capabilities/platform/executions.mjs';
@@ -107,10 +108,13 @@ function describeToolActivity(name, args = {}, platform = null) {
     }
     case 'open_session': {
       if (args.work_summary) return ensureDoingText(args.work_summary, 44);
-      const engine = typeof args.engine === 'string' ? args.engine : '';
+      const engine = typeof args.engine === 'string' ? args.engine.trim() : '';
       if (engine === 'exec') {
-        const label = args.input?.script || args.input?.command || 'exec';
+        const label = args.input?.script || 'exec';
         return `正在执行 ${compactActivityText(label, 22)}`;
+      }
+      if (engine && engine !== 'pi') {
+        return `正在通过 ${compactActivityText(engine, 18)} 执行任务`;
       }
       return '正在启动执行任务';
     }
@@ -153,7 +157,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (args.bundled_id) return `正在激活预置 Bot ${compactActivityText(args.bundled_id, 16)}`;
       return args.name ? `正在创建成员 ${compactActivityText(args.name, 16)}` : '正在创建成员';
     case 'configure_bot':
-      return '正在更新成员配置';
+      return args.name ? `正在更新成员名称为 ${compactActivityText(args.name, 16)}` : '正在更新成员配置';
     case 'create_room':
       return '正在创建会话';
     case 'set_wakeup':
@@ -1174,6 +1178,46 @@ export class BotRuntime {
         .sort((a, b) => refKey(a).localeCompare(refKey(b)));
       if (readablePins.length) {
         facts.push(textMessage({ type: 'room_pins', room: conversation.space, pins: readablePins }));
+      }
+    }
+    const workEngines = this.platform.workEngines?.() || [];
+    if (workEngines.length) {
+      facts.push(textMessage({
+        type: 'work_engines',
+        engines: workEngines.map(({ id, name, duty, recommended_models }) => ({
+          id,
+          name,
+          duty,
+          ...(recommended_models?.length ? { recommended_models } : {}),
+        })),
+      }));
+    }
+    if (!conversation.session_id && roomRecord && roomRecord.mode === 'group' && roomRecord.id !== botMaintenanceRoomId) {
+      const leadBot = this.platform.store.get('platform-bots', context.actor.id);
+      const isRoomLead = roomRecord.lead_bot_id === context.actor.id || leadBot?.built_in_role?.id === groupLeadRole;
+      const needsRoomTitle = isRoomLead && roomRecord.auto_title_pending === true;
+      const needsLeadName = isRoomLead && leadBot?.auto_name_pending === true;
+      if (needsRoomTitle || needsLeadName) {
+        const existingGroupNames = needsRoomTitle
+          ? this.platform.store.list('rooms')
+              .filter(item => item.mode === 'group' && item.id !== roomRecord.id && item.name)
+              .map(item => item.name)
+              .slice(0, 40)
+          : [];
+        facts.push(textMessage({
+          type: 'room_naming_required',
+          room: { id: roomRecord.id, name: roomRecord.name, revision: roomRecord.revision },
+          lead_bot: { id: leadBot.id, name: leadBot.name, revision: leadBot.revision },
+          needs_room_title: needsRoomTitle,
+          needs_lead_name: needsLeadName,
+          ...(existingGroupNames.length ? { existing_group_names: existingGroupNames } : {}),
+          instruction: [
+            '当前新建群聊尚未完成 AI 总结命名。请在调用 send 回复宿主前，结合宿主消息的核心目标与主题（严禁机械截取用户原话前几个字）：',
+            ...(needsRoomTitle ? [`1) 调用 configure_room({ room: "${roomRecord.id}", revision: ${roomRecord.revision}, title: "<2-12字简洁总结群名>" }) 更新群名（避开已有群名）；`] : []),
+            ...(needsLeadName ? [`2) 调用 configure_bot({ bot: "${leadBot.id}", revision: ${leadBot.revision}, name: "<2-8字贴合定位的主控名>", public_duty: "<一句话职责>" }) 更新你的主控名称与职责（不要机械拼接「群名 · 主控」，也不要留「群主控」泛称）；`] : []),
+            '3) 仅当宿主首条消息是完全没有主题的纯寒暄且未绑定明确目录时，可先问清目标待下轮再命名；只要有明确意向，务必先完成命名再调用 send 正常回应。',
+          ].join(' '),
+        }));
       }
     }
     let observation;

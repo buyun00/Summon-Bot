@@ -169,7 +169,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
     val roomExecutions = store.executionsForRoom(roomID)
     val roomActivities = store.activitiesForRoom(roomID)
     val optimisticWork = store.optimisticWorkForRoom(roomID)
-    val activeBotItems = remember(roomActivities, roomExecutions, store.bots, room?.members, optimisticWork) {
+    val activeBotItems = remember(roomActivities, roomExecutions, store.bots, room?.members, room?.autoTitlePending, optimisticWork) {
         val seen = mutableSetOf<String>()
         val items = mutableListOf<ActiveBotStatus>()
         for (activity in roomActivities) {
@@ -205,7 +205,8 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
         if (items.isEmpty() && optimisticWork != null) {
             val bot = store.bot(optimisticWork.botId)
             val name = bot?.name ?: store.name(optimisticWork.botId)
-            items += ActiveBotStatus(optimisticWork.botId, bot, name, "正在工作", null)
+            val status = if (room?.autoTitlePending == true) "正在理解需求并命名群聊" else "正在工作"
+            items += ActiveBotStatus(optimisticWork.botId, bot, name, status, null)
         }
         items
     }

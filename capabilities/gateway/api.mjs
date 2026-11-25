@@ -149,7 +149,10 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
           try {
             const parsed = JSON.parse(args.content);
             const patch = { id, revision: bot.revision + 1 };
-            if (typeof parsed.name === 'string' && parsed.name.trim()) patch.name = parsed.name.trim().slice(0, 100);
+            if (typeof parsed.name === 'string' && parsed.name.trim()) {
+              patch.name = parsed.name.trim().slice(0, 100);
+              if (bot.auto_name_pending) patch.auto_name_pending = false;
+            }
             if (typeof parsed.public_duty === 'string') patch.public_duty = parsed.public_duty.trim().slice(0, 600);
             if (Array.isArray(parsed.env_slots)) patch.env_slots = parsed.env_slots;
             platform.store.save(botRecords, patch);

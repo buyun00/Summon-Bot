@@ -1537,19 +1537,6 @@ function eggBotMember() {
     || null;
 }
 
-function deriveInitialGroupTitle(rawText, suggestedTitle = '') {
-  if (suggestedTitle) return suggestedTitle.trim().slice(0, 24);
-  const firstLine = String(rawText || '').trim().split(/\r?\n/)[0] || '';
-  const cleaned = firstLine
-    .replace(/^(?:你好|嗨|hi|hello|请|麻烦|帮我|给我|我要|我想|想|想要|准备|打算|可以)?\s*(?:新建|创建|建立|建|开|搭|组建|拉)?(?:一个|个)?\s*/i, '')
-    .replace(/^(?:关于|用来|用于|专门)?\s*/, '')
-    .replace(/[，。！？；：、,.!?;:~～]+.*$/, '')
-    .replace(/(?:的)?(?:群聊|群|工作群|项目群|协作群|小群)$/, '')
-    .trim();
-  if (!cleaned) return '新群聊';
-  return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
-}
-
 async function openNewGroupDraft() {
   ui.navigationSeq++;
   ui.creatingRoom = true;
@@ -1573,18 +1560,16 @@ async function openNewGroupDraft() {
   if (!matchMedia('(pointer: coarse)').matches) $('#message-input')?.focus();
 }
 
-async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
+async function submitDraftGroupMessage(rawText) {
   const text = String(rawText || '').trim();
   if (!text || !ui.protocolReady || ui.creatingRoomBusy) return;
   ui.creatingRoomBusy = true;
   render();
-  const title = deriveInitialGroupTitle(text, suggestedTitle);
   const workspace = ui.draftWorkspaceId || '';
   try {
     const room = await api('/api/rooms', 'POST', {
       members: [],
       mode: 'group',
-      title,
       auto_title: true,
       skip_welcome: true,
       ...(workspace ? { workspace } : {}),
@@ -2504,7 +2489,7 @@ async function act(action, element) {
   if (action === 'draft-suggestion') {
     const item = NEW_GROUP_SUGGESTIONS.find(s => s.id === id);
     if (!item) return;
-    return submitDraftGroupMessage(item.prompt, { suggestedTitle: item.title });
+    return submitDraftGroupMessage(item.prompt);
   }
   if (action === 'select-draft-workspace') {
     ui.draftWorkspaceId = id || '';
@@ -4302,7 +4287,7 @@ function collectRoomActivityItems(room, members) {
       items.push({
         botId: opt.botId,
         name: nameOf(opt.botId),
-        text: '正在工作',
+        text: room.auto_title_pending ? '正在理解需求并命名群聊' : '正在工作',
         workSummary: null,
         phase: 'thinking',
         ref: null,

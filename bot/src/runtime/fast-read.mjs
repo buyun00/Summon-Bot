@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
-import { builtInInstructions, defaultPublicDuty } from '../../../capabilities/bot-management/roles.mjs';
+import { botMaintenanceRoomId, builtInInstructions, defaultPublicDuty, groupLeadRole } from '../../../capabilities/bot-management/roles.mjs';
 import { keyOf } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
 import { bindModel, boundModel } from '../agent/model.mjs';
@@ -51,7 +51,7 @@ const fastReadRules = [
     'items 必须完整覆盖 pending_message_ids 中的每一个 message_id。',
 ].join('\n\n');
 
-function buildFastReadSystem(bot, room, members, instructions) {
+function buildFastReadSystem(bot, room, members, instructions, namingContext = null) {
   const duty = builtInInstructions(bot.built_in_role, []);
   const identityLines = [
     `Bot ID: ${bot.id}`,
@@ -64,13 +64,54 @@ function buildFastReadSystem(bot, room, members, instructions) {
     `群 ID: ${room.id}`,
     `群名: ${room.name || room.id}`,
     `模式: ${room.mode || 'group'}`,
+    ...(room.workspace?.name || room.workspace?.path ? [`已绑定目录: ${room.workspace.name || room.workspace.path}`] : []),
     ...(members?.length ? [`群成员与公开职责:\n${members.map(m => `- ${m.name} (${m.id}, ${m.kind})${m.public_duty ? `：${m.public_duty}` : ''}`).join('\n')}`] : []),
+  ] : [];
+  const namingLines = namingContext ? [
+    '新群 AI 总结命名任务（本群为新建群，你是本群群主控，必须一并完成总结取名）：',
+    '根据宿主发言的核心目标、主题与已绑定目录信息（如有），在顶层 JSON 中与 items 同级输出以下字段：',
+    ...(namingContext.needsRoomTitle ? [
+      '- room_title：提炼总结后的群名（2–12 个中文字或简短中英文短语，精炼概括本群主题/项目/长期事务）。严禁机械截取用户原话前几个字！去掉「帮我/我想/请问/建一个/关于/的」等口语前缀与截断残词，并尽量避开 auto_naming.existing_group_names 中已有群名。',
+    ] : []),
+    ...(namingContext.needsLeadName ? [
+      '- lead_name：为你自己（本群主控 Bot）总结取一个贴合本群定位的简洁中文名字（2–8 个字，例如「研发主控」「班会策划主控」「运维指挥」「日程管家」「写作统筹」等）。严禁直接机械拼接「群名 · 主控」，也不要使用「群主控」「主控」「助手」等泛称。',
+      '- lead_duty：一句话（12–48 字）概括你在本群的具体职责定位。',
+    ] : []),
+    namingContext.allowDeferNaming
+      ? '- 例外：仅当宿主首条消息是完全没有任何主题的纯寒暄（如「你好」「在吗」「建个群」）且未绑定明确项目目录时，可将 room_title / lead_name 设为 null 待下一轮明确主题后再取名；只要包含任何具体事务、项目、岗位或需求意图，必须立刻总结给出。'
+      : '- 宿主已发出多轮消息，本次必须总结给出明确的 room_title 和 lead_name，不得留空或设为 null。',
+    '输出示例（顶层 JSON，严格合法，不要附加额外文字）：\n' +
+      '{"items":[{"message_id":"<待判消息 ID>","route":"main","activity":"正在..."}]' +
+      (namingContext.needsRoomTitle ? ',"room_title":"高一首节班会筹备"' : '') +
+      (namingContext.needsLeadName ? ',"lead_name":"班会策划主控","lead_duty":"负责统筹高一分班后首节班会PPT设计、破冰活动与材料交付"' : '') +
+      '}',
   ] : [];
   return [
     fastReadRules,
+    ...(namingLines.length ? [namingLines.join('\n')] : []),
     `当前 Bot 身份与职责：\n${identityLines.join('\n')}`,
     ...(roomLines.length ? [`当前群信息与成员分工：\n${roomLines.join('\n')}`] : []),
   ].join('\n\n');
+}
+
+const FORBIDDEN_ROOM_TITLES = new Set(['新群聊', '群聊', '未命名', '默认群聊', 'null', 'undefined', 'none']);
+const FORBIDDEN_LEAD_NAMES = new Set(['群主控', '主控', '未命名', '助手', 'ai助手', 'ai', 'bot', 'null', 'undefined', 'none']);
+
+function cleanGeneratedLabel(value, { maxLen = 32, forbidden = null } = {}) {
+  if (typeof value !== 'string') return null;
+  let text = value.replace(/\s+/g, ' ').trim();
+  text = text.replace(/^[「『"“'‘《【(\[]+|[」』"”'’》】)\]]+$/g, '').trim();
+  text = text.replace(/[。！？!?,，；;…\.]+$/u, '').trim();
+  if (!text) return null;
+  if (forbidden && forbidden.has(text.toLowerCase())) return null;
+  return text.slice(0, maxLen).trim() || null;
+}
+
+function cleanGeneratedDuty(value, maxLen = 240) {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text || ['null', 'undefined', 'none'].includes(text.toLowerCase())) return null;
+  return text.slice(0, maxLen).trim() || null;
 }
 
 function cleanActivity(value) {
@@ -107,19 +148,30 @@ function fallbackDecisions(pendingIds) {
   return new Map(pendingIds.map(id => [id, { route: 'main', activity: null, fallback: true }]));
 }
 
-function parseFastReadResponse(answer, pendingIds) {
+function parseFastReadResponse(answer, pendingIds, namingContext = null) {
   const raw = (answer?.content || [])
     .filter(part => part?.type === 'text' && typeof part.text === 'string')
     .map(part => part.text)
     .join('\n');
   const parsed = extractJsonObject(raw);
-  if (!parsed) return { ok: false, reason: 'invalid_json', decisions: fallbackDecisions(pendingIds) };
+  if (!parsed) return { ok: false, reason: 'invalid_json', decisions: fallbackDecisions(pendingIds), naming: null };
+
+  const roomTitle = namingContext?.needsRoomTitle
+    ? cleanGeneratedLabel(parsed.room_title ?? parsed.roomTitle, { maxLen: 32, forbidden: FORBIDDEN_ROOM_TITLES })
+    : null;
+  const leadName = namingContext?.needsLeadName
+    ? cleanGeneratedLabel(parsed.lead_name ?? parsed.leadName, { maxLen: 24, forbidden: FORBIDDEN_LEAD_NAMES })
+    : null;
+  const leadDuty = namingContext?.needsLeadName
+    ? cleanGeneratedDuty(parsed.lead_duty ?? parsed.leadDuty, 240)
+    : null;
+  const naming = (roomTitle || leadName) ? { roomTitle, leadName, leadDuty } : null;
 
   let rawItems = Array.isArray(parsed.items) ? parsed.items : null;
   if (!rawItems && pendingIds.length === 1 && (typeof parsed.route === 'string' || typeof parsed.activity === 'string')) {
     rawItems = [{ ...parsed, message_id: parsed.message_id || pendingIds[0] }];
   }
-  if (!rawItems) return { ok: false, reason: 'missing_items', decisions: fallbackDecisions(pendingIds) };
+  if (!rawItems) return { ok: false, reason: 'missing_items', decisions: fallbackDecisions(pendingIds), naming };
 
   const byId = new Map();
   for (const item of rawItems) {
@@ -143,7 +195,7 @@ function parseFastReadResponse(answer, pendingIds) {
     }
     decisions.set(id, { route, activity, fallback: false });
   }
-  return { ok: !hadFallback, reason: hadFallback ? 'incomplete_fields' : null, decisions };
+  return { ok: !hadFallback, reason: hadFallback ? 'incomplete_fields' : null, decisions, naming };
 }
 
 function permissionFallback(stage, connectionId) {
@@ -191,7 +243,17 @@ export class FastReadRuntime {
     const batch = routes.slice(0, MAX_BATCH_SIZE);
     const controller = new AbortController();
     const entry = { key, botId: bot.id, roomId, controller, done: null };
-    this.runtime.setLiveActivity?.(bot.id, roomId, { phase: 'fast_read', text: '正在查看消息' });
+    const roomRecord = this.platform.store.get('rooms', roomId);
+    const liveBotRecord = this.platform.store.get('platform-bots', bot.id) || bot;
+    const isAutoNaming = Boolean(
+      roomRecord && roomRecord.mode === 'group' && roomRecord.id !== botMaintenanceRoomId &&
+      (roomRecord.lead_bot_id === bot.id || liveBotRecord.built_in_role?.id === groupLeadRole) &&
+      (roomRecord.auto_title_pending || liveBotRecord.auto_name_pending),
+    );
+    this.runtime.setLiveActivity?.(bot.id, roomId, {
+      phase: 'fast_read',
+      text: isAutoNaming ? '正在理解需求并命名群聊' : '正在查看消息',
+    });
     entry.done = this.runBatch(inbox, bot, roomId, batch, controller)
       .catch(error => {
         this.runtime.emit('fast_read.error', {
@@ -259,9 +321,28 @@ export class FastReadRuntime {
       const model = boundModel(this.runtime.model, modelSelection);
 
       const room = this.platform.room.room(roomId, bot.id);
+      const liveBot = this.platform.store.get('platform-bots', bot.id) || bot;
       const batchSequences = batch.map(route => route.event?.sequence).filter(Number.isSafeInteger);
       const latestEnd = Math.max(this.platform.room.observationEnd(roomId, bot.id), ...batchSequences);
       const snapshot = this.platform.room.publicHistory(roomId, bot.id, latestEnd);
+
+      const isGroupLead = room.mode === 'group' && room.id !== botMaintenanceRoomId && (
+        room.lead_bot_id === bot.id || liveBot.built_in_role?.id === groupLeadRole
+      );
+      const needsRoomTitle = isGroupLead && room.auto_title_pending === true;
+      const needsLeadName = isGroupLead && liveBot.auto_name_pending === true;
+      const userMessageIds = new Set();
+      for (const msg of snapshot.messages) if (msg.senderId === 'user') userMessageIds.add(msg.id);
+      for (const route of batch) if (route.event?.author?.kind === 'user') userMessageIds.add(route.event_id);
+      const namingContext = (needsRoomTitle || needsLeadName)
+        ? { needsRoomTitle, needsLeadName, allowDeferNaming: userMessageIds.size <= 1 }
+        : null;
+      const existingGroupNames = needsRoomTitle
+        ? this.platform.store.list('rooms')
+            .filter(item => item.mode === 'group' && item.id !== roomId && item.name)
+            .map(item => item.name)
+            .slice(0, 40)
+        : [];
 
       const members = [...(room.members || [])].sort((a, b) => (a === 'user' ? -1 : b === 'user' ? 1 : a.localeCompare(b))).map(memberId => {
         if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
@@ -273,7 +354,7 @@ export class FastReadRuntime {
           public_duty: defaultPublicDuty(memberBot),
         };
       });
-      const systemContent = buildFastReadSystem(bot, room, members, readBotInstructions(this.platform.dataRoot, bot));
+      const systemContent = buildFastReadSystem(liveBot, room, members, readBotInstructions(this.platform.dataRoot, liveBot), namingContext);
       const systemMessage = {
         role: 'system',
         timestamp: Date.parse(room.createdAt) || 0,
@@ -316,6 +397,14 @@ export class FastReadRuntime {
         pending_message_ids: eventIds,
         ...(Object.keys(pendingMentions).length ? { pending_mentions: pendingMentions } : {}),
         ...(activeSessions.length ? { active_sessions: activeSessions } : {}),
+        ...(namingContext ? {
+          auto_naming: {
+            needs_room_title: needsRoomTitle,
+            needs_lead_name: needsLeadName,
+            ...(room.workspace?.name || room.workspace?.path ? { workspace: room.workspace.name || room.workspace.path } : {}),
+            ...(existingGroupNames.length ? { existing_group_names: existingGroupNames } : {}),
+          },
+        } : {}),
       });
 
       const maxTokens = Math.max(128, Math.min(model.maxTokens, Math.floor(model.contextWindow * 0.25), Math.max(512, eventIds.length * 160 + 256)));
@@ -417,8 +506,8 @@ export class FastReadRuntime {
         throw runtimeFailure('fast_read_model_error', answer?.errorMessage || 'Fast-read model did not finish cleanly', 503);
       }
 
-      const parsed = parseFastReadResponse(answer, eventIds);
-      await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, parsed.reason);
+      const parsed = parseFastReadResponse(answer, eventIds, namingContext);
+      await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, parsed.reason, null, parsed.naming);
     } catch (error) {
       const code = error.code || 'fast_read_error';
       if (code === 'access_revoked' || code === 'room_forbidden') {
@@ -447,7 +536,7 @@ export class FastReadRuntime {
     await this.commitDecisions(inbox, bot, room, batch, decisions, null, check, `${code}: ${message}`, diagnostic);
   }
 
-  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, fallbackReason = null, diagnostic = null) {
+  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, fallbackReason = null, diagnostic = null, naming = null) {
     const roomId = room.id;
     check();
 
@@ -506,6 +595,12 @@ export class FastReadRuntime {
         updated_at: now(),
       });
     });
+
+    if (naming && (naming.roomTitle || naming.leadName)) {
+      try {
+        this.platform.applyAutoGroupNaming?.(roomId, bot.id, naming);
+      } catch {}
+    }
 
     if (mainEventIds.length) {
       for (const eventId of mainEventIds) {

@@ -232,7 +232,7 @@ struct NewGroupDraftView: View {
                         .summonFont(.title3, weight: .bold)
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.center)
-                    Text(busy ? "群主控、EggBot 与接口 Bot 正在就位，马上进入对话。" : "直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。")
+                    Text(busy ? "群主控与 EggBot 正在就位，马上进入对话。" : "直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。")
                         .summonFont(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -246,7 +246,7 @@ struct NewGroupDraftView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 156), spacing: 10)], spacing: 10) {
                     ForEach(newGroupSuggestions) { item in
                         Button {
-                            Task { await startGroup(text: item.prompt, suggestedTitle: item.title) }
+                            Task { await startGroup(text: item.prompt) }
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(item.title)
@@ -352,7 +352,7 @@ struct NewGroupDraftView: View {
         }
     }
 
-    private func startGroup(text: String, suggestedTitle: String = "") async {
+    private func startGroup(text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !busy, store.protocolReady else { return }
         busy = true
@@ -362,7 +362,6 @@ struct NewGroupDraftView: View {
         do {
             let room = try await store.createConversationalGroup(
                 text: trimmed,
-                suggestedTitle: suggestedTitle,
                 workspaceID: selectedWorkspaceID
             )
             draftText = ""

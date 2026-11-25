@@ -1665,14 +1665,14 @@ fun NewGroupDraftScreen(
         }
     }
 
-    fun startGroup(text: String, suggestedTitle: String = "") {
+    fun startGroup(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || busy || !store.protocolReady) return
         busy = true
         error = null
         scope.launch {
             try {
-                val room = store.createConversationalGroup(trimmed, suggestedTitle, selectedWorkspaceId)
+                val room = store.createConversationalGroup(trimmed, selectedWorkspaceId)
                 draftText = ""
                 selectedWorkspaceId = null
                 onCreated(room.id)
@@ -1736,7 +1736,7 @@ fun NewGroupDraftScreen(
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        if (busy) "群主控、EggBot 与接口 Bot 正在就位，马上进入对话。"
+                        if (busy) "群主控与 EggBot 正在就位，马上进入对话。"
                         else "直接告诉我你想推进的项目、长期事务或想要的专员，我会立刻建群、命名并为你配齐团队。",
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.textSecondary,
@@ -1755,7 +1755,7 @@ fun NewGroupDraftScreen(
                                 border = BorderStroke(0.7.dp, palette.bubbleStroke),
                                 modifier = Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
                                     .clickable(enabled = !busy && store.protocolReady) {
-                                        startGroup(item.prompt, item.title)
+                                        startGroup(item.prompt)
                                     },
                             ) {
                                 Column(
