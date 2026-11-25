@@ -302,7 +302,22 @@ export class Executions {
         this.bindSubmission(call.id, session, context);
         started = true;
       };
-      const options = { session, call: this.calls.get(call.id), input: args.input, beforeSubmit, signal: context.signal };
+      let execInput = args.input;
+      if (session.work_engine) {
+        const raw = args.input;
+        const payload = typeof raw === 'string'
+          ? { text: raw }
+          : (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { text: String(raw ?? '') });
+        const configuredEnv = (session.work_engine.env_slots || []).filter(k => process.env[k] !== undefined);
+        execInput = {
+          bot: session.work_engine.bot_id,
+          script: session.work_engine.script,
+          protocol: 'summon-jsonl',
+          payload,
+          ...(configuredEnv.length ? { env: configuredEnv } : {}),
+        };
+      }
+      const options = { session, call: this.calls.get(call.id), input: execInput, beforeSubmit, signal: context.signal };
       const result = session.engine === 'pi' ? await this.platform.runtime.pi.start(options) : await this.platform.exec.open(options);
       facts = this.applyResponse(session, call.id, result);
     } catch (error) {

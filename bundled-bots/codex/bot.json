@@ -3,5 +3,6 @@
   "name": "Codex",
   "public_duty": "OpenAI Codex 专职编码与工程执行 Bot，负责通过本机 Codex CLI（app-server）推进代码实现、重构与排障",
   "model_provider": "codex",
-  "env_slots": []
+  "env_slots": [],
+  "engine_script": "scripts/app-server.mjs"
 }

@@ -2,5 +2,6 @@
   "id": "claude-code",
   "name": "Claude Code",
   "public_duty": "Anthropic Claude Code 专职编码与工程执行 Bot，合规复用本机官方 claude CLI 订阅推进代码与工程任务",
-  "env_slots": ["ANTHROPIC_API_KEY"]
+  "env_slots": ["ANTHROPIC_API_KEY"],
+  "engine_script": "scripts/claude.mjs"
 }

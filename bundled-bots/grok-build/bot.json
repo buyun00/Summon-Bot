@@ -3,5 +3,6 @@
   "name": "Grok Build",
   "public_duty": "xAI Grok Build 专职编码与任务执行 Bot，负责通过本机 grok CLI 推进研发与脚本任务",
   "model_provider": "grok",
-  "env_slots": ["XAI_API_KEY"]
+  "env_slots": ["XAI_API_KEY"],
+  "engine_script": "scripts/grok.mjs"
 }
