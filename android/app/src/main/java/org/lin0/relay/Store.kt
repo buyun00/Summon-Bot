@@ -586,8 +586,9 @@ class SummonStore(private val app: Context) {
         val title = deriveInitialGroupTitle(text, suggestedTitle)
         val room = createRoom(title, emptyList(), mode = "group", workspaceID = workspaceID, skipWelcome = true)
         refresh()
-        val egg = bots.firstOrNull { it.roleId == "eggbot" && !it.isPaused }
-        val mentions = if (egg != null && egg.id in room.members) listOf(egg.id) else emptyList()
+        val leadId = room.leadBotId?.takeIf { id -> id in room.members && bots.firstOrNull { it.id == id }?.isPaused != true }
+            ?: bots.firstOrNull { it.roleId == "group-lead" && !it.isPaused && it.id in room.members }?.id
+        val mentions = listOfNotNull(leadId)
         val id = newID()
         val message = SummonMessage(
             id = "local-$id",

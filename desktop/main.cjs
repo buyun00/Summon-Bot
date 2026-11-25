@@ -568,16 +568,16 @@ ipcMain.handle('summon:open-attachment', async (event, { url, name } = {}) => {
   if (target.origin !== connection.origin) {
     throw new Error('仅支持打开当前工作台的文件');
   }
-  if (!/^\/(?:hub\/nodes\/[^/]+\/)?api\/(?:attachments\/[^/]+|files\/[^/]+\/download|workspaces\/[^/]+\/file)/i.test(target.pathname)) {
+  if (!/^\/(?:nodes\/[^/]+\/)?api\/(?:attachments\/[^/]+(?:\/(?:preview|view))?|files\/[^/]+\/download|workspaces\/[^/]+\/file)$/i.test(target.pathname)) {
     throw new Error('不支持打开该路径');
   }
   const webSession = event.sender.session || session.defaultSession;
-  const response = await webSession.fetch(target.href);
+  const response = await webSession.fetch(target.href, { credentials: 'include', cache: 'no-store' });
   if (!response.ok) {
     throw new Error(`读取文件失败（HTTP ${response.status}）`);
   }
   const bytes = Buffer.from(await response.arrayBuffer());
-  const rawName = basename(String(name || 'file')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim();
+  const rawName = basename(String(name || 'file')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '').trim();
   const safeName = rawName && rawName !== '.' && rawName !== '..' ? rawName : 'file';
   const dir = join(app.getPath('temp'), 'summon-open', randomBytes(4).toString('hex'));
   await mkdir(dir, { recursive: true });

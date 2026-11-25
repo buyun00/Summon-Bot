@@ -666,8 +666,14 @@ final class SummonStore {
         let title = Self.deriveInitialGroupTitle(from: text, suggestedTitle: suggestedTitle)
         let room = try await createRoom(name: title, members: [], mode: "group", workspaceID: workspaceID, skipWelcome: true)
         await refresh()
-        let egg = bots.first { $0.role_id == "eggbot" && !$0.isPaused }
-        let mentions = (egg != nil && room.members.contains(egg!.id)) ? [egg!.id] : []
+        let leadID: String? = {
+            if let id = room.lead_bot_id, room.members.contains(id) {
+                if let b = bot(id: id), b.isPaused { return nil }
+                return id
+            }
+            return bots.first { $0.role_id == "group-lead" && !$0.isPaused && room.members.contains($0.id) }?.id
+        }()
+        let mentions = leadID.map { [$0] } ?? []
         let id = Self.newID()
         let message = SummonMessage(
             id: "local-\(id)",

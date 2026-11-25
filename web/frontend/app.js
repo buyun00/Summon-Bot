@@ -1593,8 +1593,11 @@ async function submitDraftGroupMessage(rawText, { suggestedTitle = '' } = {}) {
     ui.openRoomExecution = null;
     ui.activityTickerIndex = 0;
     location.hash = 'chat';
-    const egg = eggBotMember();
-    const mentions = egg?.enabled && room.members.includes(egg.id) ? [egg.id] : [];
+    const leadId = (room.lead_bot_id && room.members.includes(room.lead_bot_id))
+      ? room.lead_bot_id
+      : (room.members || []).map(botById).find(b => b?.role_id === 'group-lead' && b.enabled)?.id || null;
+    const lead = leadId ? botById(leadId) : null;
+    const mentions = leadId && (!lead || lead.enabled) ? [leadId] : [];
     const entry = queueLocalMessage(room.id, { text, mentions, references: [], attachments: [] }, []);
     await sendLocalMessage(entry, true);
     await loadCurrent();
@@ -2610,7 +2613,8 @@ async function act(action, element) {
       try {
         await window.SummonDesktop.openAttachment({ url, name });
       } catch (error) {
-        toast(error?.message || '无法使用默认程序打开文件', true);
+        const message = String(error?.message || '').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '').trim();
+        toast(message || '无法使用默认程序打开文件', true);
       }
       return;
     }
@@ -4692,7 +4696,8 @@ function renderFiles() {
   const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button ${file.id === ui.fileId ? 'selected' : ''}" data-action="open-file" data-id="${esc(file.id)}">
     <strong>${esc(file.name || file.path)}</strong><small>${file.deleted_room ? '已删群归档 · ' : ''}${esc(file.space ? refLabel(file.space) : '')} · 修订 v${esc(file.revision)}</small></button>`);
   const baseDownload = item ? filePath(item.id) + '/download' : '';
-  const link = typeof item?.url === 'string' && (item.url === baseDownload || item.url.startsWith(baseDownload + '?revision=')) ? item.url : attachmentUrl(item);
+  const rawLink = typeof item?.url === 'string' && (item.url === baseDownload || item.url.startsWith(baseDownload + '?revision=')) ? item.url : '';
+  const link = rawLink ? (window.SummonHub?.apiPath?.(rawLink) || rawLink) : attachmentUrl(item);
   const latestRev = item?.latest_revision ?? item?.revision;
   const isHistorical = item && latestRev && item.revision !== latestRev;
   const revHistory = Array.isArray(item?.revisions) && item.revisions.length > 1

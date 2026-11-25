@@ -720,8 +720,8 @@ globalThis.SummonCanvasOverview = (() => {
         ? `<div class="cv-ins-revs">${item.revisions.map(rev => `<button type="button" class="${rev.revision === item.revision ? 'primary-button' : 'secondary-button'} small-button" data-cv-file-rev="${esc(rev.revision)}" data-cv-file-id="${esc(item.id)}">v${esc(rev.revision)}</button>`).join('')}</div>`
         : '';
       const rawDownload = item.id ? `/api/files/${encodeURIComponent(item.id)}/download` : '';
-      const baseDownload = rawDownload ? (window.SummonHub?.apiPath?.(rawDownload) || rawDownload) : '';
-      const link = typeof item.url === 'string' && (item.url === baseDownload || item.url.startsWith(baseDownload + '?revision=')) ? item.url : baseDownload;
+      const rawLink = typeof item.url === 'string' && (item.url === rawDownload || item.url.startsWith(rawDownload + '?revision=')) ? item.url : rawDownload;
+      const link = rawLink ? (window.SummonHub?.apiPath?.(rawLink) || rawLink) : '';
       body = `${revHistory}
         ${cv.inspectorLoading ? '<p class="subtle" style="font-size:var(--text-caption)">正在读取资料内容…</p>' : ''}
         ${typeof item.content === 'string' ? `<pre class="cv-ins-doc">${esc(item.content)}</pre>` : item.content_status === 'unavailable' ? '<p class="subtle">文件内容不可用</p>' : ''}

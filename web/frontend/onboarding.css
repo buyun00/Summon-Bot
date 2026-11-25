@@ -722,48 +722,35 @@ html.desktop-onboarding-window.is-win .ob-window-bar {
   font-size: 12.5px;
 }
 
-.ob-typing-bubble {
-  display: inline-flex;
+.ob-bot-live-bar[hidden] {
+  display: none;
+}
+
+.ob-bot-live-bar {
+  flex: none;
+  display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 14px;
-  border-radius: 16px;
-  border-top-left-radius: 5px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 15px;
+  border-radius: 14px;
   background: var(--ob-tile-bg);
   border: 1px solid var(--ob-card-border);
+  font-size: 12.5px;
   color: var(--ink-2, var(--muted));
-  font-size: 13px;
 }
 
-.ob-typing-dots {
+.ob-bot-live-left {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  min-width: 0;
 }
 
-.ob-typing-dots i {
-  display: block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent, #7d824b);
-  opacity: 0.4;
-  animation: ob-typing-bounce 1.2s ease-in-out infinite;
-}
-
-.ob-typing-dots i:nth-child(2) { animation-delay: 0.18s; }
-.ob-typing-dots i:nth-child(3) { animation-delay: 0.36s; }
-
-@keyframes ob-typing-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
-  40% { transform: translateY(-3px); opacity: 1; }
-}
-
-.ob-typing-text {
+.ob-bot-live-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 480px;
 }
 
 .ob-bubble pre {

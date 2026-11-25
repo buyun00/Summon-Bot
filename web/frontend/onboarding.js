@@ -453,7 +453,7 @@
           <div class="ob-chat-avatar">${makeBotAvatar()}</div>
           <div class="ob-chat-col">
             <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(ackClock)}</span></div>
-            <div class="ob-bubble is-bot">收到，开始检查本机环境与登录状态…</div>
+            <div class="ob-bubble is-bot">收到，开始检查本机环境与登录状态。</div>
           </div>
         </div>`,
       });
@@ -631,21 +631,6 @@
           </div>`,
         });
       }
-    } else if (!snap.pendingExec && !snap.pendingPromptMsg) {
-      // 5. Bottom live typing bubble while Bot is still working (keeps feed alive, never blank!)
-      items.push({
-        key: 'typing',
-        sig: `typing:${snap.progressText}`,
-        html: `<div class="ob-chat-row is-bot">
-          <div class="ob-chat-avatar">${makeBotAvatar()}</div>
-          <div class="ob-chat-col">
-            <div class="ob-typing-bubble">
-              <span class="ob-typing-dots"><i></i><i></i><i></i></span>
-              <span class="ob-typing-text">${esc(snap.progressText)}</span>
-            </div>
-          </div>
-        </div>`,
-      });
     }
 
     return items;
@@ -677,6 +662,13 @@
           </span>
         </div>
         <div class="ob-bot-feed" id="ob-bot-feed"></div>
+        <div class="ob-bot-live-bar" data-ob-live-bar>
+          <span class="ob-bot-live-left">
+            <span class="ob-spinner" style="color:var(--accent,#7d824b)"></span>
+            <span class="ob-bot-live-text" data-ob-live-text>正在唤醒专职 Bot…</span>
+          </span>
+          <span class="ob-bot-timer" data-ob-live-timer>00:00</span>
+        </div>
       </div>
     `;
     window.SummonAvatars?.hydrate?.(stage);
@@ -733,6 +725,14 @@
     }
     if (badgeDot) badgeDot.hidden = snap.isReady;
     if (badgeTextEl && badgeTextEl.textContent !== nextBadgeText) badgeTextEl.textContent = nextBadgeText;
+
+    const liveBar = stage.querySelector('[data-ob-live-bar]');
+    const liveTextEl = stage.querySelector('[data-ob-live-text]');
+    const liveTimerEl = stage.querySelector('[data-ob-live-timer]');
+    const showLiveBar = !snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg;
+    if (liveBar) liveBar.hidden = !showLiveBar;
+    if (liveTextEl && liveTextEl.textContent !== snap.progressText) liveTextEl.textContent = snap.progressText;
+    if (liveTimerEl && liveTimerEl.textContent !== elapsed) liveTimerEl.textContent = elapsed;
 
     // Incremental diff of #ob-bot-feed so existing bubbles NEVER flicker or re-animate!
     const feed = stage.querySelector('#ob-bot-feed');
@@ -827,6 +827,10 @@
       const badgeEl = document.querySelector('[data-ob-badge-text]');
       if (badgeEl && !snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg) {
         badgeEl.textContent = `对接中 ${elapsed}`;
+      }
+      const timerEl = document.querySelector('[data-ob-live-timer]');
+      if (timerEl && !snap.isReady) {
+        timerEl.textContent = elapsed;
       }
     }, 1000);
   }
