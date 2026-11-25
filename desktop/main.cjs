@@ -1,9 +1,9 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell, protocol, nativeTheme } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, screen, session, shell, protocol, nativeTheme } = require('electron');
 const { join } = require('node:path');
-const { readFile } = require('node:fs/promises');
+const { readFile, writeFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { runtime, setupUrl, isFreshInstallSync, prepareLocalConnection, resolveLogsRoot } = require('./connection.cjs');
+const { runtime, setupUrl, isFreshInstallSync, prepareLocalConnection } = require('./connection.cjs');
 
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
@@ -11,27 +11,41 @@ app.setName('Summon Bot');
 protocol.registerSchemesAsPrivileged([{ scheme: 'summon-setup', privileges: { standard: true, secure: true } }]);
 
 const profile = app.getPath('userData');
+const fromInstaller = process.argv.includes('--from-installer');
+const installerHandoffFile = join(app.getPath('temp'), 'summon-installer-handoff.ready');
 const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').href;
 const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Boolean).slice(-2);
 const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 
-const stageLabels = {
-  extract: '正在准备核心运行组件…',
-  prepare: '正在准备本机环境…',
-  upgrade: '正在平滑升级本机运行时…',
-  gateway: '正在启动核心服务…',
-  web: '正在启动本机工作台…',
-  connect: '正在唤醒 Summon Bot…',
+const stageProgress = {
+  extract: { percent: 64, stage: '正在准备核心运行组件…' },
+  prepare: { percent: 74, stage: '正在准备本机环境…' },
+  upgrade: { percent: 78, stage: '正在平滑升级本机运行时…' },
+  gateway: { percent: 84, stage: '正在启动核心服务…' },
+  web: { percent: 92, stage: '正在启动本机工作台…' },
+  connect: { percent: 97, stage: '正在唤醒 Summon Bot…' },
 };
 
 let mainWindow = null;
 let introWindow = null;
 let introDisplayBounds = null;
 let resolveIntroAnim = null;
+let installerHandedOff = false;
 let timer, checking, booting = false;
 let connection = null;
-let bootState = { status: 'booting', stage: stageLabels.prepare, error: '' };
+let bootState = {
+  status: 'booting',
+  percent: fromInstaller ? 56 : 14,
+  stage: fromInstaller ? stageProgress.extract.stage : stageProgress.prepare.stage,
+  error: '',
+};
 let update = { status: 'idle', currentVersion: app.getVersion() };
+
+function signalInstallerHandoff() {
+  if (!fromInstaller || installerHandedOff) return;
+  installerHandedOff = true;
+  void writeFile(installerHandoffFile, 'ready').catch(() => {});
+}
 
 function broadcastUpdate(value) {
   for (const target of [mainWindow, introWindow]) {
@@ -50,7 +64,7 @@ function setBootState(next) {
   if (introWindow.webContents.getURL().startsWith(setupUrl)) {
     introWindow.webContents.send('summon:boot-state', bootState);
   } else {
-    introWindow.loadURL(`${setupUrl}?mode=quiet`).catch(() => {});
+    introWindow.loadURL(`${setupUrl}?from_installer=0`).catch(() => {});
   }
 }
 
@@ -212,18 +226,21 @@ function createMainWindow({ showImmediately = true, display = targetDisplayForMa
   target.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
     if (target !== mainWindow || !isMainFrame || code === -3 || !isWeb(url)) return;
     const overlay = createIntroOverlayWindow();
-    setBootState({ status: 'error', stage: '暂时无法连接本机工作台', error: '本机服务可能正在重启或未响应，请重试。' });
-    overlay.loadURL(setupUrl).catch(() => {});
+    setBootState({ status: 'booting', percent: 72, stage: '本机服务正在恢复，正在重新连接…', error: '' });
+    overlay.loadURL(`${setupUrl}?from_installer=0`).catch(() => {});
+    setTimeout(() => { void bootLocalInstance({ retryCount: 1 }); }, 1600);
   });
   target.webContents.on('did-navigate', (_event, url, status) => {
     if (target !== mainWindow || !isWeb(url) || new URL(url).pathname !== '/' || status < 400) return;
     const overlay = createIntroOverlayWindow();
     setBootState({
-      status: 'error',
-      stage: status === 503 ? '本机服务正在更新' : `工作台暂不可用（HTTP ${status}）`,
-      error: '请稍后点击重试，或打开日志目录检查状态。',
+      status: 'booting',
+      percent: 76,
+      stage: status === 503 ? '本机服务正在更新，请稍候…' : '正在重新连接本机工作台…',
+      error: '',
     });
-    overlay.loadURL(setupUrl).catch(() => {});
+    overlay.loadURL(`${setupUrl}?from_installer=0`).catch(() => {});
+    setTimeout(() => { void bootLocalInstance({ retryCount: 1 }); }, 1600);
   });
   if (showImmediately) {
     target.once('ready-to-show', () => {
@@ -253,57 +270,107 @@ function settleIntroOverlayWindow(width = 620, height = 700) {
   return { x, y, width: w, height: h };
 }
 
-async function bootLocalInstance() {
+async function bootLocalInstance({ retryCount = 0 } = {}) {
   if (booting) return;
   booting = true;
   const fresh = isFreshInstallSync(profile);
-  const overlay = createIntroOverlayWindow();
-  setBootState({ status: 'booting', stage: stageLabels.prepare, error: '' });
+  const showSplashNow = fromInstaller || fresh || retryCount > 0;
+  const bootUrl = `${setupUrl}?from_installer=${fromInstaller && retryCount === 0 ? '1' : '0'}`;
+  let delayedSplashTimer = null;
 
-  // Fresh install: start the full-screen Arc/Dia expansion at t = 0 while backend boots IN PARALLEL!
-  const introAnimDone = fresh
-    ? new Promise(done => {
-        resolveIntroAnim = done;
-        setTimeout(() => { resolveIntroAnim = null; done(); }, 2600);
-      })
-    : Promise.resolve();
+  const ensureBootSplash = async () => {
+    const overlay = createIntroOverlayWindow();
+    if (!overlay.webContents.getURL().startsWith(setupUrl)) {
+      await overlay.loadURL(bootUrl).catch(() => {});
+    }
+    if (fromInstaller && !installerHandedOff) {
+      setTimeout(() => signalInstallerHandoff(), 120);
+    }
+    return overlay;
+  };
 
-  const bootUrl = `${setupUrl}?mode=${fresh ? 'intro' : 'quiet'}`;
-  if (overlay.webContents.getURL() !== bootUrl) {
-    await overlay.loadURL(bootUrl).catch(() => {});
+  setBootState({
+    status: 'booting',
+    percent: fromInstaller && retryCount === 0 ? 56 : 14,
+    stage: fromInstaller ? stageProgress.extract.stage : stageProgress.prepare.stage,
+    error: '',
+  });
+
+  if (showSplashNow) {
+    await ensureBootSplash();
+  } else {
+    delayedSplashTimer = setTimeout(() => {
+      delayedSplashTimer = null;
+      void ensureBootSplash();
+    }, 450);
   }
 
+  let shouldRetry = false;
   try {
-    const preparePromise = prepareLocalConnection(overlay.webContents.session, profile, progress => {
-      const label = stageLabels[progress?.stage] || stageLabels.prepare;
-      if (overlay === introWindow && !overlay.isDestroyed()) {
-        setBootState({ status: 'booting', stage: label, error: '' });
+    const ready = await prepareLocalConnection(session.defaultSession, profile, progress => {
+      const info = stageProgress[progress?.stage] || stageProgress.prepare;
+      if (introWindow && !introWindow.isDestroyed()) {
+        setBootState({ status: 'booting', percent: info.percent, stage: info.stage, error: '' });
       }
     });
-    const [ready] = await Promise.all([preparePromise, introAnimDone]);
-    connection = ready;
-    if (ready.needsIntro) {
-      // Bloom already played across the full screen — settle into compact floating Setup Window!
-      settleIntroOverlayWindow(620, 700);
-      const introUrl = new URL(fresh ? '/?desktop_intro=ready' : '/?desktop_intro=1', ready.origin).href;
-      await overlay.loadURL(introUrl);
-      return;
+    if (delayedSplashTimer) {
+      clearTimeout(delayedSplashTimer);
+      delayedSplashTimer = null;
     }
+    connection = ready;
+
+    const shouldUnbox = Boolean(ready.needsIntro || (fromInstaller && introWindow && !introWindow.isDestroyed()));
+    if (shouldUnbox) {
+      const overlay = await ensureBootSplash();
+      signalInstallerHandoff();
+      const animDone = new Promise(done => {
+        resolveIntroAnim = done;
+        setTimeout(() => { resolveIntroAnim = null; done(); }, 3400);
+      });
+      setBootState({ status: 'ready_to_unbox', percent: 100, stage: '准备就绪，开箱！', error: '' });
+      await animDone;
+      if (ready.needsIntro) {
+        settleIntroOverlayWindow(620, 700);
+        await overlay.loadURL(new URL('/?desktop_intro=ready', ready.origin).href);
+        return;
+      }
+    }
+
+    signalInstallerHandoff();
     const main = createMainWindow({ showImmediately: true });
     await main.loadURL(new URL('/', ready.origin).href);
     if (introWindow && !introWindow.isDestroyed()) {
       introWindow.close();
     }
   } catch (error) {
-    settleIntroOverlayWindow(580, 440);
-    setBootState({
-      status: 'error',
-      stage: '本机服务未能启动',
-      error: String(error?.message || '请重试或查看本机日志排查原因。'),
-    });
+    if (delayedSplashTimer) {
+      clearTimeout(delayedSplashTimer);
+      delayedSplashTimer = null;
+    }
+    signalInstallerHandoff();
+    await ensureBootSplash();
+    if (retryCount < 2) {
+      shouldRetry = true;
+      setBootState({
+        status: 'booting',
+        percent: Math.max(bootState.percent || 64, 70),
+        stage: '核心服务启动较慢，正在自动重试…',
+        error: '',
+      });
+    } else {
+      setBootState({
+        status: 'error',
+        stage: `本机服务暂时未能就绪：${String(error?.message || '请稍候重新打开 Summon Bot')}`,
+        error: '',
+      });
+    }
   } finally {
     resolveIntroAnim = null;
     booting = false;
+  }
+
+  if (shouldRetry) {
+    setTimeout(() => { void bootLocalInstance({ retryCount: retryCount + 1 }); }, 1800);
   }
 }
 
@@ -491,23 +558,6 @@ ipcMain.handle('summon:intro-close', event => {
 ipcMain.handle('summon:boot-info', event => {
   trusted(event, { allowBoot: true, allowMainWeb: false });
   return { ...bootState, version: app.getVersion(), update };
-});
-
-ipcMain.handle('summon:boot-retry', event => {
-  trusted(event, { allowBoot: true, allowMainWeb: false });
-  void bootLocalInstance();
-  return true;
-});
-
-ipcMain.handle('summon:open-logs', async event => {
-  trusted(event, { allowBoot: true, allowMainWeb: false });
-  try {
-    const dir = await resolveLogsRoot(profile);
-    await shell.openPath(dir);
-    return true;
-  } catch {
-    return false;
-  }
 });
 
 ipcMain.handle('summon:check-update', event => {

@@ -30,7 +30,7 @@ export async function buildDesktop({ platform, arch, output, candidate, commit }
   const target = platform === 'macos' ? builder.Platform.MAC : builder.Platform.WINDOWS;
   try {
     const bundled = await buildRelease({ sourceRoot: root, releaseRoot: runtime, committedOnly: !candidate, commit });
-    const inputs = [...shellFiles, 'package-lock.json', ...(platform === 'macos' ? ['summon', 'entitlements.mac.plist'] : ['summon.cmd'])]
+    const inputs = [...shellFiles, 'package-lock.json', ...(platform === 'macos' ? ['summon', 'entitlements.mac.plist'] : ['summon.cmd', 'installer.nsh', 'installer-splash.ps1'])]
       .map(name => 'desktop/' + name);
     if (platform === 'macos') inputs.push(macIcon);
     if (candidate) {
@@ -75,6 +75,7 @@ export async function buildDesktop({ platform, arch, output, candidate, commit }
         publish: platform === 'windows' ? [{ provider: 'generic', url: new URL(updatePath, release.appUrl).href, useMultipleRangeRequest: false }] : null,
         win: { target: ['nsis'], icon: join(runtime, 'web/frontend/icons/icon-512.png') },
         nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: true,
+          include: join(app, 'installer.nsh'),
           shortcutName: 'Summon Bot', createDesktopShortcut: true, deleteAppDataOnUninstall: false },
         mac: { target: ['dmg'], type: 'distribution', icon: join(stage, macIcon),
           ...(signing ? {} : { identity: null }), binaries: ['Contents/Resources/summon-runtime/runtime/node'],

@@ -6,28 +6,48 @@
 <link rel="stylesheet" href="setup.css">
 <script defer src="setup.js"></script>
 <body>
+  <!-- Full-screen Arc/Dia radial expansion layer (triggers when logo jumps out of the open box!) -->
   <div class="boot-portal-backdrop" id="boot-portal-backdrop" aria-hidden="true"></div>
   <div class="boot-portal-ring" id="boot-portal-ring" aria-hidden="true"></div>
 
-  <div class="boot-intro-center" id="boot-intro-center" aria-hidden="true">
-    <div class="boot-orb-wrap">
-      <div class="boot-orb-glow"></div>
-      <div class="boot-orb"><img src="icon.png" alt="Summon Bot"></div>
-    </div>
-    <div class="boot-wordmark">Summon Bot</div>
-  </div>
-
-  <main class="boot-floating-card" id="boot-floating-card" hidden>
-    <div class="boot-card-icon"><img src="icon.png" alt="Summon Bot"></div>
-    <h1 class="boot-card-title" id="boot-card-title">Summon Bot</h1>
-    <p class="boot-card-status" id="boot-stage-text" role="status">正在准备配置页…</p>
-    <div class="boot-error-box" id="boot-error-box" hidden>
-      <p class="boot-error-detail" id="boot-error-detail"></p>
-      <div class="boot-actions">
-        <button type="button" class="primary" id="btn-retry">重试启动</button>
-        <button type="button" id="btn-logs">打开日志目录</button>
-        <button type="button" id="btn-close">退出</button>
+  <!-- Custom Solid Warm-Paper Floating Window (exact visual match to installer splash!) -->
+  <main class="boot-card" id="boot-card">
+    <div class="box-stage" id="box-stage" aria-hidden="true">
+      <div class="box-burst"></div>
+      <div class="box-shadow"></div>
+      <!-- Summon Logo hidden inside box, leaps out when flaps open! -->
+      <div class="box-logo" id="box-logo">
+        <img src="icon.png" alt="Summon Bot">
       </div>
+      <!-- Paper-Craft Cardboard Box SVG -->
+      <svg class="box-svg" viewBox="0 0 116 106" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Back inner walls -->
+        <polygon points="22,34 58,18 94,34 58,50" fill="#B88E5F"/>
+        <!-- Left & right top flaps (swing open on .is-unboxing!) -->
+        <g class="box-flap-left">
+          <polygon points="22,34 58,18 52,12 16,28" fill="#DFC19A" stroke="#B99265" stroke-width="1"/>
+        </g>
+        <g class="box-flap-right">
+          <polygon points="94,34 58,18 64,12 100,28" fill="#E7CCA7" stroke="#B99265" stroke-width="1"/>
+        </g>
+        <!-- Paper tape strip (peels/fades on open) -->
+        <polygon class="box-tape" points="49,22 67,30 63,34 45,26" fill="#F3E5CE" opacity="0.9"/>
+        <!-- Front-left wall -->
+        <polygon points="22,34 58,50 58,92 22,76" fill="#D5B184" stroke="#B99265" stroke-width="1"/>
+        <!-- Front-right wall -->
+        <polygon points="58,50 94,34 94,76 58,92" fill="#C59C6D" stroke="#A88052" stroke-width="1"/>
+        <!-- Paper parcel label -->
+        <polygon points="68,54 85,46 85,57 68,65" fill="#FBF7EE" opacity="0.92"/>
+        <line x1="71" y1="57" x2="82" y2="52" stroke="#9D8C75" stroke-width="1.6" stroke-linecap="round"/>
+        <line x1="71" y1="61" x2="79" y2="57" stroke="#B9AA96" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>
+    </div>
+
+    <h1 class="boot-title">Summon Bot</h1>
+    <p class="boot-status" id="boot-stage-text" role="status">正在准备核心运行组件…</p>
+
+    <div class="boot-progress-track" id="boot-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="55">
+      <div class="boot-progress-fill" id="boot-progress-fill"></div>
     </div>
   </main>
 </body>

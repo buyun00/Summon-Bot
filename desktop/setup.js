@@ -1,72 +1,64 @@
 'use strict';
 
 const boot = window.SummonBoot;
-const card = document.getElementById('boot-floating-card');
-const cardTitle = document.getElementById('boot-card-title');
 const stageText = document.getElementById('boot-stage-text');
-const errorBox = document.getElementById('boot-error-box');
-const errorDetail = document.getElementById('boot-error-detail');
-const retryBtn = document.getElementById('btn-retry');
-const logsBtn = document.getElementById('btn-logs');
-const closeBtn = document.getElementById('btn-close');
+const progressTrack = document.getElementById('boot-progress-track');
+const progressFill = document.getElementById('boot-progress-fill');
 
-let animFinished = false;
-let lastState = { status: 'booting', stage: '正在准备本机环境…', error: '' };
+let currentPercent = boot.fromInstaller ? 56 : 12;
+let unboxed = false;
+
+function setProgress(percent, label) {
+  const next = Math.max(currentPercent, Math.min(100, Math.round(percent)));
+  currentPercent = next;
+  progressFill.style.width = `${next}%`;
+  progressTrack.setAttribute('aria-valuenow', String(next));
+  if (label) stageText.textContent = label;
+}
+
+function playUnboxingAndBloom() {
+  if (unboxed) return;
+  unboxed = true;
+  setProgress(100, '准备就绪，开箱！');
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  if (reduced) {
+    document.body.classList.add('is-unboxing', 'is-blooming', 'is-settled');
+    void boot.introDone();
+    return;
+  }
+  // 1) Box flaps swing open & Summon Bot logo leaps out of the box (0 -> 920ms)
+  setTimeout(() => {
+    document.body.classList.add('is-unboxing');
+  }, 160);
+  // 2) Full-screen Arc/Dia radial expansion wave sweeps across the entire monitor (920ms -> 2480ms)
+  setTimeout(() => {
+    document.body.classList.add('is-blooming');
+  }, 940);
+  // 3) Full-screen bloom recedes cleanly & hands off to the solid floating Setup Window!
+  setTimeout(() => {
+    document.body.classList.add('is-settled');
+    void boot.introDone();
+  }, 2480);
+}
 
 function applyState(state) {
-  lastState = state || lastState;
-  const isError = lastState.status === 'error';
-  if (isError) {
-    document.body.classList.add('is-settled');
-    card.hidden = false;
-    cardTitle.textContent = lastState.stage || '本机服务未能启动';
-    stageText.textContent = '你可以重试启动，或打开日志目录查看具体原因。';
-    errorBox.hidden = false;
-    errorDetail.textContent = lastState.error || '未能连接本机服务。';
-    retryBtn.disabled = false;
-    return;
+  if (!state) return;
+  if (typeof state.percent === 'number') {
+    setProgress(state.percent, state.stage);
+  } else if (state.stage) {
+    stageText.textContent = state.stage;
   }
-  errorBox.hidden = true;
-  if (animFinished) {
-    card.hidden = false;
-    cardTitle.textContent = 'Summon Bot';
-    stageText.textContent = lastState.stage || '正在进入配置…';
+  if (state.status === 'ready_to_unbox') {
+    playUnboxingAndBloom();
   }
 }
 
-function startIntroAnimation() {
-  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-  if (boot.mode === 'quiet' || reduced) {
-    animFinished = true;
-    document.body.classList.add('is-settled');
-    applyState(lastState);
-    void boot.introDone();
-    return;
-  }
-  // Start the full-screen Arc/Dia radial expansion IMMEDIATELY at t = 0!
-  void document.body.offsetWidth;
-  setTimeout(() => {
-    document.body.classList.add('is-expanding', 'is-expanded');
-  }, 420);
-  setTimeout(() => {
-    document.body.classList.add('is-settled');
-    void boot.introDone();
-    setTimeout(() => {
-      animFinished = true;
-      applyState(lastState);
-    }, 350);
-  }, 2050);
-}
+// Gently creep progress bar forward so it never feels frozen while services start
+setInterval(() => {
+  if (unboxed || currentPercent >= 94) return;
+  setProgress(currentPercent + 1);
+}, 650);
 
-retryBtn.onclick = () => {
-  retryBtn.disabled = true;
-  applyState({ status: 'booting', stage: '正在重新启动本机服务…', error: '' });
-  void boot.retry();
-};
-
-logsBtn.onclick = () => void boot.openLogs();
-closeBtn.onclick = () => void boot.close();
-
+setProgress(currentPercent, boot.fromInstaller ? '正在准备核心运行组件…' : '正在准备本机环境…');
 boot.onState(applyState);
 boot.info().then(applyState).catch(() => {});
-startIntroAnimation();
