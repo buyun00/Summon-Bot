@@ -4,11 +4,10 @@
 
 # Summon Bot
 
-**Less is More · 像坐进 Cybercab 一样，不用面对飞机引擎般的复杂面板与概念，只需像平时群聊一样说出目的地，直接自动驾驶出发（把时间留给自己冲咖啡）。**  
-**Less is More · A Cybercab for AI Work: No Cockpit Panels or Concepts to Learn — Just Say Where You Want to Go in Group Chat, Self-Drive There, and Brew Your Own Coffee.**
+**部署在你电脑上的新一代多 Bot 群聊助理：告别单对话混乱与人肉多会话编排，让一群会分工、会纠错、会记事的 AI Bot 替你把活干完，把时间留给自己冲咖啡。**  
+**A Next-Gen Local Multi-Bot Group Assistant · Beyond single-thread chaos and manual session juggling — a team of AI Bots that divide work, cross-check, and remember for you, leaving you time to brew your own coffee.**
 
-![Philosophy](https://img.shields.io/badge/Philosophy-Cybercab_Autopilot-23211E?style=flat-square)
-![Group Chat](https://img.shields.io/badge/Interface-Just_Group_Chat-477A54?style=flat-square)
+![Group Chat](https://img.shields.io/badge/Workflow-Multi--Bot_Group_Chat-477A54?style=flat-square)
 ![Auto Team](https://img.shields.io/badge/EggBot-Auto_Role_Spawning-A87932?style=flat-square)
 ![Split Layer](https://img.shields.io/badge/Chat_%26_Work-Never_Freezes-597C91?style=flat-square)
 ![Clients](https://img.shields.io/badge/Clients-Web_%7C_Desktop_%7C_iOS_26_%7C_Android-2C4C66?style=flat-square)
@@ -36,17 +35,19 @@
 
 ---
 
-## 为什么我们造了一辆 Cybercab，而不是又一台“飞机引擎”？
+## Less is More：不做满墙仪表的“飞机驾驶舱”，我们做连方向盘都没有的 Cybercab
 
-看今天大多数 AI 工具（不管是 Multica、LobeHub 还是各种多 Agent 编排工作台）的教学视频，你总得先花半天时间去学一堆它们造出来的概念：什么工作区（Workspace）、什么看板（Kanban）、什么节点协作画布、怎么配 5 个角色的参数旋钮……整个工具像是一台**裸露的飞机引擎和满墙复杂的仪表盘**，在真正开始干活之前，你得先和各种功能概念斗智斗勇。
+打开市面上许多 AI 工作台或协同工具的教学视频，往往第一件事就是先花半小时学习它们发明的新概念：什么是“工作区”、什么是“看板流转”、什么是“节点连线图”、怎么调配一堆角色参数……整个软件像把一台**满墙仪表盘的飞机驾驶舱**搬到了你面前，还没开始干正事，人先要和复杂的面板与概念斗智斗勇。
 
 <p align="center">
-  <img src="docs/assets/readme-cmp-cybercab-zh.svg" alt="核心理念 Less is More（不是飞机引擎驾驶舱，而是一辆直达目的地的 Cybercab）：左侧传统 AI 工作台（Multica / LobeHub）堆满工作区、看板、节点连线画布、角色 Prompt 旋钮和 45 分钟教学视频，人还没开始干活先被面板绕晕；右侧 Summon Bot 采用 Cybercab 自动驾驶理念，唯一界面就是干净的日常群聊，说出目的地直接出发，EggBot 自动招人、群友自主接话纠错、后台多路写代码与自修工具，0 概念负担直达成品。" width="100%" />
+  <img src="docs/assets/readme-cmp-cybercab-zh.svg" alt="设计哲学 Less is More（不是满墙仪表的飞机驾驶舱，而是连方向盘都没有的 Cybercab）：左侧传统重型 AI 工作台堆满工作区与看板概念、节点连线流程图、角色 Prompt 旋钮和 45 分钟入门教学视频，让人坐在满墙仪表的驾驶舱里手忙脚乱；右侧 Summon Bot 像坐进连方向盘都没有的 Cybercab，唯一界面就是最熟悉的干净群聊，说出目的地直接自动驾驶出发。" width="100%" />
 </p>
 
-**但我们不一样：Less is More —— Summon Bot 是一辆 Cybercab（自动驾驶出租车）。**
+**Summon Bot 的设计哲学恰恰相反：Less is More —— 我们做的是 Cybercab。**
 
-AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指目标的自动驾驶**。你坐进车里，不需要面对一大堆复杂的面板，你唯一要做的，就是像平时聊天一样**说出你想要到达的目的地**，我们直接自动驾驶出发。
+**Cybercab** 是特斯拉推出的**连方向盘、油门和刹车踏板都没有的全自动驾驶专车**。你拉开车门坐进去，面前没有任何需要你去操控的复杂仪表盘，你只需要告诉它**你想去哪里**，车子就会自己带你抵达。
+
+我们认为，**AI 时代的工具不应该再是让人考飞行员执照的复杂仪器，而应该是一辆直指目标的自动驾驶座舱**。在 Summon Bot 里，我们砍掉了一切多余的面板与概念，只留下你每天都在用的**群聊窗口**——你只管像平时聊天一样说出目的地，剩下的组队、分工、写代码、纠错和修工具，全程自动驾驶带你抵达。
 
 ---
 
@@ -68,7 +69,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ## 不止能做游戏：在各种真实工作与日常场景里是什么体验？
 
-上面的完整实录以一款小游戏演示了一镜到底全过程，但 Summon Bot 是**通用的多 Bot 群聊自动驾驶座舱**——无论是**网页开发、服务器维护、全栈工程还是个人日程管理**，你都只管像和真人团队聊天一样把目的地抛进群里：
+上面的完整实录以一款小游戏演示了一镜到底全过程，但 Summon Bot 是**通用的多 Bot 群聊工作台**——无论是**网页开发、服务器维护、全栈工程还是个人日程管理**，你都不需要面对十几个黑框终端，也不必提前手写一堆繁琐的角色配置，只管像和真人团队聊天一样把想法抛进群里：
 
 ### 1. 网页开发：缺什么专员，群里会自动招什么人
 
@@ -117,13 +118,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ## 和平时用的 AI 工具相比，体验有什么不同？
 
-### 1. 对比 Multica / LobeHub 等“飞机引擎驾驶舱式”复杂工作台
-
-- **Less is More（Cybercab vs. 飞机引擎）**：大多数工作台把功能做成满墙仪表盘，逼你先看教程学会工作区、看板、节点图和一堆配置旋钮；Summon 把所有复杂概念收进引擎盖下，留给你的只有最自然的群聊——坐进车里说出目的地，直接自动驾驶出发。
-
----
-
-### 2. 对比 Codex / Claude Code 等传统 Session 式工具
+### 1. 对比 Codex / Claude Code 等传统 Session 式工具
 
 <p align="center">
   <img src="docs/assets/readme-cmp-codex-zh.svg" alt="对比 01（Summon Bot vs 传统 Session 式工具如 Codex / Claude Code）：传统 Session 工具虽可插话，但极度消耗人的多对话管理与编排精力——同时开 4 个会话极易陷入手动复制上下文的交接漩涡，且单个长目标常因权限弹窗或环境小 Bug 半路停摆；Summon Bot 由主控和专员在统一群聊里自动拆解并并行调度多路 Codex/Pi 后台稳跑、遇到工具小报错群外自动修复，最终复测合并一次交付，让长目标完整无误、高效不中断地跑完。" width="100%" />
@@ -134,7 +129,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ---
 
-### 3. 对比 Hermes 等“龙虾类”单对话本地助手
+### 2. 对比 Hermes 等“龙虾类”单对话本地助手
 
 <p align="center">
   <img src="docs/assets/readme-cmp-hermes-zh.svg" alt="对比 02（Summon Bot vs Hermes 等龙虾类单对话本地助手）：单对话助手把聊天、命令执行、报错堆栈、日程和代码全挤在一个窗口里，导致意图混杂、执行混乱且长聊压缩后习惯经常遗忘；Summon Bot 作为部署在你电脑上的新一代个人助理 Agent，通过分群协作与专职 Bot 分工（研发主控、日程事务助理、运维与维护 Bot），并由专职机制自动化沉淀个人习惯、群长期约定与资料经验库，执行更清爽、记忆更顺畅永不遗忘。" width="100%" />
@@ -145,7 +140,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ---
 
-### 4. 对比 Grokbot / OpenBot 等云端个人助手
+### 3. 对比 Grokbot / OpenBot 等云端个人助手
 
 <p align="center">
   <img src="docs/assets/readme-cmp-grokbot-zh.svg" alt="对比 03（Summon Bot vs Grokbot / OpenBot 等云端个人助手）：大厂个人 Agent 往往专注在云端虚拟机里尝试对接外卖点咖啡、购物社交等消费级应用，结果变成 AI 帮你点咖啡、真正的代码和重活还得你自己干；Summon Bot 100% 跑在你自己的电脑上，直接读写本地仓库、调用本机工具并混搭已有模型订阅，把真正的活交给 Summon 完成——过上自己慢慢冲咖啡、让 AI 干活的生活。" width="100%" />
@@ -156,7 +151,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ---
 
-### 5. 对比 DSH SuperAgent（中心路由式 Agent）
+### 4. 对比 DSH SuperAgent（中心路由式 Agent）
 
 <p align="center">
   <img src="docs/assets/readme-cmp-superagent-zh.svg" alt="对比 04（Summon Bot vs DSH SuperAgent 中心路由式 Agent）：中心路由式架构把需求、代码日志与工具回执全塞进单一中心主 Session 做唯一判断大脑，上下文混杂膨胀、一次误判全盘跑偏，且子 Agent 被动听令无法相互纠错；Summon Bot 采用扁平化同伴协作网络，主控 Bot、领域专员、总接口 Bot 与 EggBot 各自保持干净隔离的上下文，实时旁听并相互纠错，一群臭皮匠稳赢单个诸葛亮。" width="100%" />
@@ -167,7 +162,7 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ---
 
-### 6. 全自研原生四端随时接力
+### 5. 全自研原生四端随时接力
 
 <p align="center">
   <img src="docs/assets/readme-clients-zh.svg" alt="全自研原生四端实时同步（Protocol 3）与 Bloub 纸片几何头像、按用途精细记账：涵盖普通网页（Paper / Midnight）、Electron 桌面端（Win x64 / Mac arm64）、iOS 26 原生客户端（SwiftUI Liquid Glass）与 Android 原生客户端（Jetpack Compose），所有对话与凭据保存在本地电脑，出门拿手机随时查看进度或改行程。" width="100%" />
@@ -203,17 +198,19 @@ AI 时代的工具不应该再是复杂的仪表盘，而应该是一个**直指
 
 ---
 
-## Why We Built a Cybercab Instead of Another Jet-Engine Cockpit
+## Less is More: Not a Switch-Packed Jet Cockpit — A Steering-Wheel-Free Cybercab
 
-Watch tutorial videos for most AI workbenches today—whether Multica, LobeHub, or node-graph agent builders—and you always have to study their vocabulary first: *workspaces, kanban boards, workflow canvases, agent handoff graphs, role prompt knobs...* The whole tool feels like a **jet-engine cockpit** covered in switches and gauges, forcing you to wrestle with features and concepts before getting any actual work done.
+Open a tutorial video for most AI workbenches today, and the first half hour is almost always spent studying the tool's own vocabulary: *what is a Workspace, how to maintain Kanban state columns, how to wire up node-graph workflows, how to tune five role prompt knobs...* The software feels like a **jet-engine cockpit** packed with switches and gauges, forcing you to wrestle with panels and concepts before doing any real work.
 
 <p align="center">
-  <img src="docs/assets/readme-cmp-cybercab-en.svg" alt="Core Philosophy Less is More (Not a Jet-Engine Cockpit — A Self-Driving Cybercab Aimed at Your Goal): Left shows traditional AI workbenches (Multica / LobeHub) cluttered with Workspaces, Kanban states, Workflow DAGs, Role Prompt knobs, and 45-minute tutorials; Right shows Summon Bot's Cybercab Autopilot where the only UI is a clean familiar group chat—just state your destination and EggBot recruits specialists, peers self-triage and catch mistakes, and background coding runs in parallel with zero cockpit friction." width="100%" />
+  <img src="docs/assets/readme-cmp-cybercab-en.svg" alt="Design Philosophy Less is More (Not a Switch-Packed Jet Cockpit — A Steering-Wheel-Free Cybercab): Left shows traditional heavy AI workbenches cluttered with Workspaces & Boards, Node Graphs & Wires, Role Prompts & Knobs, and 45-Minute Tutorial Videos; Right shows Summon Bot designed like a Cybercab without even a steering wheel—the only UI is a familiar group chat where you state your destination and self-drive there." width="100%" />
 </p>
 
-**We took the opposite path: Less is More. Summon Bot is a Cybercab.**
+**Summon Bot is built on the opposite philosophy: Less is More — we built a Cybercab.**
 
-In the AI era, tools shouldn't be complex cockpits you have to pilot manually—they should be **self-driving autonomy aimed straight at your destination**. You step into the car without facing a wall of instrument panels; all you do is say where you want to go—just like chatting with friends—and we self-drive straight there.
+A **Cybercab** is Tesla's fully autonomous two-seat cab built **without even a steering wheel or pedals**. When you hop inside, there is no wall of gauges to operate—you simply tell it your destination, and the car drives you there on its own.
+
+We believe **tools in the AI era shouldn't require a pilot's license—they should be self-driving autonomy aimed straight at your goal**. In Summon Bot, we stripped away every unnecessary dashboard and concept, leaving only the **group chat** you already know. Just say where you want to go like you're texting friends, and let the room self-drive the recruiting, coding, cross-checking, and delivery.
 
 ---
 
@@ -235,7 +232,7 @@ Many "multi-agent" setups feel gimmicky because they are just **cyber cosplay**�
 
 ## Not Just for Games: How Summon Works Across Everyday Projects & Life
 
-The continuous walkthrough above used an indie game as one end-to-end example, but Summon Bot is a **general-purpose multi-Bot group cabin**. Whether you are **building websites, maintaining production servers, running full-stack migrations, or managing daily schedules**, you simply name your destination in chat:
+The continuous walkthrough above used an indie game as one end-to-end example, but Summon Bot is a **general-purpose multi-Bot group workspace**. Whether you are **building websites, maintaining production servers, running full-stack migrations, or managing daily schedules**, you simply talk to your team in a group chat:
 
 ### 1. Web Development: Missing a Specialist? The Room Recruits One Automatically
 
@@ -284,13 +281,7 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ## How Does This Feel Different from Other AI Tools?
 
-### 1. Compared to Multica / LobeHub & Cockpit-Style AI Workbenches
-
-- **Less is More (A Cybercab, Not a Jet Engine)**: Cockpit-style workbenches make you learn workspaces, kanban states, workflow DAGs, and dozens of configuration knobs before you can move an inch. Summon Bot hides every bit of engine complexity under the hood—you step into a clean group chat, state your destination, and self-drive there.
-
----
-
-### 2. Compared to Raw Codex / Claude Code (Traditional Session-Based Tools)
+### 1. Compared to Raw Codex / Claude Code (Traditional Session-Based Tools)
 
 <p align="center">
   <img src="docs/assets/readme-cmp-codex-en.svg" alt="Compare 01 (Summon Bot vs Raw Codex / Claude Code Session CLIs): Even though session CLIs accept mid-turn messages, managing multiple sessions drains human focus—forcing you to manually orchestrate 4 windows, copy-paste context in a handoff spiral, and rescue long goals stalled by permission prompts or minor environment bugs. Summon Bot puts you in one unified group chat where Lead Bot and specialists split work into parallel background Codex lanes, self-heal minor CLI bumps out-of-band, and verify & merge deliverables back in chat so long goals finish smoothly end-to-end." width="100%" />
@@ -301,7 +292,7 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ---
 
-### 3. Compared to Hermes & Single-Thread Local Assistants
+### 2. Compared to Hermes & Single-Thread Local Assistants
 
 <p align="center">
   <img src="docs/assets/readme-cmp-hermes-en.svg" alt="Compare 02 (Summon Bot vs Hermes and single-thread local assistants): Jamming chat, shell errors, calendar reminders, and coding into one single thread causes execution cross-bleed and forgotten habits after context compaction. Summon Bot is a next-gen personal assistant deployed on your own computer with clean rooms, specialist Bots (Dev Lead, Schedule Bot, Ops & Maintainer), and dedicated automated memory persistence so rules and habits stay intact." width="100%" />
@@ -312,7 +303,7 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ---
 
-### 4. Compared to Grokbot / OpenBot (Cloud Lifestyle Personal Agents)
+### 3. Compared to Grokbot / OpenBot (Cloud Lifestyle Personal Agents)
 
 <p align="center">
   <img src="docs/assets/readme-cmp-grokbot-en.svg" alt="Compare 03 (Summon Bot vs Grokbot / OpenBot cloud lifestyle agents): Big-tech cloud agents focus on remote cloud VMs trying to wire up consumer apps like ordering coffee or shopping—leaving you doing the actual heavy coding and project work yourself. Summon Bot runs 100% locally on your own machine with direct workspace access and your own model accounts, handing real work to Summon so you can brew your own coffee while AI does the work." width="100%" />
@@ -323,7 +314,7 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ---
 
-### 5. Compared to DSH SuperAgent (Central-Router Agents)
+### 4. Compared to DSH SuperAgent (Central-Router Agents)
 
 <p align="center">
   <img src="docs/assets/readme-cmp-superagent-en.svg" alt="Compare 04 (Summon Bot vs DSH SuperAgent central-router hierarchy): Central-router agents funnel every chat, code log, and tool output into one overloaded central session—bloating context so a single misjudgment derails everything while passive sub-agents cannot challenge or cross-check it. Summon Bot uses a flat peer collaboration mesh where Lead Bot, Specialists, Tool Bot, and EggBot each keep clean isolated context and proactively cross-check and rescue each other—sharper decisions and smoother workflows." width="100%" />
@@ -334,7 +325,7 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 
 ---
 
-### 6. Four First-Party Native Clients in Sync
+### 5. Four First-Party Native Clients in Sync
 
 <p align="center">
   <img src="docs/assets/readme-clients-en.svg" alt="4 First-Party Clients (Protocol 3), Bloub Vector Paper Avatars, and Purpose-Based Token Ledger: Web App (Paper / Midnight), Electron Desktop (Win / Mac arm64), Native iOS 26 (SwiftUI Liquid Glass), and Native Android (Jetpack Compose). All data stays on your own machine while your phone stays live in sync." width="100%" />

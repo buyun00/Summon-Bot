@@ -110,7 +110,7 @@
 
     <rect x="16" y="324" width="436" height="34" rx="10" fill="#E9F4EC" stroke="#C9E2D0"/>
     <circle cx="30" cy="341" r="4" fill="#2E7A46"/>
-    <text x="42" y="346" class="font" font-size="12.6" font-weight="700" fill="#225732">No steering wheel or dashboard: just chat your destination and self-drive there</text>
+    <text x="42" y="346" class="font" font-size="12.6" font-weight="700" fill="#225732">No steering wheel or dashboard: just chat your destination and self-drive</text>
   </g>
 
   <g transform="translate(520, 238)">
