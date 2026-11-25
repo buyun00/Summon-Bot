@@ -170,6 +170,29 @@ export class SummonPlatform {
     if (roomRecord && leadBotId) {
       const leadRecord = this.store.get(botRecords, leadBotId);
       const wsPath = defaultWs?.path || join(this.dataRoot, 'workspace');
+      const onboardingPlaybook = [
+        '【首启引导剧本（仅在初始化尚未完成时严格按步推进，每步只抛一个清晰问题，绝不一上来甩出大杂烩菜单让用户自己猜下一步）】',
+        `默认工作区「Summon 工作区」（${wsPath}）已自动创建并就绪。你已发出第 1 步欢迎语并询问「要不要先全面扫描本机可用工具」。`,
+        '后续严格按以下顺序逐步引导用户（每完成一步再自然引出下一步）：',
+        '1. 【工具全面扫描与批量并行接入】',
+        '   - 若用户同意扫描：立即 @ 接口 Bot 或协助其调用 initialize_execution({ action: "discover" })（不传 command/query，做全量扫描），把电脑上所有装好的有价值工具全扫出来——包括 AI/Agent CLI（codex、claude、grok、agy、copilot、qodercli、hermes、unity-cli 等）、开发工具（git、gh、python、uv、cargo、dotnet、java、node、cmake 等）、媒体与网络工具（ffmpeg、ffprobe、cloudflared、tailscale 等），绝不只报 3–4 个！',
+        '   - 扫完后按类别简明列出，并发一张 mode:"multi"（多选！）的 send.prompt 卡片让用户勾选要接入的工具（卡片自带全选按钮，务必设为 mode:"multi"，绝不能用单选 mode:"single"！）。',
+        '   - 用户确认后，协作接口 Bot 一次性并行批量接入所有选中的工具，不要一个个重复问用户。',
+        '2. 【远程访问引导】工具接入完成（或用户跳过工具扫描）后：',
+        '   - 先调用 manage_hub({ action: "status" }) 检查当前中枢状态。若尚未连接，用 1–2 句白话解释（开启云端中枢后，可用手机 iOS/Android 或其他电脑随时远程操控这台电脑的群聊；不开启也能纯本机离线使用），然后发确认卡只问这一件事：「要不要现在启用手机 / 多电脑远程访问？」（好的，帮我配置远程访问 / 暂不启用，先纯本机使用）。',
+        '   - 若用户选启用：继续一步步引导已有账号登录或邀请码注册，并直接调用 manage_hub 完成连接。',
+        '3. 【项目目录与收尾解锁】远程访问处理完（或跳过）后：',
+        '   - 简短问一句要不要顺手登记一两个常用项目目录（以后建群可直接绑定），提供「登记项目目录」与「暂不用，直接进入完整工作台（推荐）」。',
+        '   - 登记完或用户选择跳过/进入工作台时，立即调用 complete_onboarding 解锁左侧边栏和完整界面，并简短告知随时可新建项目群。',
+      ].join('\n');
+      if (leadRecord) {
+        this.store.save(botRecords, {
+          ...leadRecord,
+          instructions: onboardingPlaybook,
+          revision: (leadRecord.revision ?? 0) + 1,
+        });
+      }
+
       const welcomeId = randomUUID();
       this.store.save('messages', {
         id: welcomeId,
@@ -178,39 +201,30 @@ export class SummonPlatform {
         senderId: leadBotId,
         ...(leadRecord?.name ? { senderName: leadRecord.name } : {}),
         author: identity(leadBotId),
-        content: '你好，欢迎来到 Summon Bot！大脑已经接通，我这就开始帮你扫描本机环境、检查默认工作区、可用工具和云端中枢状态，稍候把结果和下一步配置建议发给你。',
+        content: '你好，欢迎来到 Summon Bot！我已经为你准备好了默认的「Summon 工作区」，平时写脚本、存工具都会放在这里。\n\n接下来我一步步带你把基础环境配好。第一步建议先全面扫描一下这台电脑里已装的工具（比如 Codex、Claude Code、Grok、Antigravity、Git、FFmpeg、Python 等）——接入之后，以后你在群里一句话就能让我直接调它们干活，不用自己敲命令。',
         attachments: [],
         references: [],
         mentions: [],
         replyTo: null,
+        prompt: {
+          kind: 'confirm',
+          title: '第 1 步 · 扫描本机可用工具',
+          submit_label: '确定',
+          questions: [{
+            id: 'scan_tools',
+            label: '要不要我现在帮你全面扫描一遍这台电脑里装了哪些可用工具？',
+            mode: 'single',
+            required: true,
+            allow_custom: false,
+            options: [
+              { id: 'yes_scan', label: '好的，开始全面扫描', description: '扫描本机所有 AI CLI、研发与媒体命令行工具，随后可一键全选并行接入', recommended: true, tone: 'primary' },
+              { id: 'skip_scan', label: '先跳过工具扫描', description: '直接进入下一步，以后随时可以在群里让我扫' },
+            ],
+          }],
+        },
       });
       const projected = this.room.projectMessage(this.room.messageRow.get(welcomeId));
       this.emit('message', projected);
-
-      const eventId = `onboarding-${randomUUID()}`;
-      const kickoffEvent = {
-        id: eventId,
-        kind: 'event',
-        type: 'onboarding.started',
-        bot_id: leadBotId,
-        roomId: botMaintenanceRoomId,
-        space: { kind: 'room', id: botMaintenanceRoomId },
-        author: { kind: 'platform', id: 'platform' },
-        time: nowIso,
-        text: [
-          '宿主刚刚接通了第一个可用 AI 模型并进入默认的「Summon」群，现在由你主持首启初始化对话。你已经发过一句开场欢迎语，无需重复打招呼。',
-          `1. 立即体检当前本机环境：用 find({kind:"workspace"}) 确认默认「Summon 工作区」（${wsPath}）和其他目录，用 find({kind:"connection"}) 查看现有执行连接，用 manage_hub({action:"status"}) 查看云端中枢连接状态；同时可以 @ 接口 Bot 帮忙扫描本机已安装的 CLI/工具（如 codex、claude、git 等）。`,
-          '2. 体检完成后，在群里用简洁、友好的语言向用户汇报现状（不要发长篇大论）：',
-          '   - 告诉用户默认的「Summon 工作区」已经就绪，平时可以自己写脚本和存资料；',
-          '   - 汇报检测到的本机工具与云端中枢状态；',
-          '   - 附带一个结构化的 send.prompt 选择卡片，引导用户选择接下来想让 AI 顺手代办的事情（例如：「把常用项目目录也登记进来」「接入扫描到的本机工具」「连接云端中枢以开启手机远程控制」「现在就挺好，完成初始化进入完整工作台」）。',
-          '3. 根据用户的选择，直接调用 configure_workspace、manage_hub 或协作 接口 Bot 完成配置，并持续引导直到用户满意。',
-          '4. 当用户表示配置完成、想直接开始使用，或选了进入完整工作台时，调用 complete_onboarding 工具解锁侧边栏和完整界面，并简短告知用户随时可以新建项目群或回到「Summon」群找你。',
-        ].join('\n'),
-      };
-      this.store.save('platform-events', kickoffEvent);
-      this.deliveries.enqueue(leadBotId, kickoffEvent, [{ id: 'onboarding', revision: 1, kind: 'onboarding' }], []);
-      this.runtime?.wake?.();
     }
     this.emit('onboarding', next);
     return { ...next, hasActiveModel: true };
@@ -228,6 +242,16 @@ export class SummonPlatform {
       ...(summary ? { summary: String(summary).slice(0, 500) } : {}),
     };
     this.store.save('platform-settings', next);
+    const roomRecord = this.store.get('rooms', botMaintenanceRoomId);
+    const leadBotId = roomRecord?.lead_bot_id;
+    const leadRecord = leadBotId ? this.store.get(botRecords, leadBotId) : null;
+    if (leadRecord && String(leadRecord.instructions || '').includes('【首启引导剧本')) {
+      this.store.save(botRecords, {
+        ...leadRecord,
+        instructions: '',
+        revision: (leadRecord.revision ?? 0) + 1,
+      });
+    }
     this.emit('onboarding', next);
     return { ...next, hasActiveModel: Boolean(this.models.catalog().activeId) };
   }

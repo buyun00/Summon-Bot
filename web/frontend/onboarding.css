@@ -1,33 +1,33 @@
 /* Arc / Dia-inspired Full-Screen Onboarding & Focus Mode */
 :root {
   --ob-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --ob-aura-1: rgba(125, 130, 75, 0.28);
-  --ob-aura-2: rgba(108, 160, 194, 0.24);
-  --ob-aura-3: rgba(214, 149, 100, 0.22);
-  --ob-card-bg: rgba(255, 253, 248, 0.88);
-  --ob-card-border: rgba(34, 32, 28, 0.1);
-  --ob-card-shadow: 0 28px 80px rgba(31, 30, 27, 0.12), 0 4px 18px rgba(31, 30, 27, 0.05);
-  --ob-tile-bg: rgba(34, 32, 28, 0.035);
-  --ob-tile-hover: rgba(34, 32, 28, 0.065);
-  --ob-ok: #2f7d4f;
-  --ob-ok-soft: rgba(47, 125, 79, 0.12);
-  --ob-err: #c24136;
-  --ob-err-soft: rgba(194, 65, 54, 0.11);
+  --ob-aura-1: rgba(125, 130, 75, 0.32);
+  --ob-aura-2: rgba(108, 160, 194, 0.28);
+  --ob-aura-3: rgba(214, 149, 100, 0.26);
+  --ob-card-bg: #fbf9f4;
+  --ob-card-border: #e5e0d5;
+  --ob-card-shadow: 0 24px 64px rgba(18, 17, 14, 0.22), 0 4px 16px rgba(18, 17, 14, 0.08);
+  --ob-tile-bg: #f1eee6;
+  --ob-tile-hover: #e8e4da;
+  --ob-ok: #266b43;
+  --ob-ok-soft: #e6f4ec;
+  --ob-err: #b8372c;
+  --ob-err-soft: #fbeae8;
 }
 
 html.dark {
-  --ob-aura-1: rgba(150, 158, 90, 0.32);
-  --ob-aura-2: rgba(108, 160, 194, 0.28);
-  --ob-aura-3: rgba(154, 128, 198, 0.28);
-  --ob-card-bg: rgba(22, 25, 34, 0.78);
-  --ob-card-border: rgba(255, 255, 255, 0.12);
-  --ob-card-shadow: 0 32px 96px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
-  --ob-tile-bg: rgba(255, 255, 255, 0.045);
-  --ob-tile-hover: rgba(255, 255, 255, 0.09);
+  --ob-aura-1: rgba(150, 158, 90, 0.36);
+  --ob-aura-2: rgba(108, 160, 194, 0.3);
+  --ob-aura-3: rgba(154, 128, 198, 0.3);
+  --ob-card-bg: #151822;
+  --ob-card-border: #2a3040;
+  --ob-card-shadow: 0 28px 80px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  --ob-tile-bg: #1e2331;
+  --ob-tile-hover: #262c3d;
   --ob-ok: #5cd38c;
-  --ob-ok-soft: rgba(92, 211, 140, 0.14);
-  --ob-err: #ff7b72;
-  --ob-err-soft: rgba(255, 123, 114, 0.14);
+  --ob-ok-soft: #162e22;
+  --ob-err: #ff8077;
+  --ob-err-soft: #311a1b;
 }
 
 /* True OS-level transparent full-screen desktop intro window */
@@ -240,16 +240,15 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
   width: min(580px, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   overflow-y: auto;
-  border-radius: 28px;
+  border-radius: 26px;
   background: var(--ob-card-bg);
+  color: var(--ink, #1f1e1b);
   border: 1px solid var(--ob-card-border);
   box-shadow: var(--ob-card-shadow);
-  backdrop-filter: blur(28px) saturate(1.25);
-  -webkit-backdrop-filter: blur(28px) saturate(1.25);
   opacity: 0;
   transform: translateY(24px) scale(0.94);
   pointer-events: none;
-  transition: opacity 720ms var(--ob-ease), transform 780ms var(--ob-ease);
+  transition: opacity 420ms var(--ob-ease), transform 480ms var(--ob-ease);
 }
 
 .ob-root.is-ready .ob-stage {
@@ -412,7 +411,7 @@ html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
 
 .ob-provider-tile.is-selected {
   border-color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  background: var(--ob-tile-hover);
 }
 
 .ob-provider-head {

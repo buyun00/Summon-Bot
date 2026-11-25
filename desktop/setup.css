@@ -1,16 +1,16 @@
 :root {
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --bg: #f8f6f1;
-  --surface: rgba(255, 253, 248, 0.9);
+  --surface: #fbf9f4;
   --ink: #1f1e1b;
   --ink-2: #57534a;
-  --line: rgba(34, 32, 28, 0.11);
-  --hover: rgba(34, 32, 28, 0.06);
+  --line: #e5e0d5;
+  --hover: #ede9df;
   --aura-1: rgba(125, 130, 75, 0.3);
   --aura-2: rgba(108, 160, 194, 0.26);
   --aura-3: rgba(214, 149, 100, 0.24);
-  --err: #c24136;
-  --err-soft: rgba(194, 65, 54, 0.11);
+  --err: #b8372c;
+  --err-soft: #fbeae8;
   font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   color: var(--ink);
   color-scheme: light dark;
@@ -19,16 +19,16 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b0c10;
-    --surface: rgba(22, 25, 34, 0.86);
+    --surface: #151822;
     --ink: #f3f4f8;
     --ink-2: #c4cad8;
-    --line: rgba(255, 255, 255, 0.13);
-    --hover: rgba(255, 255, 255, 0.08);
+    --line: #2a3040;
+    --hover: #222736;
     --aura-1: rgba(150, 158, 90, 0.36);
     --aura-2: rgba(108, 160, 194, 0.3);
     --aura-3: rgba(154, 128, 198, 0.3);
-    --err: #ff7b72;
-    --err-soft: rgba(255, 123, 114, 0.14);
+    --err: #ff8077;
+    --err-soft: #311a1b;
   }
 }
 

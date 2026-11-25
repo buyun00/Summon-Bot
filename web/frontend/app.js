@@ -2598,6 +2598,21 @@ async function act(action, element) {
     if ($('#modal')?.open && $('#modal')?.classList.contains('settings-modal') && ui.settingsTab === 'wakeups') void loadSettingsTabData('wakeups');
     return;
   }
+  if (action === 'prompt-select-all') {
+    const msgId = element.dataset.msgId, qid = element.dataset.qid;
+    if (!msgId || !qid) return;
+    const msg = ui.messages.find(item => item.id === msgId);
+    const q = msg?.prompt?.questions?.find(item => item.id === qid);
+    if (!q?.options?.length) return;
+    const draft = getPromptDraft(msgId);
+    const qDraft = draft[qid] || { selected: [], custom: '' };
+    const allIds = q.options.map(opt => opt.id);
+    const allSelected = allIds.every(id => qDraft.selected.includes(id));
+    qDraft.selected = allSelected ? [] : allIds;
+    draft[qid] = qDraft;
+    ui.activePromptMsgId = msgId;
+    return render();
+  }
   if (action === 'prompt-toggle') {
     const msgId = element.dataset.msgId, qid = element.dataset.qid, optId = element.dataset.optId, mode = element.dataset.mode;
     if (!msgId || !qid || !optId) return;
@@ -3505,10 +3520,14 @@ function renderMessagePrompt(message, timeline) {
           data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" data-mode="${esc(q.mode)}"
           value="${esc(qDraft.custom || '')}" placeholder="${esc(placeholder)}" ${busy ? 'disabled' : ''}></div>`
       : '';
+    const allSelected = q.mode === 'multi' && (q.options || []).length > 0 && (q.options || []).every(opt => qDraft.selected.includes(opt.id));
+    const selectAllBtn = q.mode === 'multi' && (q.options || []).length > 1
+      ? `<button type="button" class="text-button" style="font-size:12px;padding:0 4px" data-action="prompt-select-all" data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" ${busy ? 'disabled' : ''}>${allSelected ? '取消全选' : '全选'}</button>`
+      : '';
     return `<div class="prompt-question" data-qid="${esc(q.id)}">
       <div class="prompt-question-head">
         <span class="prompt-question-label">${prompt.questions.length > 1 ? `${qIndex + 1}. ` : ''}${esc(q.label)}</span>
-        <span class="prompt-question-meta">${esc(modeTag)}${q.required === false ? ' · 选填' : ''}</span>
+        <span class="prompt-question-meta">${selectAllBtn}${esc(modeTag)}${q.required === false ? ' · 选填' : ''}</span>
       </div>
       ${optionsHtml}${customHtml}
     </div>`;

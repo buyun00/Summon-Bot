@@ -1,5 +1,6 @@
-import { hostname } from 'node:os';
+import { hostname, homedir } from 'node:os';
 import { readdir, realpath } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, delimiter, dirname, extname, isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { pathWithin } from '../../bot/src/capabilities/file-policy.mjs';
@@ -24,6 +25,59 @@ const nativeKeys = ['file', 'canonical_file', 'workspace_root', 'workspace_write
   'methods', 'ssh', 'model', 'effort', 'sandbox', 'approval_policy', 'app_server_stdio', 'launch_arguments', 'allow_arguments'];
 const methodKeys = ['id', 'name', 'description', 'args', 'effect', 'input', 'keep_input', 'env', 'protocol', 'script'];
 
+const DISCOVERY_LIMIT = 150;
+const priorityTier1 = new Set([
+  'codex', 'claude', 'grok', 'grokbuild', 'agy', 'agentapi', 'gemini', 'copilot', 'qodercli',
+  'hermes', 'hermes-agent', 'opencode', 'aider', 'ollama', 'unity-cli', 'unity-mcp-cli', 'sg', 'oz',
+]);
+const priorityTier2 = new Set([
+  'git', 'gh', 'ffmpeg', 'ffprobe', 'python', 'python3', 'uv', 'uvx', 'node', 'npm', 'npx', 'pnpm', 'yarn', 'bun',
+  'cargo', 'rustc', 'go', 'dotnet', 'java', 'javac', 'cmake', 'gradle', 'docker', 'kubectl', 'adb', 'scrcpy',
+  'protoc', 'code', 'cursor', 'rider', 'tailscale', 'cloudflared', 'winget', 'scoop', 'brew',
+  'rg', 'fd', 'jq', 'magick', 'yt-dlp', 'pandoc', 'sqlite3', '7z', 'bz', 'zoxide', 'bw', 'rclone', 'curl',
+]);
+const noisyExecutablePattern = /^(?:unins\d*|uninstall.*|updater.*|update|setup|install.*|.*helper.*|.*service.*|.*daemon.*|.*broker.*|.*agent.*|.*gui.*|.*tray.*|.*launcher.*|.*monitor.*|.*stub.*|.*shim.*|.*crash.*|.*wer.*|mspaint|pbrush|notepad|snippingtool|mediaplayer|gethelp|xbox.*|olk|store|gamebar.*|windows365|start-.*|stop-.*|jabswitch|jaccess.*|jconsole|jdb|jdeprscan|jdeps|jfr|jhsdb|jimage|jinfo|jjs|jlink|jmap|jmod|jps|jrunscript|jshell|jstack|jstat.*|keytool|kinit|klist|ktab|pack200|unpack200|rmic|rmid|rmiregistry|serialver|javaw|pythonw.*|pyw.*|git-gui|gitk|git-receive-pack|git-upload-pack|aslr-manager|scalar|tortoise.*|pageant|puttygen|sshaskpass|tgit.*|cpueater|bitsum.*|processlasso.*|processgovernor|quickupgrade|threadracer|tweakscheduler|vistammsc|insights|logviewer|pl|plactivate|afterinstall|defender-exclusions|elevator|fsnotifier|jetbrains_client.*|remote-dev-server|restarter|winprocesslisthelper|old_code.*|code-tunnel|arkview.*|bandizip|nodevars|corepack|ffplay|uvw|grove-fsmonitor|grove-credential|actionsmcphost|chatgpt-desktop|codex-chrome-native-host|codex-core-command-runner)$/i;
+
+function isSystemPathDir(dir) {
+  const norm = dir.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  if (windows) {
+    return norm === 'c:/windows' || norm.startsWith('c:/windows/');
+  }
+  return ['/bin', '/sbin', '/usr/sbin'].includes(norm);
+}
+
+function extraUserToolDirs() {
+  const home = homedir();
+  const dirs = windows
+    ? [
+        join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'npm'),
+        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links'),
+        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'agy', 'bin'),
+        join(home, '.grok', 'bin'),
+        join(home, '.local', 'bin'),
+        join(home, '.cargo', 'bin'),
+        join(home, '.bun', 'bin'),
+        join(home, 'scoop', 'shims'),
+      ]
+    : [
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        join(home, '.local', 'bin'),
+        join(home, '.npm-global', 'bin'),
+        join(home, '.cargo', 'bin'),
+        join(home, '.bun', 'bin'),
+        join(home, '.grok', 'bin'),
+        join(home, '.antigravity', 'bin'),
+      ];
+  return dirs.filter(dir => existsSync(dir));
+}
+
+function discoveryPriority(file) {
+  const name = programName(file);
+  if (priorityTier1.has(name)) return 0;
+  if (priorityTier2.has(name)) return 1;
+  return 2;
+}
 const INSPECT_TIMEOUT_MS = 15_000;
 const INSPECT_OUTPUT_LIMIT = 256_000;
 
@@ -94,9 +148,18 @@ export class ConnectionOnboarding {
       (!command || programName(entry.config.file) === programName(command)) &&
       (!term || [entry.name, entry.description, basename(entry.config.file), ...(entry.config.methods ?? []).flatMap(method =>
         [method.id, method.name, method.description])].some(value => String(value ?? '').toLowerCase().includes(term))));
-    const searchRoots = [...new Set((process.env.PATH || '').split(delimiter).filter(isAbsolute))];
+    const broadScan = !command && !executable && !term;
+    const rawRoots = [...new Set([
+      ...(process.env.PATH || '').split(delimiter).filter(isAbsolute),
+      ...(broadScan ? extraUserToolDirs() : []),
+    ])];
+    const searchRoots = broadScan ? rawRoots.filter(root => !isSystemPathDir(root)) : rawRoots;
     const chosen = [...(setup.executables ?? []).map(item => item.file), ...described.map(entry => entry.config.file)];
-    const matchesName = file => command ? programName(file) === programName(command) : !term || basename(file).toLowerCase().includes(term);
+    const matchesName = file => {
+      if (command) return programName(file) === programName(command);
+      if (term) return basename(file).toLowerCase().includes(term);
+      return !noisyExecutablePattern.test(programName(file));
+    };
     const candidates = new Set([...chosen.filter(matchesName), ...described.map(entry => entry.config.file)]);
     if (executable) {
       candidates.clear();
@@ -107,15 +170,22 @@ export class ConnectionOnboarding {
         for (const file of files) if (!file.isDirectory() && matchesName(file.name)) candidates.add(join(root, file.name));
       }
     }
+    const orderedCandidates = broadScan
+      ? [...candidates].sort((left, right) => discoveryPriority(left) - discoveryPriority(right))
+      : [...candidates];
     const found = new Map();
-    for (const file of candidates) {
+    const seenNames = new Set();
+    for (const file of orderedCandidates) {
       context.signal?.throwIfAborted();
-      if (found.size === 60) break;
+      if (found.size === DISCOVERY_LIMIT) break;
+      const pname = programName(file);
+      if (broadScan && seenNames.has(pname)) continue;
       try {
         const actual = await localExecutable(file);
         if (found.has(pathKey(actual.canonicalFile))) continue;
         await connectionExecutable({ config: { file, canonical_file: actual.canonicalFile } }, host.dataRoot, host.dataRoot);
         found.set(pathKey(actual.canonicalFile), actual);
+        if (broadScan) seenNames.add(pname);
       } catch { /* Ignore missing PATH entries, non-executables, and protected host paths. */ }
     }
     const workspaces = this.platform.workspaceRecords().filter(workspace => this.platform.workspaceAvailable(workspace.id, context.actor, context));
@@ -135,12 +205,12 @@ export class ConnectionOnboarding {
           registered ? 'connection_unavailable' : 'installed_unregistered',
         connections: matching.map(entry => ({ ...host.summary(entry, host.available(entry)), ...this.platform.connectionMaintenance(entry, context) })) };
     });
-    for (const entry of described) if (!found.has(pathKey(entry.config.canonical_file)) && items.length < 60) items.push({
+    for (const entry of described) if (!found.has(pathKey(entry.config.canonical_file)) && items.length < DISCOVERY_LIMIT) items.push({
       file: entry.config.file, canonical_file: entry.config.canonical_file, name: entry.name, status: 'connection_unavailable',
       connections: [{ ...host.summary(entry, false), ...this.platform.connectionMaintenance(entry, context) }],
     });
     return host.clean({ environment, status: items.length ? 'observed' : 'not_found_in_scope', items,
-      ...(found.size === 60 ? { limited: true } : {}) });
+      ...(found.size === DISCOVERY_LIMIT ? { limited: true } : {}) });
   }
 
   async inspect(args, context, setup, initializer, definition, selected, call) {
