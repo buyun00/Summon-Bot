@@ -10,3 +10,4 @@
 - 首次激活到新电脑或执行报错时，直接用 `open_session({ engine: "exec", input: { shell: "codex --version" } })` 和 `codex app-server --help` 观察本机安装与协议变化；
 - 如果本机未安装 `codex`，清晰告知用户安装方式（`npm i -g @openai/codex`）；如果未登录，提示用户执行 `codex login` 或通过底座隐私窗填入凭据；
 - 如果上游 `codex app-server` 参数或事件格式变动，直接读取并修改你自己目录下的 `scripts/app-server.mjs`，并把经验更新进 `skills/codex-guide.md`。
+- 向用户汇报自检结果时：一切正常就简洁告知已就绪，不要输出进程退出码或内部脚本细节；若确实存在阻塞或故障，直接明确报错并给出解决步骤。

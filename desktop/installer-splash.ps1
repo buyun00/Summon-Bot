@@ -1,5 +1,6 @@
 ﻿param(
   [string]$InstDir = '',
+  [string]$ExtractedFile = '',
   [string]$SignalFile = ''
 )
 
@@ -11,9 +12,12 @@ function U([string]$b64) {
   return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
 }
 
-$msgUnbox  = U '5q2j5Zyo5ouG566x5a6J6KOFIFN1bW1vbiBCb3TigKY='
-$msgWrite  = U '5q2j5Zyo5YaZ5YWl5qGM6Z2i56iL5bqP5paH5Lu24oCm'
-$msgWake   = U '56iL5bqP5bey5bCx5L2N77yM5q2j5Zyo5ZSk6YaSIFN1bW1vbiBCb3TigKY='
+$msgUnbox   = U '5q2j5Zyo5ouG566x5a6J6KOFIFN1bW1vbiBCb3TigKY='
+$msgUpgrade = U '5q2j5Zyo5Y2H57qnIFN1bW1vbiBCb3TigKY='
+$msgWrite   = U '5q2j5Zyo6Kej5Y6L5bm25YaZ5YWl56iL5bqP5paH5Lu24oCm'
+$msgFinish  = U '5q2j5Zyo5qCh6aqM5bm25pS25bC+5a6J6KOF5paH5Lu24oCm'
+$msgWake    = U '56iL5bqP5bey5bCx5L2N77yM5q2j5Zyo5ZSk6YaSIFN1bW1vbiBCb3TigKY='
+$isUpgrade  = [bool]($InstDir -and (Test-Path -LiteralPath (Join-Path $InstDir 'Summon Bot.exe')))
 
 # Match Summon Bot's warm cotton-paper palette (or deep dark mode if Windows AppsUseLightTheme == 0)
 $isDark = $false
@@ -30,19 +34,12 @@ $trackBg    = if ($isDark) { '#252B3B' } else { '#ECE7DC' }
 $fillBg     = if ($isDark) { '#E8EBF2' } else { '#262420' }
 $shadowCol  = if ($isDark) { '#44000000' } else { '#221F1E1B' }
 
-# Center on the full primary monitor bounds to match Electron's fullscreen transparent overlay pixel-for-pixel
-$winW = 540.0
-$winH = 390.0
-$left = ([System.Windows.SystemParameters]::PrimaryScreenWidth - $winW) / 2.0
-$top  = ([System.Windows.SystemParameters]::PrimaryScreenHeight - $winH) / 2.0
-
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Summon Bot"
         Width="540" Height="390"
-        WindowStartupLocation="Manual"
-        Left="$left" Top="$top"
+        WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -114,7 +111,7 @@ $boxRotate    = $win.FindName('BoxRotate')
 $shadowScale  = $win.FindName('ShadowScale')
 $statusText   = $win.FindName('StatusText')
 $progressFill = $win.FindName('ProgressFill')
-$statusText.Text = $msgUnbox
+$statusText.Text = if ($isUpgrade) { $msgUpgrade } else { $msgUnbox }
 
 # Direct BeginAnimation on WPF Transform DependencyProperties (100% reliable, starts hopping immediately!)
 function New-LoopKFAnim([double]$durSec, [object[]]$pairs) {
@@ -158,6 +155,7 @@ $win.Add_Loaded({
 $script:pct = 8.0
 $script:startedAt = Get-Date
 $script:lastActivity = Get-Date
+$script:tickCount = 0
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [System.TimeSpan]::FromMilliseconds(80)
 $timer.Add_Tick({
@@ -166,27 +164,34 @@ $timer.Add_Tick({
     $win.Close()
     return
   }
+  $script:tickCount++
   $elapsed = ((Get-Date) - $script:startedAt).TotalSeconds
-  $hasApp = $InstDir -and (Test-Path -LiteralPath (Join-Path $InstDir 'Summon Bot.exe'))
-  $hasRuntime = $InstDir -and (Test-Path -LiteralPath (Join-Path $InstDir 'resources\summon-runtime'))
-  $target = if ($hasApp -and $hasRuntime) { 52.0 } elseif ($hasApp) { 36.0 } else { [math]::Min(32.0, 8.0 + $elapsed * 3.8) }
-  $script:pct = [math]::Min(54.0, [math]::Max($script:pct + 0.35, $target))
+  $extracted = [bool]($ExtractedFile -and (Test-Path -LiteralPath $ExtractedFile))
+  if ($extracted) {
+    $script:pct = [math]::Min(54.0, [math]::Max($script:pct + 1.4, 50.0))
+    $statusText.Text = $msgWake
+  } else {
+    # Asymptotic creep 8% -> 48% so upgrade/overwrite installs never jump prematurely to 54% or look frozen
+    $target = 8.0 + 40.0 * (1.0 - [math]::Exp(-$elapsed / 14.0))
+    $script:pct = [math]::Min(48.0, [math]::Max($script:pct, $target))
+    if ($elapsed -lt 3.5) {
+      $statusText.Text = if ($isUpgrade) { $msgUpgrade } else { $msgUnbox }
+    } elseif ($elapsed -lt 14.0) {
+      $statusText.Text = $msgWrite
+    } else {
+      $statusText.Text = $msgFinish
+    }
+  }
   $progressFill.Width = [math]::Round(340.0 * ($script:pct / 100.0))
 
-  if ($script:pct -lt 22) {
-    $statusText.Text = $msgUnbox
-  } elseif ($script:pct -lt 44) {
-    $statusText.Text = $msgWrite
-  } else {
-    $statusText.Text = $msgWake
-  }
-
-  $alive = [bool](Get-Process | Where-Object { $_.ProcessName -match 'Summon-Bot|Summon Bot|old-uninstaller' } | Select-Object -First 1)
-  if ($alive) { $script:lastActivity = Get-Date }
-  $sinceEnd = ((Get-Date) - $script:lastActivity).TotalSeconds
-  if ($elapsed -gt 120 -or (-not $alive -and $sinceEnd -gt 25)) {
-    $timer.Stop()
-    $win.Close()
+  if ($script:tickCount % 20 -eq 0) {
+    $alive = [bool](Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match 'Summon-Bot|Summon Bot|Uninstall Summon|old-uninstaller|^Au_|^Un_' } | Select-Object -First 1)
+    if ($alive) { $script:lastActivity = Get-Date }
+    $sinceEnd = ((Get-Date) - $script:lastActivity).TotalSeconds
+    if ($elapsed -gt 180 -or (-not $alive -and $sinceEnd -gt 25)) {
+      $timer.Stop()
+      $win.Close()
+    }
   }
 })
 $timer.Start()

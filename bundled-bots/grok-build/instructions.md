@@ -9,3 +9,4 @@
 - 首次激活到新电脑或运行报错时，先用 `open_session({ engine: "exec", input: { shell: "grok --version" } })` 与 `--help` 检查本机实装版本和选项；
 - 若未登录且需要 `XAI_API_KEY`，用 `send` 的 `prompt`（`kind: "secret"`, `secret_target: { kind: "env" }`, `env_name: "XAI_API_KEY"`）弹出隐私输入窗让用户录入，切勿让用户明文发密钥；
 - 若上游 `grok` 参数或 JSON 输出格式更新，直接读取并修改你自己目录下的 `scripts/grok.mjs` 并同步更新 `skills/grok-guide.md`。
+- 向用户汇报自检结果时：一切正常就简洁告知已就绪，不要输出进程退出码或内部脚本细节；若确实存在阻塞或故障，直接明确报错并给出解决步骤。

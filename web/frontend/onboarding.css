@@ -505,6 +505,12 @@ html.desktop-onboarding-window.is-win .ob-window-bar {
   color: var(--ob-ok);
 }
 
+.ob-bot-badge.is-err {
+  background: var(--ob-err-soft);
+  border-color: transparent;
+  color: var(--ob-err);
+}
+
 .ob-live-dot {
   width: 7px;
   height: 7px;
@@ -804,47 +810,126 @@ html.desktop-onboarding-window.is-win .ob-window-bar {
   gap: 8px;
 }
 
-.ob-ready-bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 15px;
-  border-radius: 16px;
-  background: var(--ob-ok-soft);
-  color: var(--ob-ok);
-  font-size: 13.5px;
-  font-weight: 560;
-  animation: ob-fade-slide 280ms var(--ob-ease) both;
+.ob-chat-col-wide {
+  max-width: 90%;
+  width: 100%;
 }
 
-.ob-bot-composer {
-  flex: none;
+.ob-final-cta-bubble {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  border-top-left-radius: 6px;
+  background: color-mix(in srgb, var(--ob-ok) 8%, var(--ob-tile-bg));
+  border: 1px solid color-mix(in srgb, var(--ob-ok) 32%, var(--ob-card-border));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.05);
+}
+
+.ob-final-cta-bubble.is-error {
+  background: color-mix(in srgb, var(--ob-err) 7%, var(--ob-tile-bg));
+  border-color: color-mix(in srgb, var(--ob-err) 34%, var(--ob-card-border));
+}
+
+.ob-final-cta-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.ob-final-cta-copy strong {
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.ob-final-cta-copy p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2, var(--muted));
+}
+
+.ob-final-cta-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.ob-hero-cta-btn {
+  appearance: none;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 22px;
+  border-radius: 14px;
+  border: 0;
+  background: var(--ink);
+  color: var(--paper, #ffffff);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 660;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+  transition: transform 160ms var(--ob-ease), opacity 160ms ease, box-shadow 160ms ease;
+}
+
+.ob-hero-cta-btn:hover:not(:disabled) {
+  transform: translateY(-1.5px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.18);
+  opacity: 0.94;
+}
+
+.ob-hero-cta-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.ob-hero-cta-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ob-text-link-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  justify-self: center;
+  transition: color 150ms ease;
+}
+
+.ob-text-link-btn:hover {
+  color: var(--ink);
+}
+
+.ob-inline-reply {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px 6px 14px;
-  border-radius: 999px;
-  background: var(--ob-tile-bg);
-  border: 1px solid var(--ob-card-border);
+  margin-top: 4px;
 }
 
-.ob-bot-composer input {
+.ob-inline-reply input {
   flex: 1 1 auto;
   min-width: 0;
-  border: 0;
-  background: transparent;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ob-card-border);
+  background: var(--ob-card-bg);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   outline: none;
 }
 
-.ob-bot-composer button {
-  flex: none;
-  padding: 7px 15px;
-  font-size: 13px;
+.ob-inline-reply input:focus {
+  border-color: var(--ink);
 }
 
 /* Status & Buttons */

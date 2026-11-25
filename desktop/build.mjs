@@ -74,7 +74,7 @@ export async function buildDesktop({ platform, arch, output, candidate, commit }
         artifactName: 'Summon-Bot-${version}-' + release.buildNumber + '-${os}-${arch}.${ext}',
         publish: platform === 'windows' ? [{ provider: 'generic', url: new URL(updatePath, release.appUrl).href, useMultipleRangeRequest: false }] : null,
         win: { target: ['nsis'], icon: join(runtime, 'web/frontend/icons/icon-512.png') },
-        nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: true,
+        nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: false,
           include: join(app, 'installer.nsh'),
           shortcutName: 'Summon Bot', createDesktopShortcut: true, deleteAppDataOnUninstall: false },
         mac: { target: ['dmg'], type: 'distribution', icon: join(stage, macIcon),

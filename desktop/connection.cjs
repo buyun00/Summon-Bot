@@ -92,7 +92,7 @@ async function fetchOnboardingState(origin, token, protocolVersion) {
 async function ensureRuntimeDependencies(onProgress) {
   const archive = join(runtime, 'node_modules.tar');
   const target = join(runtime, 'node_modules');
-  if (existsSync(target) || !existsSync(archive)) return;
+  if (!existsSync(archive)) return;
   onProgress?.({ stage: 'extract' });
   const stageDir = join(runtime, '.node_modules_extracting');
   await rm(stageDir, { recursive: true, force: true }).catch(() => {});
@@ -108,15 +108,30 @@ async function ensureRuntimeDependencies(onProgress) {
       else rejectDone(new Error(`解压运行组件失败（exit ${code}）：${stderr.trim().slice(0, 200)}`));
     });
   });
+  await rm(target, { recursive: true, force: true }).catch(() => {});
   await rename(join(stageDir, 'node_modules'), target);
   await rm(stageDir, { recursive: true, force: true }).catch(() => {});
   await rm(archive, { force: true }).catch(() => {});
 }
 
 async function prepareLocalConnection(session, profileRoot, onProgress) {
-  await ensureRuntimeDependencies(onProgress);
   const { ensureLocalRunning, resolveLocalDataRoot } = await desktopSettings();
   const dataRoot = resolveLocalDataRoot(undefined, profileRoot);
+  // Skip extracting embedded node_modules.tar when attaching to an external formal host (e.g. D:/Relay-Bot-app)
+  // whose deployment.json already points to an existing release outside this desktop package.
+  let needsEmbeddedDeps = true;
+  try {
+    const depPath = join(dataRoot, 'config', 'deployment.json');
+    if (existsSync(depPath)) {
+      const dep = JSON.parse(readFileSync(depPath, 'utf8'));
+      if (dep?.releaseRoot && resolve(dep.releaseRoot).toLowerCase() !== resolve(runtime).toLowerCase() && existsSync(dep.releaseRoot)) {
+        needsEmbeddedDeps = false;
+      }
+    }
+  } catch {}
+  if (needsEmbeddedDeps) {
+    await ensureRuntimeDependencies(onProgress);
+  }
   const { config, origin } = await ensureLocalRunning({ dataRoot, releaseRoot: runtime, onProgress });
   onProgress?.({ stage: 'connect' });
   let bootstrap;

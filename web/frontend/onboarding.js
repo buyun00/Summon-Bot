@@ -104,11 +104,14 @@
     if (ob.botTickTimer) { clearInterval(ob.botTickTimer); ob.botTickTimer = null; }
   }
 
-  function avatarSvg(id = 'bot-default-eggbot-local', size = 60, state = 'idle') {
+  function avatarSvg(id = 'bot-default-eggbot-local', size = 60, state = 'idle', { key = null, staticOnly = false } = {}) {
     const avatars = window.SummonAvatars;
     if (avatars?.render) {
       const style = avatars.defaults(id);
-      return avatars.render(style, size, { key: `onboarding:${id}`, identity: id, preview: true, state });
+      if (staticOnly) {
+        return avatars.render(style, size, { identity: id, state, static: true });
+      }
+      return avatars.render(style, size, { key: key || `onboarding:${id}`, identity: id, preview: true, state });
     }
     return `<img src="/icons/icon-192.png" alt="Summon Bot" width="${size}" height="${size}" style="border-radius:16px">`;
   }
@@ -373,10 +376,15 @@
     const ackAt = wakeMsg?.acks?.find(a => !botId || a.botId === botId)?.at || null;
     const isWorking = Boolean(activeActivity || (liveExec && !pendingExec));
     const isReady = hasBotReply && !isWorking && !pendingExec && !pendingPromptMsg;
+    const lastBotMsg = [...relevant].reverse().find(m => (m.senderId || m.author?.id) === botId && (m.content || '').trim());
+    const lastBotText = String(lastBotMsg?.content || '');
+    const hasFailedExec = botSessions.some(e => ['failed', 'error'].includes(e.status));
+    const replyReportsIssue = /(?:暂不能认定|未就绪|无法就绪|自检失败|未能通过|未安装|未登录|报错|无法启动|退出码为\s*[1-9])/.test(lastBotText);
+    const hasError = isReady && (hasFailedExec || replyReportsIssue);
     const progressText = pendingExec
       ? (pendingExec.pending_requests?.[0]?.question || '等待你的确认或输入')
       : (activeActivity?.text || liveExec?.live_progress || liveExec?.work_summary || (hasAck ? '正在分析环境与执行自检…' : '正在唤醒专职 Bot…'));
-    return { wakeMsg, relevant, botSessions, activeActivity, liveExec, pendingExec, pendingPromptMsg, hasBotReply, hasAck, ackAt, isWorking, isReady, progressText };
+    return { wakeMsg, relevant, botSessions, activeActivity, liveExec, pendingExec, pendingPromptMsg, hasBotReply, hasAck, ackAt, isWorking, isReady, hasError, progressText };
   }
 
   function recordBotProgressSnapshot() {
@@ -418,16 +426,17 @@
 
   function buildBotFeedItems(snap, label, avatarId) {
     const items = [];
-    const botMiniAvatar = avatarSvg(avatarId, 28, 'idle');
+    const makeBotAvatar = () => avatarSvg(avatarId, 28, 'idle', { staticOnly: true });
     const startedTs = snap.wakeMsg?.createdAt ? Date.parse(snap.wakeMsg.createdAt) : (ob.botStartedAt || Date.now());
+    const startedClock = formatClock(startedTs);
 
     // 1. Friendly kickoff bubble on the user side
     items.push({
       key: 'kickoff',
-      sig: `kickoff:${label}`,
+      sig: `kickoff:${label}:${startedClock}`,
       html: `<div class="ob-chat-row is-user">
         <div class="ob-chat-col">
-          <div class="ob-chat-meta"><span>你</span><span>${esc(formatClock(startedTs))}</span></div>
+          <div class="ob-chat-meta"><span>你</span><span>${esc(startedClock)}</span></div>
           <div class="ob-bubble is-user">开始对接本机 <strong>${esc(label)}</strong> 并执行环境自检</div>
         </div>
       </div>`,
@@ -436,14 +445,15 @@
     // 2. Immediate Bot acknowledgement bubble once Bot wakes / acks
     if (snap.hasAck) {
       const ackTime = snap.ackAt || startedTs;
+      const ackClock = formatClock(ackTime);
       items.push({
         key: 'ack',
-        sig: `ack:${label}`,
+        sig: `ack:${label}:${ackClock}`,
         html: `<div class="ob-chat-row is-bot">
-          <div class="ob-chat-avatar">${botMiniAvatar}</div>
+          <div class="ob-chat-avatar">${makeBotAvatar()}</div>
           <div class="ob-chat-col">
-            <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(ackTime))}</span></div>
-            <div class="ob-bubble is-bot">收到，开始检查本机 CLI、登录态与桥接脚本…</div>
+            <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(ackClock)}</span></div>
+            <div class="ob-bubble is-bot">收到，开始检查本机环境与登录状态…</div>
           </div>
         </div>`,
       });
@@ -470,19 +480,20 @@
         const isLive = LIVE_STATUSES.has(exec.status);
         const isNeedsInput = ['needs_input', 'awaiting_input'].includes(exec.status);
         const isFailed = ['failed', 'error', 'cancelled', 'stopped'].includes(exec.status);
-        const stateLabel = isNeedsInput ? '等待确认' : isLive ? '执行中' : isFailed ? '需关注' : '已完成';
+        const stateLabel = isNeedsInput ? '等待确认' : isLive ? '执行中' : isFailed ? '异常' : '已完成';
         const stateClass = isNeedsInput ? 'is-warn' : isLive ? 'is-live' : isFailed ? 'is-err' : 'is-done';
         const title = exec.work_summary || '执行本机自检任务';
         const detail = isLive && exec.live_progress && exec.live_progress !== title ? exec.live_progress : '';
         const reqs = isNeedsInput && exec.pending_requests?.length ? exec.pending_requests : [];
-        const sig = `exec:${exec.id}:${exec.status}:${title}:${detail}:${reqs.length}`;
+        const clock = formatClock(entry.ts);
+        const sig = `exec:${exec.id}:${exec.status}:${title}:${detail}:${reqs.length}:${clock}`;
         items.push({
           key: `exec:${exec.id}`,
           sig,
           html: `<div class="ob-chat-row is-bot">
-            <div class="ob-chat-avatar">${botMiniAvatar}</div>
+            <div class="ob-chat-avatar">${makeBotAvatar()}</div>
             <div class="ob-chat-col">
-              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(clock)}</span></div>
               <div class="ob-step-bubble ${stateClass}">
                 <div class="ob-step-head">
                   <span class="ob-step-pill ${stateClass}">
@@ -497,6 +508,10 @@
                     ${req.question ? `<div>${esc(req.question)}</div>` : ''}
                     ${req.choices?.length ? `<div class="ob-prompt-choices">${req.choices.map(c => `
                       <button type="button" class="ob-secondary-btn" data-ob-action="reply-exec-req" data-exec-id="${esc(exec.execution_ref?.id || exec.id)}" data-req-id="${esc(req.request_id || '')}" data-val="${esc(c.id)}">${esc(c.label || c.id)}</button>`).join('')}</div>` : ''}
+                    ${req.plain_text ? `<form class="ob-inline-reply" data-ob-exec-reply="${esc(exec.execution_ref?.id || exec.id)}" data-req-id="${esc(req.request_id || '')}">
+                      <input name="val" type="text" placeholder="输入回复…" autocomplete="off">
+                      <button type="submit" class="ob-primary-btn">提交</button>
+                    </form>` : ''}
                   </div>`).join('')}
               </div>
             </div>
@@ -508,14 +523,15 @@
       if (entry.kind === 'milestone') {
         const ms = entry.data;
         const isCurrent = !snap.isReady && snap.activeActivity?.text === ms.text;
-        const sig = `ms:${ms.id}:${isCurrent ? 'live' : 'done'}:${ms.text}`;
+        const clock = formatClock(entry.ts);
+        const sig = `ms:${ms.id}:${isCurrent ? 'live' : 'done'}:${ms.text}:${clock}`;
         items.push({
           key: `ms:${ms.id}`,
           sig,
           html: `<div class="ob-chat-row is-bot">
-            <div class="ob-chat-avatar">${botMiniAvatar}</div>
+            <div class="ob-chat-avatar">${makeBotAvatar()}</div>
             <div class="ob-chat-col">
-              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(clock)}</span></div>
               <div class="ob-step-bubble ${isCurrent ? 'is-live' : 'is-done'}">
                 <div class="ob-step-head">
                   <span class="ob-step-pill ${isCurrent ? 'is-live' : 'is-done'}">${isCurrent ? '<span class="ob-spinner"></span>进展' : '✓ 已完成'}</span>
@@ -553,14 +569,15 @@
             </div>`;
           }
         }
-        const sig = `msg:${msg.id}:${msg.content || ''}:${hasPendingPrompt ? 'p1' : 'p0'}`;
+        const clock = formatClock(entry.ts);
+        const sig = `msg:${msg.id}:${msg.content || ''}:${hasPendingPrompt ? 'p1' : 'p0'}:${clock}`;
         items.push({
           key: `msg:${msg.id}`,
           sig,
           html: `<div class="ob-chat-row ${isUser ? 'is-user' : 'is-bot'}">
-            ${isUser ? '' : `<div class="ob-chat-avatar">${botMiniAvatar}</div>`}
+            ${isUser ? '' : `<div class="ob-chat-avatar">${makeBotAvatar()}</div>`}
             <div class="ob-chat-col">
-              <div class="ob-chat-meta"><strong>${esc(isUser ? '你' : label)}</strong><span>${esc(formatClock(entry.ts))}</span></div>
+              <div class="ob-chat-meta"><strong>${esc(isUser ? '你' : label)}</strong><span>${esc(clock)}</span></div>
               ${bodyHtml ? `<div class="ob-bubble ${isUser ? 'is-user' : 'is-bot'}">${bodyHtml}</div>` : ''}
               ${promptHtml}
             </div>
@@ -569,13 +586,58 @@
       }
     }
 
-    // 4. Bottom live typing bubble while Bot is still working (keeps feed alive, never blank!)
-    if (!snap.isReady && !snap.pendingExec && !snap.pendingPromptMsg) {
+    // 4. Final prominent Bot CTA bubble when docking completes (or clear error + retry card if abnormal!)
+    if (snap.isReady) {
+      const doneClock = formatClock(Date.now());
+      if (snap.hasError) {
+        items.push({
+          key: 'final-cta',
+          sig: `final-err:${label}:${ob.botSending ? '1' : '0'}`,
+          html: `<div class="ob-chat-row is-bot">
+            <div class="ob-chat-avatar">${makeBotAvatar()}</div>
+            <div class="ob-chat-col ob-chat-col-wide">
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(doneClock)}</span></div>
+              <div class="ob-final-cta-bubble is-error">
+                <div class="ob-final-cta-copy">
+                  <strong>自检发现异常，尚未完全就绪</strong>
+                  <p>请根据上方提示处理后重新自检，也可以稍后在工作台内继续排查。</p>
+                </div>
+                <div class="ob-final-cta-actions">
+                  <button type="button" class="ob-hero-cta-btn" data-ob-action="retry-bot-check" ${ob.botSending ? 'disabled' : ''}>
+                    ${ob.botSending ? '<span class="ob-spinner"></span>正在重新发起自检…' : '重新自检'}
+                  </button>
+                  <button type="button" class="ob-text-link-btn" data-ob-action="finish-to-main">稍后处理，先进入工作台</button>
+                </div>
+              </div>
+            </div>
+          </div>`,
+        });
+      } else {
+        items.push({
+          key: 'final-cta',
+          sig: `final-ok:${label}`,
+          html: `<div class="ob-chat-row is-bot">
+            <div class="ob-chat-avatar">${makeBotAvatar()}</div>
+            <div class="ob-chat-col ob-chat-col-wide">
+              <div class="ob-chat-meta"><strong>${esc(label)}</strong><span>${esc(doneClock)}</span></div>
+              <div class="ob-final-cta-bubble">
+                <div class="ob-final-cta-copy">
+                  <strong>一切就绪，随时可以开工！</strong>
+                  <p>点下方按钮展开完整工作台，立刻创建你的第一个群聊。</p>
+                </div>
+                <button type="button" class="ob-hero-cta-btn" data-ob-action="finish-to-main">进入工作台，开始建群 →</button>
+              </div>
+            </div>
+          </div>`,
+        });
+      }
+    } else if (!snap.pendingExec && !snap.pendingPromptMsg) {
+      // 5. Bottom live typing bubble while Bot is still working (keeps feed alive, never blank!)
       items.push({
         key: 'typing',
         sig: `typing:${snap.progressText}`,
         html: `<div class="ob-chat-row is-bot">
-          <div class="ob-chat-avatar">${botMiniAvatar}</div>
+          <div class="ob-chat-avatar">${makeBotAvatar()}</div>
           <div class="ob-chat-col">
             <div class="ob-typing-bubble">
               <span class="ob-typing-dots"><i></i><i></i><i></i></span>
@@ -597,18 +659,16 @@
       <div class="ob-window-bar">
         <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(label)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
         <div class="ob-window-controls">
-          ${ob.preview
-            ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>'
-            : '<button type="button" class="ob-ghost-pill" data-ob-action="finish-to-main">跳过，直接建群 →</button>'}
+          ${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}
         </div>
       </div>
       <div class="ob-bot-shell">
         <div class="ob-bot-header">
           <div class="ob-bot-identity">
-            <div data-ob-bot-avatar>${avatarSvg(avatarId, 44, 'work')}</div>
+            <div data-ob-bot-avatar>${avatarSvg(avatarId, 44, 'work', { key: `ob-header:${avatarId}` })}</div>
             <div class="ob-bot-titles">
               <h2 data-ob-bot-title>正在对接 ${esc(label)}</h2>
-              <p data-ob-bot-subtitle>实时同步自检进展，完成后直接进入新建群聊</p>
+              <p data-ob-bot-subtitle>自动检测本机环境与登录状态，完成后即可建群开工</p>
             </div>
           </div>
           <span class="ob-bot-badge is-live" data-ob-badge>
@@ -617,16 +677,9 @@
           </span>
         </div>
         <div class="ob-bot-feed" id="ob-bot-feed"></div>
-        <div class="ob-ready-bar" data-ob-ready-bar hidden>
-          <span data-ob-ready-text>✓ ${esc(label)} 对接完成，现在可以创建你的第一个群聊</span>
-          <button type="button" class="ob-primary-btn" data-ob-action="finish-to-main">进入工作台，新建群聊 →</button>
-        </div>
-        <form class="ob-bot-composer" id="ob-bot-reply-form">
-          <input name="text" type="text" placeholder="给 ${esc(label)} 补充说明或回答…" autocomplete="off">
-          <button type="submit" class="ob-primary-btn">发送</button>
-        </form>
       </div>
     `;
+    window.SummonAvatars?.hydrate?.(stage);
   }
 
   function patchBotStage(stage) {
@@ -643,49 +696,43 @@
     if (brandEl && brandEl.textContent !== nextBrand) brandEl.textContent = nextBrand;
 
     const titleEl = stage.querySelector('[data-ob-bot-title]');
-    const nextTitle = snap.isReady ? `${label} 已就绪` : `正在对接 ${label}`;
+    const nextTitle = snap.hasError ? `${label} 自检异常` : snap.isReady ? `${label} 已就绪` : `正在对接 ${label}`;
     if (titleEl && titleEl.textContent !== nextTitle) titleEl.textContent = nextTitle;
 
     const subEl = stage.querySelector('[data-ob-bot-subtitle]');
-    const nextSub = snap.isReady ? '本机自检与桥接已完成，可以直接建群开始工作' : '实时同步自检进展，完成后直接进入新建群聊';
+    const nextSub = snap.hasError
+      ? '自检过程中发现问题，请查看下方报错并重试'
+      : snap.isReady
+        ? '本机环境与接入验证已全部通过，可以直接建群开始工作'
+        : '自动检测本机环境与登录状态，完成后即可建群开工';
     if (subEl && subEl.textContent !== nextSub) subEl.textContent = nextSub;
 
     const avatarWrap = stage.querySelector('[data-ob-bot-avatar]');
-    const avatarKey = `${avatarId}:${snap.isWorking ? 'work' : 'idle'}`;
+    const avatarState = snap.hasError ? 'failed' : snap.isWorking ? 'work' : snap.isReady ? 'done' : 'idle';
+    const avatarKey = `${avatarId}:${avatarState}`;
     if (avatarWrap && avatarWrap.dataset.avatarKey !== avatarKey) {
       avatarWrap.dataset.avatarKey = avatarKey;
-      avatarWrap.innerHTML = avatarSvg(avatarId, 44, snap.isWorking ? 'work' : 'idle');
+      avatarWrap.innerHTML = avatarSvg(avatarId, 44, avatarState, { key: `ob-header:${avatarId}` });
+      window.SummonAvatars?.hydrate?.(avatarWrap);
     }
 
     const badgeEl = stage.querySelector('[data-ob-badge]');
     const badgeDot = stage.querySelector('[data-ob-live-dot]');
     const badgeTextEl = stage.querySelector('[data-ob-badge-text]');
-    const nextBadgeText = snap.isReady
-      ? '已就绪 ✓'
-      : snap.pendingExec || snap.pendingPromptMsg
-        ? '需要你确认'
-        : `对接中 ${elapsed}`;
+    const nextBadgeText = snap.hasError
+      ? '自检异常'
+      : snap.isReady
+        ? '已就绪 ✓'
+        : snap.pendingExec || snap.pendingPromptMsg
+          ? '需要你确认'
+          : `对接中 ${elapsed}`;
     if (badgeEl) {
-      badgeEl.classList.toggle('is-done', snap.isReady);
+      badgeEl.classList.toggle('is-err', snap.hasError);
+      badgeEl.classList.toggle('is-done', snap.isReady && !snap.hasError);
       badgeEl.classList.toggle('is-live', !snap.isReady);
     }
     if (badgeDot) badgeDot.hidden = snap.isReady;
     if (badgeTextEl && badgeTextEl.textContent !== nextBadgeText) badgeTextEl.textContent = nextBadgeText;
-
-    const readyBar = stage.querySelector('[data-ob-ready-bar]');
-    const readyText = stage.querySelector('[data-ob-ready-text]');
-    if (readyBar) readyBar.hidden = !snap.isReady;
-    const nextReadyText = `✓ ${label} 对接完成，现在可以创建你的第一个群聊`;
-    if (readyText && readyText.textContent !== nextReadyText) readyText.textContent = nextReadyText;
-
-    const inputEl = stage.querySelector('#ob-bot-reply-form input[name=text]');
-    const submitBtn = stage.querySelector('#ob-bot-reply-form button[type=submit]');
-    if (inputEl) {
-      const nextPh = snap.isReady ? '还需要让它顺手检查点什么？或直接点上方进入…' : `给 ${label} 补充说明或回答…`;
-      if (inputEl.placeholder !== nextPh) inputEl.placeholder = nextPh;
-      inputEl.disabled = ob.botSending;
-    }
-    if (submitBtn) submitBtn.disabled = ob.botSending;
 
     // Incremental diff of #ob-bot-feed so existing bubbles NEVER flicker or re-animate!
     const feed = stage.querySelector('#ob-bot-feed');
@@ -741,6 +788,7 @@
     }
     stage.dataset.mountedStage = 'model';
     stage.innerHTML = renderModelStage();
+    window.SummonAvatars?.hydrate?.(stage);
   }
 
   async function pollBotStage() {
@@ -1136,6 +1184,10 @@
     if (action === 'close-preview') return void closePreview();
     if (action === 'preview-next') return void morphToBotStage({ botId: 'preview-codex', botName: 'Codex', bundledId: 'codex', preview: true });
     if (action === 'finish-to-main') return void transitionToMainNewGroup({ preview: ob.preview });
+    if (action === 'retry-bot-check') {
+      const label = ob.botName || (ob.bundledId === 'grok-build' ? 'Grok Build' : 'Codex');
+      return void sendBotReply(`@${label} 请重新自检一次本机环境与桥接；若全部正常请简洁告知已就绪，不要输出退出码或内部细节。`);
+    }
     if (action === 'reply-prompt-opt') return void sendBotReply(btn.dataset.label || '');
     if (action === 'open-secret-prompt') {
       const msg = ob.botMessages.find(m => m.id === btn.dataset.msgId);
@@ -1168,14 +1220,28 @@
     if (event.target.name === 'allowNoKey') render();
   });
 
-  document.addEventListener('submit', event => {
+  document.addEventListener('submit', async event => {
     if (event.target.id === 'ob-model-form') {
       event.preventDefault();
       void handleModelSubmit(event.target);
-    } else if (event.target.id === 'ob-bot-reply-form') {
+    } else if (event.target.dataset?.obExecReply) {
       event.preventDefault();
-      const input = event.target.querySelector('input[name=text]');
-      if (input) void sendBotReply(input.value);
+      const input = event.target.querySelector('input[name=val]');
+      const val = String(input?.value || '').trim();
+      const api = ob.callbacks?.api;
+      if (!val || !api) return;
+      try {
+        await api('/api/executions/input', 'POST', {
+          target: { kind: 'session', id: event.target.dataset.obExecReply },
+          kind: 'reply',
+          ...(event.target.dataset.reqId ? { request_id: event.target.dataset.reqId } : {}),
+          input: val,
+        });
+        if (input) input.value = '';
+        await pollBotStage();
+      } catch (error) {
+        ob.callbacks?.toast?.(error.message || '提交失败', true);
+      }
     }
   });
 

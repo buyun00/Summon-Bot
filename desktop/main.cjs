@@ -384,7 +384,11 @@ async function bootLocalInstance({ retryCount = 0 } = {}) {
         setTimeout(() => { resolveIntroAnim = null; done(); }, 3800);
       });
       setBootState({ status: 'ready_to_unbox', percent: 100, stage: '准备就绪，开箱！', error: '' });
-      await Promise.all([animDone, mainLoaded]);
+      const loadedSafe = Promise.race([
+        mainLoaded.catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, 10000)),
+      ]);
+      await Promise.all([animDone, loadedSafe]);
       await new Promise(resolve => setTimeout(resolve, 60));
       main.setBounds(initialBounds);
       main.show();

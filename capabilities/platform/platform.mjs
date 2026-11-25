@@ -119,7 +119,7 @@ export class SummonPlatform {
       let wakeMessageId = null;
       if (created && wake && hasActiveModel && bundledId !== 'eggbot') {
         const sent = this.room.send(targetRoom.id, {
-          text: `@${bot.name} 请在后台自检本机环境、CLI 与桥接脚本（缺凭据用隐私输入窗向我获取，版本有变自行调整 scripts/）。每完成一步（如检测到 CLI 与登录态、验证桥接脚本）简短发一句进展，全部完成后汇报结果。`,
+          text: `@${bot.name} 请在后台自检本机环境、CLI 与桥接脚本（缺凭据用隐私输入窗向我获取，版本有变自行调整 scripts/）。每完成一步简短发一句进展；全部验证正常时只用一两句简洁自然的话告知用户已就绪，不要提及退出码、脚本路径或内部技术细节；若确实存在无法自愈的异常，再直接明确报错并说明原因。`,
           mentions: [{ kind: 'bot', id: bot.id }],
         }, 'user');
         wakeMessageId = sent?.message?.id || sent?.id || null;

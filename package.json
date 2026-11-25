@@ -1,6 +1,6 @@
 {
   "name": "summon-bot",
-  "version": "0.5.25",
+  "version": "0.5.26",
   "private": true,
   "description": "Pi Bots, rooms, files and connected execution sessions",
   "type": "module",
