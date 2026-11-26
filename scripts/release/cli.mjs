@@ -233,14 +233,13 @@ async function main() {
   if (command === 'all') {
     if (process.platform === 'win32') {
       const next = await prepareWeb({ committedOnly: true, reuse: true });
-      if (next.protocolChanged) { await buildDesktop(next.expected); await buildDesktopTauri(); }
+      if (next.protocolChanged) { await buildDesktopTauri(); }
       await deployWeb(next);
       if (!next.protocolChanged && (!next.resuming || next.expected?.sourceCommit === buildSourceCommit && next.expected.sourceMode === 'git-archive')) {
-        await buildDesktop(next.expected);
         await buildDesktopTauri();
       }
     }
-    else if (process.platform === 'darwin') { await buildDesktop(); await buildDesktopTauri(); }
+    else if (process.platform === 'darwin') { await buildDesktopTauri(); }
     else throw new Error('Run platform builds on Windows or Mac');
     return;
   }
