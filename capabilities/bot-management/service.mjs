@@ -103,12 +103,13 @@ export class BotManager {
     });
   }
 
-  createGroupLead({ roomId, roomName, leadName, pendingAutoName = false } = {}) {
+  createGroupLead({ roomId, roomName, leadName, leadDuty, pendingAutoName = false } = {}) {
     const id = `bot-lead-${roomId}`;
     const existing = this.store.get(botRecords, id);
     if (existing) return existing;
     const baseRoomName = typeof roomName === 'string' && roomName.trim() ? roomName.trim() : '新群聊';
     const hasExplicitLeadName = typeof leadName === 'string' && Boolean(leadName.trim());
+    const hasExplicitLeadDuty = typeof leadDuty === 'string' && Boolean(leadDuty.trim());
     const autoNamePending = Boolean(pendingAutoName && !hasExplicitLeadName);
     const rawName = hasExplicitLeadName
       ? leadName.trim()
@@ -116,9 +117,11 @@ export class BotManager {
         ? '群主控'
         : `${baseRoomName.slice(0, 88)} · 主控`;
     const name = cleanName(rawName.slice(0, 100));
-    const duty = autoNamePending
-      ? publicDuty('本群群主控，负责理解宿主建群意向、协调推进任务与交付')
-      : publicDuty(`负责「${baseRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`);
+    const duty = hasExplicitLeadDuty
+      ? publicDuty(leadDuty.trim().slice(0, 600))
+      : autoNamePending
+        ? publicDuty('本群群主控，负责理解宿主建群意向、协调推进任务与交付')
+        : publicDuty(`负责「${baseRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`);
     return this.saveNew({
       id,
       name,

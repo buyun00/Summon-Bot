@@ -1,0 +1,42 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local loopback remote capability for Summon Bot main workspace window",
+  "local": false,
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*",
+      "http://127.0.0.1:*/*",
+      "http://localhost:*",
+      "http://localhost:*/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "dialog:default",
+    "opener:default",
+    "allow-desktop-info",
+    "allow-desktop-ensure-session",
+    "allow-set-theme",
+    "allow-pick-directory",
+    "allow-open-attachment",
+    "allow-morph-window",
+    "allow-preview-desktop-intro",
+    "allow-check-update",
+    "allow-install-update",
+    "allow-window-start-dragging",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-close",
+    "allow-window-is-maximized",
+    "allow-read-dropped-file"
+  ]
+}

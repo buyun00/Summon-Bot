@@ -1,0 +1,14 @@
+{
+  "name": "summon-desktop-tauri",
+  "version": "0.5.30",
+  "private": true,
+  "description": "Summon Bot Tauri desktop client",
+  "author": "Summon Bot",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}

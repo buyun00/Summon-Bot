@@ -110,7 +110,9 @@ function createGithubReleaseCatalog(repo = GITHUB_REPO) {
   let cache = { at: 0, value: null };
   const tags = [
     ['windows', 'x64', 'client-windows-x64'],
+    ['windows', 'x64-tauri', 'client-windows-x64-tauri'],
     ['macos', 'arm64', 'client-macos-arm64'],
+    ['macos', 'arm64-tauri', 'client-macos-arm64-tauri'],
     ['android', 'universal', 'client-android-universal'],
   ];
   return async () => {

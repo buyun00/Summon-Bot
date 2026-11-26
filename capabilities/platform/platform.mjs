@@ -4,8 +4,8 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { botMaintenanceLeadId, botMaintenanceRoomId, groupLeadRole, roleIds } from '../bot-management/roles.mjs';
-import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
+import { botMaintenanceLeadId, botMaintenanceRoomId, eggbotRole, groupLeadRole, roleIds } from '../bot-management/roles.mjs';
+import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, validateBotRelPath, writeBotFolderFile } from '../bot-management/folders.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { EngineManager } from '../engines/service.mjs';
 import { Files } from '../filesystem/files.mjs';
@@ -69,6 +69,7 @@ export class SummonPlatform {
 
   attach({ room, runtime, exec }) {
     Object.assign(this, { room, runtime, exec });
+    this.attachments ??= room?.attachments;
     this.files = new Files({ store: this.store, room, attachments: this.attachments,
       canReadSpace: (actor, space, context) => this.canReadSpace(actor, space, context),
       canWriteSpace: (actor, space, context) => this.canWriteSpace(actor, space, context),
@@ -281,6 +282,11 @@ export class SummonPlatform {
       const role = args.role_id ? ` [${args.role_id}]` : '';
       return { summary: `创建 Bot「${args.name || '未命名'}」${role}` };
     }
+    if (name === 'create_room') {
+      const title = args.title ? `「${String(args.title).slice(0, 40)}」` : '';
+      const lead = args.lead_name ? `（主控：${String(args.lead_name).slice(0, 24)}）` : '';
+      return { summary: `创建群聊${title}${lead}` };
+    }
     if (name === 'configure_room') {
       const parts = [];
       if (args.title) parts.push(`改名「${args.title}」`);
@@ -295,7 +301,7 @@ export class SummonPlatform {
   guardRoomWriteActivity(name, args, context, record) {
     if (context.actor.kind !== 'bot') return null;
     if (context.conversation?.kind !== 'room' || context.conversation?.space?.kind !== 'room') return null;
-    const guarded = name === 'open_session' || name === 'create_bot' || name === 'configure_room';
+    const guarded = name === 'open_session' || name === 'create_bot' || name === 'create_room' || name === 'configure_room';
     if (!guarded) return null;
     const roomId = context.conversation.space.id;
     const expectedSeq = context.origin?.seen_room_activity_seq;
@@ -510,6 +516,10 @@ export class SummonPlatform {
   canReadEvent(event, context) {
     if (event.result_access === 'revoked') return false;
     if (event.type === 'work.tool') return this.roomWork.readable(event, context);
+    if (Array.isArray(event.shared_rooms) && event.shared_rooms.some(rid =>
+      this.canReadSpace(context.actor, { kind: 'room', id: rid }, context))) {
+      return true;
+    }
     if (event.call_id && event.target) {
       const call = this.store.get('platform-calls', event.call_id);
       const waits = call?.return_refs || [];
@@ -578,13 +588,27 @@ export class SummonPlatform {
       }
       return call || ref;
     }
-    const event = ref.kind === 'event' ? this.store.get('messages', ref.id) ?? this.store.get('platform-events', ref.id) : null;
-    if (event) return event;
+    const msg = ref.kind === 'event' ? this.store.get('messages', ref.id) : null;
+    const platformEvent = ref.kind === 'event' && !msg ? this.store.get('platform-events', ref.id) : null;
+    const event = msg || platformEvent;
+    if (event) {
+      if (principal.kind !== 'user' && !this.canReadEvent(event, caller)) {
+        reject('share_forbidden', 'Cannot share an inaccessible event', 403);
+      }
+      const nativeRoomId = event.roomId || (event.space?.kind === 'room' ? event.space.id : null);
+      if (room?.id && nativeRoomId !== room.id && !event.shared_rooms?.includes(room.id)) {
+        this.store.save(msg ? 'messages' : 'platform-events', {
+          id: event.id,
+          shared_rooms: [...(event.shared_rooms || []), room.id],
+        });
+      }
+      return event;
+    }
     if (file) return this.files.view(file);
     if (!this.canReadReference(ref, caller)) {
-      return this.attachments.find(ref.id) || ref;
+      return this.attachments?.find(ref.id) || ref;
     }
-    return this.attachments.find(ref.id) || ref;
+    return this.attachments?.find(ref.id) || ref;
   }
 
   workspaceRecords() { return [...this.workspaces, ...this.store.list('platform-workspaces')]; }
@@ -1139,12 +1163,17 @@ export class SummonPlatform {
       }
       if (name === 'save_file' && args.space.kind === 'bot') {
         const targetBot = this.getBot(args.space.id);
-        if (!this.manager.canConfigure(context.actor, targetBot)) {
+        const cleanPath = validateBotRelPath(args.path);
+        const callerBot = context.actor.kind === 'bot' ? this.store.get(botRecords, context.actor.id) : null;
+        const eggHandoffWrite = callerBot?.built_in_role?.id === eggbotRole
+          && targetBot.built_in_role?.id !== eggbotRole
+          && /^(skills|scripts|\.local\/memory)\//.test(cleanPath);
+        if (!this.manager.canConfigure(context.actor, targetBot) && !eggHandoffWrite) {
           reject('configuration_forbidden', 'Cannot write files into another Bot’s folder', 403);
         }
         const content = typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
         if (typeof content !== 'string') reject('invalid_content', 'Provide text content when saving into a Bot folder');
-        const written = writeBotFolderFile(this.dataRoot, targetBot.id, args.path, content);
+        const written = writeBotFolderFile(this.dataRoot, targetBot.id, cleanPath, content);
         if (written.path === 'instructions.md') {
           this.store.save(botRecords, { id: targetBot.id, instructions: content, revision: targetBot.revision + 1 });
           this.emit('bot');
@@ -1217,7 +1246,7 @@ export class SummonPlatform {
       }
       if (trackedActivity) {
         trackedActivity.status = 'completed';
-        if (result?.id && name === 'configure_room') trackedActivity.target = { kind: 'room', id: result.id };
+        if (result?.id && (name === 'configure_room' || name === 'create_room')) trackedActivity.target = { kind: 'room', id: result.id };
       }
       return { result, call_id: record.id };
     } catch (error) {
@@ -1315,6 +1344,62 @@ export class SummonPlatform {
     reject('tool_not_found', 'Unknown writable tool', 404);
   }
 
+  sessionReceiptPreview(session, context) {
+    if (!session?.latest_call_id) return '';
+    const call = this.store.get('platform-calls', session.latest_call_id);
+    if (!call) return '';
+    const texts = [];
+    if (call.result_ref?.kind === 'event') {
+      const event = this.store.get('platform-events', call.result_ref.id);
+      if (event && this.canReadEvent(event, context)) {
+        const out = event.result?.output;
+        if (typeof out === 'string') texts.push(out);
+        else if (out && typeof out === 'object') {
+          if (typeof out.text === 'string') texts.push(out.text);
+          if (typeof out.stdout === 'string') texts.push(out.stdout);
+          if (typeof out.stderr === 'string') texts.push(out.stderr);
+        }
+        if (typeof event.result?.error === 'string') texts.push(event.result.error);
+      }
+    }
+    const callOut = call.result?.output;
+    if (typeof callOut === 'string') texts.push(callOut);
+    else if (callOut && typeof callOut === 'object') {
+      if (typeof callOut.text === 'string') texts.push(callOut.text);
+      if (typeof callOut.stdout === 'string') texts.push(callOut.stdout);
+    }
+    return texts.join('\n').slice(0, 8000);
+  }
+
+  searchableTexts(kind, item, context) {
+    switch (kind) {
+      case 'event': {
+        const out = item.result?.output;
+        return [
+          item.id, item.roomId, item.room_name, item.senderId, item.senderName,
+          item.content, item.text, item.type, item.call_id, item.work_summary,
+          ...(Array.isArray(item.attachments) ? item.attachments.map(att => att?.name) : []),
+          typeof out === 'string' ? out : null,
+          out?.text, out?.stdout, out?.stderr, item.result?.error,
+        ];
+      }
+      case 'session':
+        return [
+          item.id, item.engine, item.work_summary, item.status,
+          item.origin_room?.id, item.origin_room_name, item.last_error?.message,
+          this.sessionReceiptPreview(item, context),
+        ];
+      case 'conversation':
+        return [item.id, item.room_name, item.space?.id, item.status];
+      case 'room':
+        return [item.id, item.name, item.lastMessage?.content];
+      case 'call':
+        return [item.id, item.tool, item.status, item.target?.id];
+      default:
+        return [item.id, item.name, item.path, item.content, item.text, item.public_duty, item.role_id, item.summary, item.work_summary];
+    }
+  }
+
   async find({ kind, scope, query, cursor }, context) {
     const { actor } = context;
     if (scope && !this.canReadReference(scope, context)) reject('scope_unavailable', 'Search scope is unavailable', 404);
@@ -1335,16 +1420,47 @@ export class SummonPlatform {
       case 'room': items = this.room.rooms(actor.id).filter(room => this.canReadSpace(actor, { kind: 'room', id: room.id }, context))
         .map(room => ({ ...room, kind: 'room' })); break;
       case 'event': {
-        const messages = this.room.rooms(actor.id).filter(room => (!scope || sameRef(scope, room.ref)) && this.canReadSpace(actor, room.ref, context))
-          .flatMap(room => this.room.messages(room.id, actor.id));
-        items = [...messages, ...this.store.list('platform-events').filter(event => this.canReadEvent(event, context) &&
-          (!scope || sameRef(event.space || event.target, scope)))]; break;
+        const accessibleRooms = this.room.rooms(actor.id)
+          .filter(room => (!scope || sameRef(scope, room.ref)) && this.canReadSpace(actor, room.ref, context));
+        const messages = accessibleRooms.flatMap(room =>
+          this.room.messages(room.id, actor.id).map(msg => ({
+            ...msg,
+            room_name: room.name,
+            senderName: msg.senderName || this.actorLabel(msg.senderId),
+          })),
+        );
+        const platformEvents = this.store.list('platform-events')
+          .filter(event => this.canReadEvent(event, context) && (!scope || sameRef(event.space || event.target, scope)))
+          .map(event => {
+            const originRoomId = event.origin_room?.id || (event.space?.kind === 'room' ? event.space.id : null);
+            const roomName = originRoomId ? this.store.get('rooms', originRoomId)?.name : null;
+            const sess = event.target?.kind === 'session' ? this.executions.record(event.target) : null;
+            return {
+              ...event,
+              ...(roomName ? { room_name: roomName } : {}),
+              ...(sess?.work_summary ? { work_summary: sess.work_summary } : {}),
+            };
+          });
+        items = [...messages, ...platformEvents].sort((left, right) => {
+          const lt = Date.parse(left.createdAt || left.time || 0) || 0;
+          const rt = Date.parse(right.createdAt || right.time || 0) || 0;
+          if (rt !== lt) return rt - lt;
+          return (right.sequence ?? 0) - (left.sequence ?? 0);
+        });
+        break;
       }
       case 'file':
         if (scope?.kind === 'workspace') return this.workspaceEntries({ ref: scope, query, cursor }, context);
         items = this.files.list(context, scope);
         break;
-      case 'session': case 'conversation': items = this.executions.list(context, scope).filter(item => item.kind === kind); break;
+      case 'session': case 'conversation':
+        items = this.executions.list(context, scope).filter(item => item.kind === kind);
+        if (kind === 'session') {
+          items.sort((left, right) =>
+            (Date.parse(right.updated_at || right.created_at || 0) || 0) -
+            (Date.parse(left.updated_at || left.created_at || 0) || 0));
+        }
+        break;
       case 'workspace': {
         const origin = this.projectRoom(context);
         const room = scope?.kind === 'room' && (actor.kind === 'user' || sameRef(origin, scope)) ? this.store.get('rooms', scope.id) : null;
@@ -1363,9 +1479,14 @@ export class SummonPlatform {
       default: items = [];
     }
     if (items?.items) items = items.items;
-    const needle = query?.trim().toLowerCase();
-    const filtered = needle ? items.filter(item => [item.id, item.name, item.path, item.content, item.text, item.public_duty, item.role_id]
-      .some(value => typeof value === 'string' && value.toLowerCase().includes(needle))) : items;
+    const tokens = (query?.trim().toLowerCase() || '').split(/\s+/).filter(Boolean);
+    const filtered = tokens.length ? items.filter(item => {
+      const haystack = this.searchableTexts(kind, item, context)
+        .filter(value => typeof value === 'string' && value.length > 0)
+        .join('\n')
+        .toLowerCase();
+      return tokens.every(token => haystack.includes(token));
+    }) : items;
     return page(filtered, cursor);
   }
 
@@ -1399,11 +1520,13 @@ export class SummonPlatform {
     switch (ref.kind) {
       case 'bot': {
         const bot = this.getBot(ref.id);
-        if (args.path !== undefined) {
-          if (!this.manager.canConfigure(context.actor, bot) && args.path.startsWith('.local/')) {
+        const targetPath = args.path ?? args.directory;
+        if (targetPath !== undefined) {
+          const cleanTarget = validateBotRelPath(targetPath);
+          if (!this.manager.canConfigure(context.actor, bot) && (cleanTarget === '.local' || cleanTarget.startsWith('.local/'))) {
             reject('file_forbidden', 'Cannot read another Bot’s private local files', 403);
           }
-          return { ref, ...readBotFolderFile(this.dataRoot, bot.id, args.path) };
+          return { ref, ...readBotFolderFile(this.dataRoot, bot.id, cleanTarget, { allowDirectory: true }) };
         }
         if (!this.visibleBot(bot, context)) return directoryEntry(bot);
         const view = this.manager.view(bot, context.actor, { details: !context.session });

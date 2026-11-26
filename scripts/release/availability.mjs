@@ -107,11 +107,12 @@ export async function assertClientAvailability({ dataRoot, release, expected }) 
     throw new Error('Build the protocol update from the same committed release as the clients');
   }
   githubBase(release.githubRepository, 'windows', 'x64');
+  const requiredTargets = releaseTargets.filter(([, arch]) => !arch.endsWith('-tauri'));
   const outcomes = await Promise.allSettled([
     localWindowsRelease(join(dataRoot, 'client-releases'), expected).then(current => {
       if (!current) throw new Error(`The local Windows release needs build ${expected.buildNumber} from the selected commit`);
     }),
-    ...releaseTargets.map(([platform, arch]) => githubPackage(release.githubRepository, platform, arch, expected)),
+    ...requiredTargets.map(([platform, arch]) => githubPackage(release.githubRepository, platform, arch, expected)),
     testFlightBuild(release.githubRepository, expected),
   ]);
   const failures = outcomes.filter(result => result.status === 'rejected');

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+resources="$(cd "$(dirname "$0")" && pwd)"
+runtime="$resources/summon-runtime"
+exec "$runtime/runtime/node" "$runtime/scripts/installation/desktop.mjs" "$@"

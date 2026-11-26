@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "intro",
+  "description": "Local capability for Summon Bot boot/unboxing overlay window",
+  "local": true,
+  "windows": ["intro"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-boot-ready",
+    "allow-boot-intro-done",
+    "allow-boot-info",
+    "allow-check-update",
+    "allow-install-update"
+  ]
+}

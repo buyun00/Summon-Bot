@@ -91,7 +91,7 @@ export async function serveClientReleases(req, res, url, root, webRelease, { loc
     sendJson(res, 200, { web: webRelease, githubRepository: webRelease.githubRepository, githubError,
       localError, releases: targets.flatMap(item => item.record ? [item.record] : []) }); return true;
   }
-  const match = url.pathname.match(/^\/api\/releases\/([a-z]+)\/([a-z0-9]+)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/);
+  const match = url.pathname.match(/^\/api\/releases\/([a-z]+)\/([a-z0-9-]+)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/);
   if (!match || !validTarget(match[1], match[2])) { sendJson(res, 404, { error: '没有此平台的发行包' }); return true; }
   const [, platform, arch, name] = match;
   if (!local) {

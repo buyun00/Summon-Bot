@@ -3010,6 +3010,48 @@ document.addEventListener('drop', event => {
   event.preventDefault();
   void addAttachments(ui.roomId, files);
 });
+window.SummonDesktop?.onNativeFileDrop?.(async payload => {
+  if (!ui.roomId || ui.creatingRoom || ui.view !== 'chat') return;
+  const items = Array.isArray(payload?.files) ? payload.files : [];
+  if (!items.length) return;
+  const target = typeof payload?.x === 'number' && typeof payload?.y === 'number'
+    ? document.elementFromPoint(payload.x, payload.y)
+    : null;
+  if (target && !target.closest?.('.conversation') && document.querySelector('.conversation')) return;
+  if (!Array.isArray(state.workspaces) || !state.workspaces.length) {
+    try { state.workspaces = await readList('/api/workspaces'); } catch {}
+  }
+  const filesToUpload = [];
+  let linkedAny = false;
+  for (const meta of items) {
+    const wsRef = meta?.path ? matchAuthorizedWorkspaceFile(meta.path) : null;
+    if (wsRef) {
+      addDraftReference(ui.roomId, wsRef);
+      toast(`已关联工作区活文件：${wsRef.path}`);
+      linkedAny = true;
+      continue;
+    }
+    if (Number(meta?.size) > attachmentMaxBytes) {
+      toast(`${meta?.name || '文件'} 超过 20 MB，请选择小一些的文件。`, true);
+      continue;
+    }
+    try {
+      const bytes = await window.SummonDesktop.readDroppedFile(meta.dropId);
+      const file = new File([new Uint8Array(bytes)], meta.name || 'file', { type: meta.mime || 'application/octet-stream' });
+      window.SummonDesktop.registerFilePath?.(file, meta.path || '');
+      filesToUpload.push(file);
+    } catch (error) {
+      toast(error?.message || `读取 ${meta?.name || '文件'} 失败`, true);
+    }
+  }
+  if (linkedAny && !filesToUpload.length) {
+    render();
+    void persistClientSession();
+  }
+  if (filesToUpload.length) {
+    void addAttachments(ui.roomId, filesToUpload);
+  }
+});
 document.addEventListener('submit', event => {
   const form = event.target;
   if (form.id === 'local-profile-form') {

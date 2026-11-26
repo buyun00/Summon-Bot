@@ -32,7 +32,8 @@ export function validateBotRelPath(relPath, { allowLocalState = false } = {}) {
   if (typeof relPath !== 'string' || !relPath.trim() || relPath.length > 300 || /[\\:\0\p{Cc}]/u.test(relPath)) {
     reject('invalid_path', 'Use a safe relative POSIX path inside the Bot folder');
   }
-  const clean = relPath.trim().replace(/^\/+/, '');
+  const clean = relPath.trim().replace(/^\/+|\/+$/g, '');
+  if (!clean) reject('invalid_path', 'Use a safe relative POSIX path inside the Bot folder');
   const parts = clean.split('/');
   if (parts.some(p => !p || p === '.' || p === '..')) {
     reject('invalid_path', 'Path cannot traverse outside the Bot folder');
@@ -113,12 +114,24 @@ export function listBotFolderFiles(dataRoot, botId) {
   return walkRelativeFiles(root);
 }
 
-export function readBotFolderFile(dataRoot, botId, relPath) {
+export function readBotFolderFile(dataRoot, botId, relPath, { allowDirectory = false } = {}) {
   const clean = validateBotRelPath(relPath);
   const root = botRootDir(dataRoot, botId);
   const abs = resolve(root, clean);
   if (!abs.startsWith(root + sep)) reject('invalid_path', 'Path escapes Bot folder');
-  if (!existsSync(abs) || !statSync(abs).isFile()) reject('file_not_found', `Bot file not found: ${clean}`, 404);
+  if (!existsSync(abs)) reject('file_not_found', `Bot file not found: ${clean}`, 404);
+  const info = statSync(abs);
+  if (info.isDirectory()) {
+    if (!allowDirectory) reject('file_not_found', `Bot file not found: ${clean}`, 404);
+    const entries = walkRelativeFiles(abs, clean);
+    return {
+      path: clean,
+      kind: 'directory',
+      entries,
+      ...(clean === '.local/memory' ? { memory_items: listBotMemoryItems(dataRoot, botId) } : {}),
+    };
+  }
+  if (!info.isFile()) reject('file_not_found', `Bot file not found: ${clean}`, 404);
   const content = readFileSync(abs, 'utf8');
   return { path: clean, content, size: Buffer.byteLength(content, 'utf8') };
 }

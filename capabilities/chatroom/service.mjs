@@ -352,12 +352,13 @@ export class ChatroomService {
   }
 
   projectRoom(room) {
-    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt, auto_title_pending } = room;
+    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt, auto_title_pending, origin_room } = room;
     return { id, ref: { kind: 'room', id }, name, members, mode, pins,
       deletable: mode === 'group' && id !== botMaintenanceRoomId,
       archivable: mode === 'group' && id !== botMaintenanceRoomId,
       archived_at: archivedAt || null,
       ...(lead_bot_id ? { lead_bot_id } : {}),
+      ...(origin_room ? { origin_room } : {}),
       ...(auto_title_pending ? { auto_title_pending: true } : {}),
       workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
@@ -510,9 +511,16 @@ export class ChatroomService {
 
   read({ ref, cursor, limit = 40 }, actor) {
     if (ref?.kind === 'event') {
-      const event = this.projectMessage(this.messageRow.get(ref.id));
+      const row = this.messageRow.get(ref.id);
+      const event = this.projectMessage(row);
       if (!event) fail('消息不存在', 404);
-      this.room(event.roomId, actor);
+      const actorId = identity(actor).id;
+      const raw = JSON.parse(row.data);
+      const shared = Array.isArray(raw.shared_rooms) && raw.shared_rooms.some(rid => {
+        const sharedRoom = this.store.get('rooms', rid);
+        return sharedRoom && (actorId === 'user' || sharedRoom.members.includes(actorId));
+      });
+      if (!shared) this.room(event.roomId, actor);
       return event;
     }
     if (ref?.kind !== 'room') fail('需要会话或消息引用');
@@ -606,16 +614,39 @@ export class ChatroomService {
     }
   }
 
-  createRoom({ title, members, mode, workspace, lead_name, skip_welcome, auto_title }, actor, { id = randomUUID() } = {}) {
+  createRoom({ title, members, mode, workspace, lead_name, lead_duty, skip_welcome, auto_title, origin_room, opening_message }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
-    const requested = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
+    const explicitMembers = [...new Set(list(members, '成员').map(member => identity(member).id))];
+    const hasGroupSignals = Boolean(
+      lead_name || lead_duty || auto_title === true || origin_room || opening_message || workspace != null || id === botMaintenanceRoomId,
+    );
     let createdLead = null;
     let openingMessage = null;
     const saved = this.store.transaction(() => {
       if (this.store.get('rooms', id)) fail('会话 ID 已存在', 409);
+      if (mode === undefined) {
+        const directCandidate = [...new Set([actor, ...explicitMembers])];
+        mode = actor === 'user' && !hasGroupSignals && directMembers(directCandidate) ? 'direct' : 'group';
+      }
+      let requested;
+      if (mode === 'direct') {
+        requested = [...new Set([actor, ...explicitMembers])];
+        if (!directMembers(requested)) fail('私聊必须包含用户和一位 Bot');
+      } else {
+        // Creating a group Room on behalf of the host does NOT force a Bot caller
+        // to become a member (or hijack lead_bot_id) unless explicitly listed.
+        requested = [...new Set(['user', ...explicitMembers])];
+      }
       this.validateMembers(requested, actor);
-      mode ??= directMembers(requested) ? 'direct' : 'group';
-      if (mode === 'direct' && !directMembers(requested)) fail('私聊必须包含用户和一位 Bot');
+      let originRoomRef = null;
+      if (origin_room !== undefined && origin_room !== null) {
+        const originId = idOf(origin_room, 'room');
+        const originRecord = this.store.get('rooms', originId);
+        if (!originRecord || !this.platform.canReadSpace(identity(actor), { kind: 'room', id: originId })) {
+          fail('来源群聊不存在或无权访问', 404);
+        }
+        originRoomRef = { kind: 'room', id: originId };
+      }
       const isStandardGroup = mode === 'group' && id !== botMaintenanceRoomId;
       const autoNameGroup = isStandardGroup && (
         auto_title === true
@@ -645,8 +676,13 @@ export class ChatroomService {
       const included = [...requested];
       let leadBotId = null;
       if (isStandardGroup || (mode === 'group' && id === botMaintenanceRoomId)) {
-        const existingLead = included.find(member =>
-          member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
+        // A group-lead with a different home_room_id belongs to its own home room
+        // and must never hijack lead_bot_id or swallow lead_name of a new group.
+        const existingLead = (!lead_name && !lead_duty) ? included.find(member => {
+          if (member === 'user') return false;
+          const bot = this.store.get('platform-bots', member);
+          return bot?.built_in_role?.id === groupLeadRole && (!bot.home_room_id || bot.home_room_id === id);
+        }) : null;
         if (existingLead) {
           leadBotId = existingLead;
         } else {
@@ -654,6 +690,7 @@ export class ChatroomService {
             roomId: id,
             roomName,
             leadName: lead_name,
+            leadDuty: lead_duty,
             pendingAutoName: autoNameGroup && !lead_name,
           });
           createdLead = leadBot;
@@ -668,10 +705,55 @@ export class ChatroomService {
       const room = this.store.save('rooms', {
         id, name: roomName, members: included, mode, pins: [], revision: 1,
         ...(leadBotId ? { lead_bot_id: leadBotId } : {}),
+        ...(originRoomRef ? { origin_room: originRoomRef } : {}),
         ...(autoNameGroup ? { auto_title_pending: true } : {}),
         workspace: boundWorkspace,
       });
-      if (isStandardGroup && leadBotId && !skip_welcome) {
+      for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
+      if (opening_message !== undefined && opening_message !== null) {
+        const rawOpening = typeof opening_message === 'string' ? { text: opening_message } : opening_message;
+        const openingText = typeof rawOpening?.text === 'string' ? rawOpening.text : '';
+        if (!openingText.trim() || openingText.length > 16000) fail('开场交接消息须为 1 至 16000 个字符的文本');
+        const openingMentions = [...new Set(list(rawOpening.mentions, '@成员').map(member => identity(member).id))];
+        if (openingMentions.some(member => !included.includes(member))) fail('开场交接消息的 @对象必须是新群成员');
+        const openingRefs = references(rawOpening.references, '消息引用');
+        for (const ref of openingRefs) this.assertShareable(ref, room, actor, included);
+        const openingAttachmentRefs = references(rawOpening.attachments, '附件', 'file');
+        const openingAttachments = this.attachments.resolve(openingAttachmentRefs, (ref, file) => {
+          const owned = file?.ownerId === actor;
+          if (file && owned) return { ...this.attachments.project(file), grants_room_access: true };
+          const sharedFile = this.assertShareable(ref, room, actor, included);
+          if (file) return { ...this.attachments.project(file), grants_room_access: false };
+          if (!sharedFile?.name && !sharedFile?.path) fail('附件不存在', 404);
+          return {
+            id: ref.id,
+            ref,
+            name: sharedFile.name ?? sharedFile.path,
+            size: sharedFile.size,
+            ...(sharedFile.revision !== undefined ? { revision: sharedFile.revision } : {}),
+            url: sharedFile.url || `/api/files/${encodeURIComponent(ref.id)}/download`,
+          };
+        });
+        const senderName = actor === 'user' ? '宿主' : this.store.get('platform-bots', actor)?.name || null;
+        const openId = randomUUID();
+        this.store.save('messages', {
+          id: openId,
+          kind: 'message',
+          roomId: id,
+          senderId: actor,
+          ...(senderName ? { senderName } : {}),
+          author: identity(actor),
+          content: openingText,
+          attachments: openingAttachments,
+          references: openingRefs,
+          mentions: openingMentions,
+          replyTo: null,
+        });
+        const savedOpening = rowMessage(this.messageRow.get(openId));
+        this.platform.recordRoomMessageActivity?.(savedOpening);
+        this.platform.queueMessage(savedOpening);
+        openingMessage = this.projectMessage(this.messageRow.get(openId));
+      } else if (isStandardGroup && leadBotId && !skip_welcome) {
         const leadRecord = this.store.get('platform-bots', leadBotId);
         const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
         const welcomeText = wsLabel
@@ -693,7 +775,6 @@ export class ChatroomService {
         });
         openingMessage = this.projectMessage(this.messageRow.get(openId));
       }
-      for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return room;
     });
     if (createdLead) {

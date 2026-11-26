@@ -159,7 +159,7 @@ html.dark .user-avatar.is-initial { background: rgba(140, 166, 138, 0.24); color
 .floating-header { position: absolute; inset: 0 0 auto; height: var(--chat-header-height); min-height: var(--chat-header-height); padding: 12px 28px; margin: 0; display: flex; justify-content: flex-end; align-items: center; gap: 14px; pointer-events: none; border: 0; background: transparent; z-index: 8; isolation: isolate; }
 .floating-header::before { content: ''; position: absolute; inset: 0 0 -28px; z-index: -1; pointer-events: none; background: linear-gradient(to bottom, var(--canvas) 8%, color-mix(in srgb, var(--canvas) 90%, transparent) 55%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); mask-image: linear-gradient(to bottom, #000 35%, #000b 65%, transparent); }
 .floating-header > * { pointer-events: auto; }
-.chat-title-pill { position: absolute; left: 0; right: 0; margin: 0 auto; display: flex; flex: none; width: max-content; min-width: 0; min-height: 46px; max-width: min(360px, calc(100% - 340px)); gap: 8px; padding: 7px 13px; border: 1px solid #e7e9e2; border-radius: 28px; background: #ffffffeb; box-shadow: 0 3px 12px #242b1a0d; backdrop-filter: blur(10px); text-align: left; }
+.chat-title-pill { position: absolute; left: 0; right: 0; margin: 0 auto; display: flex; flex: none; width: max-content; min-width: 0; min-height: 46px; max-width: min(360px, calc(100% - 340px)); gap: 8px; padding: 7px 13px; border: 1px solid #e7e9e2; border-radius: 28px; background: #ffffffeb; box-shadow: 0 3px 12px #242b1a0d; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); text-align: left; }
 .chat-title-pill:hover { background: #fff; box-shadow: 0 3px 14px #242b1a12; }
 .chat-title-pill > .bot-avatar, .chat-title-pill > .group-avatar { width: 32px !important; height: 32px !important; flex: none; }
 .chat-title-pill > .bot-avatar .summon-bot-face { width: 32px !important; height: 32px !important; }
@@ -466,6 +466,78 @@ html.dark .user-avatar.is-initial { background: rgba(140, 166, 138, 0.24); color
 }
 .desktop-overlay[data-desktop-platform="darwin"] .search-slot.open {
   inset: var(--mac-titlebar-clearance) 62px 16px 22px;
+}
+
+/* Tauri handles window dragging natively via startDragging(); disable Chromium CSS app-region on WebView2 to avoid conflicts. */
+html[data-desktop-engine="tauri"].desktop-overlay .floating-header,
+html[data-desktop-engine="tauri"].desktop-overlay .chat-title-pill,
+html[data-desktop-engine="tauri"].desktop-overlay .chat-header-actions,
+html[data-desktop-engine="tauri"].desktop-overlay .sidebar-toolbar,
+html[data-desktop-engine="tauri"].desktop-overlay .detail-panel-toolbar,
+html[data-desktop-engine="tauri"].desktop-overlay .page-header,
+html[data-desktop-engine="tauri"].desktop-overlay .usage-header,
+html[data-desktop-engine="tauri"].desktop-overlay .models-header,
+html[data-desktop-engine="tauri"].desktop-overlay .page-nav-bar,
+html[data-desktop-engine="tauri"].desktop-overlay .ob-window-bar {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Native-style Windows caption controls for Tauri frameless overlay (matches Electron titleBarOverlay 46x44 buttons) */
+.summon-window-controls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 44px;
+  display: inline-flex;
+  align-items: stretch;
+  z-index: 99999;
+  pointer-events: auto;
+  zoom: calc(1 / var(--ui-zoom, 1));
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.summon-win-btn {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  width: 46px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #3a3832;
+  cursor: default;
+  transition: background-color 110ms ease, color 110ms ease;
+}
+html.dark .summon-win-btn {
+  color: #e6eaf4;
+}
+html.summon-inactive .summon-win-btn {
+  opacity: 0.55;
+}
+.summon-win-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  opacity: 1;
+}
+html.dark .summon-win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.summon-win-btn:active {
+  background: rgba(0, 0, 0, 0.11);
+}
+html.dark .summon-win-btn:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+.summon-win-close:hover {
+  background: #e81123 !important;
+  color: #ffffff !important;
+}
+.summon-win-close:active {
+  background: #c50f1f !important;
+  color: #ffffff !important;
 }
 
 @media (max-width: 1200px) and (min-width: 821px) {

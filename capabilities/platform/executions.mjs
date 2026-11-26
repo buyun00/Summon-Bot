@@ -222,13 +222,23 @@ export class Executions {
           plain_text: req.plain_text,
         }))
       : [];
+    const originRoomReadable = Boolean(!conversation && record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context));
+    const originRoomName = originRoomReadable ? this.store.get('rooms', record.origin_room.id)?.name || null : null;
+    const convRoomName = conversation && record.space?.kind === 'room' && this.platform.canReadSpace(context.actor, record.space, context)
+      ? this.store.get('rooms', record.space.id)?.name || null
+      : null;
     const sessionMeta = !conversation ? {
-      ...(record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context) ? { origin_room: record.origin_room } : {}),
+      ...(originRoomReadable ? { origin_room: record.origin_room } : {}),
+      ...(originRoomName ? { origin_room_name: originRoomName } : {}),
       ...(record.origin_message_id ? { origin_message_id: record.origin_message_id } : {}),
       ...(record.owner_conversation_id ? { owner_conversation_id: record.owner_conversation_id } : {}),
       ...(record.work_summary ? { work_summary: record.work_summary } : {}),
+      ...(record.created_at || record.createdAt ? { created_at: record.created_at || record.createdAt } : {}),
+      ...(record.updated_at || record.updatedAt ? { updated_at: record.updated_at || record.updatedAt } : {}),
       ...(record.host_fallback_delivered_at ? { host_fallback_delivered_at: record.host_fallback_delivered_at } : {}),
-    } : {};
+    } : {
+      ...(convRoomName ? { room_name: convRoomName } : {}),
+    };
     return {
       kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,

@@ -1,0 +1,208 @@
+{
+  "suite": "ops-teslamate-differentiation",
+  "description": "登记自 2026-11-26 真实「线上服务运维」运行记录（已对公网 IP/主机名/私钥文件名做文档占位脱敏）的多 Bot 跨群分化与记忆回溯测试用例集",
+  "source_incident": {
+    "date": "2026-11-26",
+    "origin_room_name": "线上服务运维",
+    "codex_thread": "判断运维群何时分化 Bot"
+  },
+  "shared_seed": {
+    "ops_room": {
+      "id": "room-ops-main",
+      "name": "线上服务运维",
+      "lead_bot": {
+        "id": "bot-lead-room-ops-main",
+        "name": "运维指挥",
+        "public_duty": "统筹线上服务日志排查、故障处理与运维手册长期维护",
+        "instructions": ""
+      }
+    },
+    "messages": [
+      {
+        "id": "msg-ops-1",
+        "author_id": "user",
+        "text": "我想建一个线上服务运维与排障群，负责查日志、处理故障并长期维护运维手册。",
+        "mentions": ["bot-lead-room-ops-main"],
+        "at": "2026-11-26T02:27:55.469Z"
+      },
+      {
+        "id": "msg-ops-2",
+        "author_id": "bot-lead-room-ops-main",
+        "reply_to": "msg-ops-1",
+        "text": "群已就绪，我会统筹日志排查、故障处理和运维手册维护。请先提供服务与现有资料的基本情况；线上变更会先确认。",
+        "mentions": [],
+        "at": "2026-11-26T02:28:11.300Z"
+      },
+      {
+        "id": "msg-ops-3",
+        "author_id": "user",
+        "reply_to": "msg-ops-2",
+        "text": "已跳过选择，由你自行处理",
+        "mentions": ["bot-lead-room-ops-main"],
+        "at": "2026-11-26T02:32:21.553Z"
+      },
+      {
+        "id": "msg-ops-4",
+        "author_id": "user",
+        "text": "请从当前 Windows 通过 SSH 连接我的阿里云主机。使用本机已有的 SSH 私钥，由 ssh.exe 直接读取。不要打印、复制或上传私钥内容。\n\n先在 PowerShell 执行这条只读命令验证连接：\n\nssh.exe -T -p 22 -i \"$env:USERPROFILE\\.ssh\\ops_prod_rsa\" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 root@203.0.113.10 \"hostname && whoami\"\n\n预期第一行是 ops-prod-01，第二行是 root。主机指纹已保存在当前 Windows 用户的 known_hosts 中。如果 SSH 报主机密钥变化，请停下来告诉我，保留严格校验。\n\n验证通过后，用相同的 SSH 参数执行我接下来指定的配置任务。",
+        "mentions": [],
+        "at": "2026-11-26T02:32:25.185Z"
+      },
+      {
+        "id": "msg-ops-5",
+        "author_id": "bot-lead-room-ops-main",
+        "reply_to": "msg-ops-4",
+        "text": "SSH 连接验证通过，主机名和登录用户均与预期一致：`ops-prod-01` / `root`。已保留严格主机密钥校验；请继续指定配置任务。",
+        "mentions": [],
+        "at": "2026-11-26T02:32:43.189Z"
+      },
+      {
+        "id": "msg-ops-6",
+        "author_id": "user",
+        "text": "现在服务器上都有什么服务在跑",
+        "mentions": [],
+        "at": "2026-11-26T02:35:54.193Z"
+      },
+      {
+        "id": "msg-ops-7",
+        "author_id": "bot-lead-room-ops-main",
+        "reply_to": "msg-ops-6",
+        "text": "只读盘点显示，服务器主要运行着：\n\n- **openGym**：Web 和 API 两个容器，均显示 healthy；另有 Cloudflare Tunnel。\n- **Summon Relay Hub**：Relay 容器和 Cloudflare Tunnel。\n- **TeslaMate**：主服务、PostgreSQL、Mosquitto 容器，以及 drive-end webhook 服务。\n- **其他服务**：课堂静态页面、Caddy、Tailscale 节点及私有 DERP 中继。\n- **基础设施**：SSH、Docker/containerd、阿里云助手、定时任务、日志、DNS 和时间同步等。\n\n监听在所有网卡的主要端口有 TCP 22、80、443、8443，以及 UDP 443、41641；实际公网可达性还取决于防火墙和安全组。容器均处于运行状态，但除 openGym 两个容器外，未见健康检查结果；运行不代表业务已验证正常。",
+        "mentions": [],
+        "at": "2026-11-26T02:36:26.772Z"
+      }
+    ],
+    "historical_sessions": [
+      {
+        "id": "sess-ops-ssh-verify",
+        "owner_bot_id": "bot-lead-room-ops-main",
+        "origin_room_id": "room-ops-main",
+        "origin_message_id": "msg-ops-4",
+        "engine": "exec",
+        "work_summary": "验证阿里云主机连接",
+        "status": "completed",
+        "created_at": "2026-11-26T02:32:30.327Z",
+        "updated_at": "2026-11-26T02:32:32.000Z",
+        "output_text": "ops-prod-01\nroot"
+      },
+      {
+        "id": "sess-ops-systemd",
+        "owner_bot_id": "bot-lead-room-ops-main",
+        "origin_room_id": "room-ops-main",
+        "origin_message_id": "msg-ops-6",
+        "engine": "exec",
+        "work_summary": "只读盘点服务器运行服务",
+        "status": "completed",
+        "created_at": "2026-11-26T02:36:04.344Z",
+        "updated_at": "2026-11-26T02:36:06.000Z",
+        "output_text": "=== HOST ===\nops-prod-01\nroot\n=== SYSTEMD RUNNING SERVICES ===\n  caddy.service loaded active running Caddy\n  cloudflared-opengym.service loaded active running Cloudflare Tunnel for openGym\n  cloudflared-summon.service loaded active running Cloudflare Tunnel for Summon Relay Hub\n  docker.service loaded active running Docker Application Container Engine\n  tailscaled.service loaded active running Tailscale node agent\n  teslamate-webhook.service loaded active running TeslaMate drive-end webhook listener"
+      },
+      {
+        "id": "sess-ops-docker",
+        "owner_bot_id": "bot-lead-room-ops-main",
+        "origin_room_id": "room-ops-main",
+        "origin_message_id": "msg-ops-6",
+        "engine": "exec",
+        "work_summary": "补查运行中的容器服务",
+        "status": "completed",
+        "created_at": "2026-11-26T02:36:15.638Z",
+        "updated_at": "2026-11-26T02:36:17.000Z",
+        "output_text": "CONTAINER ID   IMAGE                            STATUS                 PORTS                              NAMES\n230aa562f1e8   relay-summon-relay               Up 41 hours            127.0.0.1:8790->8790/tcp           summon-relay\nf1238d08b9ed   opengym-web-migration:20261109   Up 2 weeks (healthy)   127.0.0.1:9133->80/tcp             opengym-web-1\n32da86fdb5ac   opengym-api-migration:20261109   Up 2 weeks (healthy)   3000/tcp                           opengym-api-1\n80cae97c8ceb   teslamate/teslamate:latest       Up 4 weeks             127.0.0.1:4000->4000/tcp           teslamate-teslamate-1\na939b776bdae   postgres:17                      Up 4 weeks             5432/tcp                           teslamate-database-1\ncf8bef0e61f1   eclipse-mosquitto:2              Up 4 weeks             127.0.0.1:1883->1883/tcp           teslamate-mosquitto-1"
+      }
+    ],
+    "mock_exec_responses": [
+      {
+        "match": "teslamate-webhook|journalctl|systemctl",
+        "stdout": "● teslamate-webhook.service - TeslaMate drive-end webhook listener\n   Active: active (running) since 2 weeks ago\nNov 26 10:12:04 ops-prod-01 webhook[1421]: GET /health 200 OK (no errors in last 50 lines)\n"
+      },
+      {
+        "match": "docker ps|docker inspect|docker logs|teslamate",
+        "stdout": "NAMES                   STATUS       PORTS\nteslamate-teslamate-1   Up 4 weeks   127.0.0.1:4000->4000/tcp\nteslamate-database-1    Up 4 weeks   5432/tcp\nteslamate-mosquitto-1   Up 4 weeks   127.0.0.1:1883->1883/tcp\n[teslamate] state=asleep last_update=2026-11-26T01:45:00Z auth_errors=0\n"
+      },
+      {
+        "match": ".*",
+        "stdout": "ops-prod-01\nroot\n"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "S01",
+      "name": "主案例：2026-11-26 运维群分化 TeslaMate 新群 + 专员双群共挂 + 新群零失忆 + 原群跨群呼应",
+      "kind": "full_differentiation",
+      "stages": [
+        {
+          "id": "stage1_differentiate",
+          "room": "room-ops-main",
+          "user_text": "我希望有个群来负责对接这个teslamate，首先他能够在我每次开车之后，自动将我这一次开车的总结在群里发给我，要及时不能说我一个小时再去拉一次。但是也不能随时去唤醒车不然太费电了。然后要有一个监控维护的人在群里，保证在他掉线的时候通知我再恢复登录。然后还能根据每次的地点，常见的始发终到地点分析一下我的行为，比如电量低，这周末可能又要跑小长途等，在周四周五我时长充电的时候提醒我"
+        },
+        {
+          "id": "stage2_new_room_followup",
+          "room": "$new_room",
+          "user_text": "通知渠道就本群里发消息就好了。你现在先基于已有的服务器和 TeslaMate 情况，只读检查一下当前采集和 webhook 是否健康，告诉我结果和后续监控方案。"
+        },
+        {
+          "id": "stage3_origin_room_cross_call",
+          "room": "room-ops-main",
+          "user_text": "TeslaMate 守护这边现在有掉线吗？顺便把你在 TeslaMate 那边群刚确认的告警通知渠道和当前状态在这里同步一下。"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "name": "跨群回忆专项压测：清空 .local/memory 后，双群专员在 B 群被问及 A 群盘点时主动跨群检索",
+      "kind": "cross_room_recall",
+      "preseed_specialist": {
+        "id": "bot-specialist-teslamate",
+        "name": "TeslaMate 守护员",
+        "public_duty": "监控 TeslaMate 连接和数据采集健康，掉线时告警并协助恢复登录",
+        "instructions": "负责 TeslaMate 健康监控、故障定位和登录恢复协助。区分车辆休眠与真实认证失效，不主动唤醒车辆。涉及凭据使用秘密输入，线上变更先确认。",
+        "clear_memory": true
+      },
+      "preseed_second_room": {
+        "id": "room-teslamate-guard",
+        "name": "TeslaMate 行程与车辆守护",
+        "lead_name": "行程管家",
+        "lead_duty": "统筹 TeslaMate 行程总结、常去地点分析与充电提醒"
+      },
+      "stages": [
+        {
+          "id": "stage1_recall_query",
+          "room": "room-teslamate-guard",
+          "mention_bot_ids": ["bot-specialist-teslamate"],
+          "user_text": "@TeslaMate 守护员 你同时在运维群里，那边之前已经盘点过服务器了。直接帮我查一下那台阿里云主机上和 TeslaMate 相关的容器、服务以及主机地址，不要再问我部署在哪。"
+        }
+      ]
+    },
+    {
+      "id": "S03-A",
+      "name": "反事实：单次运维日志排查，不应过度分化新群或新建专员",
+      "kind": "no_over_differentiation",
+      "stages": [
+        {
+          "id": "stage1_single_check",
+          "room": "room-ops-main",
+          "user_text": "帮我只读看下 teslamate-webhook.service 最近 50 行日志有没有报错，先查这一次就行。"
+        }
+      ]
+    },
+    {
+      "id": "S03-B",
+      "name": "反事实：目录中已存在群外 TeslaMate 专员，分化时应复用同一实例并双群共挂",
+      "kind": "reuse_existing_specialist",
+      "preseed_offroom_specialist": {
+        "id": "bot-existing-teslamate",
+        "name": "TeslaMate 守护员",
+        "public_duty": "监控 TeslaMate 连接和数据采集健康，掉线时告警并协助恢复登录",
+        "instructions": "负责 TeslaMate 健康监控、故障定位和登录恢复协助，避免唤醒车辆。"
+      },
+      "stages": [
+        {
+          "id": "stage1_reuse_differentiate",
+          "room": "room-ops-main",
+          "user_text": "我希望有个群来负责对接这个teslamate，首先他能够在我每次开车之后，自动将我这一次开车的总结在群里发给我，要及时不能说我一个小时再去拉一次。但是也不能随时去唤醒车不然太费电了。然后要有一个监控维护的人在群里，保证在他掉线的时候通知我再恢复登录。然后还能根据每次的地点，常见的始发终到地点分析一下我的行为，比如电量低，这周末可能又要跑小长途等，在周四周五我时长充电的时候提醒我"
+        }
+      ]
+    }
+  ]
+}

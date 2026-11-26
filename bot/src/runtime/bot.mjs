@@ -1172,6 +1172,40 @@ export class BotRuntime {
     if (roomRecord?.workspace) {
       facts.push(textMessage({ type: 'project_workspace', room: conversation.space, workspace: roomRecord.workspace }));
     }
+    if (roomRecord?.origin_room?.id) {
+      const originRoomRecord = this.platform.store.get('rooms', roomRecord.origin_room.id);
+      facts.push(textMessage({
+        type: 'room_origin',
+        room: conversation.space,
+        origin_room: {
+          kind: 'room',
+          id: roomRecord.origin_room.id,
+          ...(originRoomRecord?.name ? { name: originRoomRecord.name } : {}),
+          readable: this.platform.canReadSpace(context.actor, roomRecord.origin_room, context),
+        },
+      }));
+    }
+    if (!conversation.session_id && conversation.kind === 'room' && conversation.space?.kind === 'room') {
+      const otherRooms = this.platform.room.rooms(context.actor.id)
+        .filter(item => item.id !== conversation.space.id && !item.archived_at)
+        .sort((left, right) =>
+          (Date.parse(right.lastMessage?.createdAt || right.updatedAt || right.createdAt || 0) || 0) -
+          (Date.parse(left.lastMessage?.createdAt || left.updatedAt || left.createdAt || 0) || 0))
+        .slice(0, 20)
+        .map(item => ({
+          id: item.id,
+          name: item.name,
+          mode: item.mode,
+          role: item.lead_bot_id === context.actor.id ? 'lead' : 'member',
+          updated_at: item.lastMessage?.createdAt || item.updatedAt || item.createdAt,
+        }));
+      if (otherRooms.length) {
+        facts.push(textMessage({
+          type: 'other_joined_rooms',
+          rooms: otherRooms,
+        }));
+      }
+    }
     if (Array.isArray(roomRecord?.pins) && roomRecord.pins.length) {
       const readablePins = roomRecord.pins
         .filter(ref => job.canReadReference(ref))

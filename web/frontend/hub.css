@@ -172,6 +172,7 @@ html.dark .contact-node-tag {
   padding: 20px;
   background: rgba(248, 246, 241, 0.92);
   backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 html.dark .hub-auth-overlay {
   background: rgba(11, 12, 16, 0.9);
