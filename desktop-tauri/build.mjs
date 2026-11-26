@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,7 +187,20 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
     }
     const osSlug = platform === 'macos' ? 'mac' : 'win';
     const mainFile = `Summon-Bot-${release.version}-${release.buildNumber}-${osSlug}-${baseArch}-tauri${ext}`;
-    await copyFile(produced, join(output, mainFile));
+    const destination = join(output, mainFile);
+    if (platform === 'macos') {
+      await rm(destination, { force: true });
+      await runCommand('hdiutil', [
+        'convert', produced,
+        '-format', 'ULMO',
+        '-ov',
+        '-o', destination,
+      ], { cwd: tauriDir });
+      const { size } = await stat(destination);
+      console.log(`Compressed macOS DMG (ULMO/LZMA): ${mainFile} (${(size / 1024 / 1024).toFixed(2)} MiB, ${size} bytes)`);
+    } else {
+      await copyFile(produced, destination);
+    }
 
     return {
       release,
