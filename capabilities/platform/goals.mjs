@@ -478,7 +478,7 @@ export class GoalManager {
             done_criteria: goal.done_criteria || '',
             current_step: currentStep,
             steps,
-            guidance: '该群目标在连续自动续推后仍无实际工具进展，已触发防空转熔断。严禁继续自造离线测试或拖延：请立刻向宿主简洁汇报当前真实卡点、可行替代方案，并通过 send.prompt 请宿主拍板（或调用 update_goal 标记 awaiting_user / completed / stopped）。',
+            guidance: '该群目标在连续自动续推后仍无实际工具进展，已触发防空转熔断。请立刻向宿主坦诚复盘当前真实卡点、说明是否值得继续及可选思路，与宿主重新对齐方向（并调用 update_goal 标记 awaiting_user / completed / stopped）。',
           });
           this.platform.deliveries.enqueue(
             leadBot.id,
@@ -518,7 +518,7 @@ export class GoalManager {
         steps,
         attempt: nextCount,
         max_attempts: maxAttempts,
-        guidance: `当前群目标「${goal.title}」仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请立刻采取真实行动推进闭环：1) 若本步可在授权内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若当前路径在架构上走不通（如缺少入口/权限），不要原地绕圈或写离线模拟原型，立即思考可行替代路线（如复用已有隧道/Tailscale/反向拉取等）；3) 若已查明事实且必须由宿主选方案或授权生产改动，立刻用 send.prompt 请宿主拍板并将目标标记为 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向宿主简明交付。绝不能只口头回复“下一步会做”而不发起真实动作。`,
+        guidance: `当前群目标「${goal.title}」仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请围绕已对齐的交付计划推进：1) 若本步可在授权内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若执行中发现原方案存在根本硬伤、前提失效或投入产出比严重失衡，不要硬凑绕路或原地空转，直接向宿主坦诚复盘并重新商量方向（必要时标记 stopped 回归自由讨论）；3) 若确实需要宿主做具体方案取舍或高风险变更确认，先用人话讲清利弊再用 send.prompt 请宿主拍板并标记 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向宿主交付。绝不能只口头回复“下一步会做”而不发起真实动作。`,
       });
       this.platform.deliveries.enqueue(
         targetBot.id,

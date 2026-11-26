@@ -148,6 +148,10 @@ html.dark .user-avatar.is-initial { background: rgba(140, 166, 138, 0.24); color
 .apps-menu-divider { height: 1px; background: var(--line); margin: 4px 6px; }
 .settings-profile-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
 .settings-profile-form input[type="text"] { flex: 1 1 140px; min-width: 120px; padding: 7px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--canvas); color: var(--ink); font: inherit; font-size: 13px; }
+.settings-host-profile-form { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.settings-host-profile-form textarea { width: 100%; min-height: 136px; resize: vertical; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--canvas); color: var(--ink); font: inherit; font-size: 13px; line-height: 1.55; }
+.settings-host-profile-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.settings-host-profile-meta { font-size: 12px; color: var(--muted); }
 .settings-upload-btn { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .context-menu { border-color: var(--line); background: #fff; color: var(--ink); box-shadow: 0 8px 35px #252b4012; border-radius: 13px; font-size:var(--text-meta); }
 .context-menu > button { font-size:var(--text-meta); min-height: 38px; padding: 8px 10px; border-radius: 8px; }

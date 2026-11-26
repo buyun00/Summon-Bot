@@ -1,6 +1,6 @@
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
-import { listBotFolderFiles, listBotMemoryItems, readBotFolderFile, writeBotFolderFile } from '../bot-management/folders.mjs';
+import { listBotFolderFiles, listBotMemoryItems, readBotFolderFile, readHostProfile, writeBotFolderFile, writeHostProfile } from '../bot-management/folders.mjs';
 import { roleCatalog } from '../bot-management/roles.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
 
@@ -394,6 +394,14 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       if (action === 'login' && method === 'POST') return models.startLogin(id);
       if (action === 'login' && method === 'DELETE') { models.cancelLogin(id); return models.loginStatus(id); }
       if (action === 'test' && method === 'POST') return models.testConnection(id);
+    }
+    if (path === '/api/host-profile') {
+      if (method === 'GET') return readHostProfile(platform.dataRoot);
+      if (method === 'PUT' || method === 'POST') {
+        const saved = writeHostProfile(platform.dataRoot, String(args.content ?? ''));
+        emit('host_profile');
+        return saved;
+      }
     }
     if (path === '/api/secrets/env' && method === 'GET') return secrets.listEnvKeys();
     if ((match = path.match(/^\/api\/secrets\/env\/([^/]+)$/)) && method === 'DELETE') {

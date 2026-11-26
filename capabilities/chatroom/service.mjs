@@ -1069,7 +1069,7 @@ export class ChatroomService {
 export function messageEvent(message) {
   const author = message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : identity(message.senderId);
   return { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: message.space,
-    author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
+    author, ...(message.senderName ? { sender_name: message.senderName } : {}), time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
     mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId,
     ...(message.forSessionId ? { for_session_id: message.forSessionId } : {}),
     ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),

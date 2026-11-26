@@ -180,6 +180,27 @@ function renderSettingsPanelBody(tab) {
         </div>
       </div>
     </div>
+    <div class="settings-section">
+      <div class="settings-group-head">
+        <h3 class="settings-group-label">宿主画像</h3>
+        <span class="settings-group-badge">全平台 Bot 共享</span>
+      </div>
+      <div class="settings-card">
+        <div class="settings-row settings-row-stack">
+          <div class="settings-row-copy">
+            <strong>让 Bot 更懂你的边界与偏好</strong>
+            <small>记录你擅长什么、不想折腾什么、喜欢什么沟通方式。Bot 也会在日常聊天中逐步完善，你随时可以直接编辑或清空。</small>
+          </div>
+          <form class="settings-host-profile-form" id="host-profile-form">
+            <textarea name="content" rows="6" maxlength="8192" placeholder="例如：&#10;## 擅长与习惯自己拍板的领域&#10;- 产品逻辑、交互体验、AI 协作架构&#10;&#10;## 不熟或不想折腾的领域&#10;- SSH 隧道、Tailscale、复杂 Linux 运维配置（用大白话讲清后果，低风险处直接替我拿主意）&#10;&#10;## 沟通偏好与雷区&#10;- 讨厌没讲清方案就弹二元授权卡；看重精简治本，有不同意见直接劝退" ${ui.hostProfileSaving ? 'disabled' : ''}>${esc(state.hostProfile?.content || '')}</textarea>
+            <div class="settings-host-profile-foot">
+              <span class="settings-host-profile-meta">${state.hostProfile?.loaded ? (state.hostProfile.updated_at ? `最近更新：${esc(formatTime(state.hostProfile.updated_at))}` : '尚未填写') : '正在读取…'}</span>
+              <button type="submit" class="primary-button small-button" ${!ui.protocolReady || ui.hostProfileSaving ? 'disabled' : ''}>${ui.hostProfileSaving ? '保存中…' : '保存画像'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
     <div class="settings-section display-settings">
       <div class="settings-group-head">
         <h3 class="settings-group-label">外观与显示</h3>
@@ -406,7 +427,13 @@ function refreshOpenSettingsBody() {
 }
 async function loadSettingsTabData(tab) {
   if (!ui.protocolReady) return;
-  if (tab === 'models') {
+  if (tab === 'general') {
+    try {
+      const data = await api('/api/host-profile');
+      state.hostProfile = { content: String(data?.content || ''), updated_at: data?.updated_at || null, loaded: true };
+      refreshOpenSettingsBody();
+    } catch {}
+  } else if (tab === 'models') {
     await globalThis.SummonModels.load(api, render, toast, refresh);
     refreshOpenSettingsBody();
   } else if (tab === 'wakeups') {
@@ -440,7 +467,7 @@ function openSettingsModal(tab = 'general', releasesUrl = ui.releasesUrl) {
   if (ui.settingsTab === 'general') { syncDisplaySettingsControls(); applyTheme(); }
   if (ui.settingsTab === 'updates') window.SummonClients?.mount?.(releasesUrl || ui.releasesUrl);
   if (!modal.open) showModal(modal);
-  if (['models', 'wakeups', 'connection'].includes(ui.settingsTab)) {
+  if (['general', 'models', 'wakeups', 'connection'].includes(ui.settingsTab)) {
     void loadSettingsTabData(ui.settingsTab);
   }
 }
@@ -525,13 +552,13 @@ const NEW_GROUP_SUGGESTIONS = [
     prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
   },
 ];
-const state = { bots: [], archivedBots: [], engines: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [] };
+const state = { bots: [], archivedBots: [], engines: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [], hostProfile: { content: '', updated_at: null, loaded: false } };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
+  view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, hostProfileSaving:false, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomActivities:[], roomGoal:null, roomDrawerMode:'plan', optimisticRoomWork:{}, roomWorkEpoch:{}, roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -3109,6 +3136,26 @@ document.addEventListener('submit', event => {
     toast(name ? '本地昵称已保存' : '已恢复默认名称');
     return;
   }
+  if (form.id === 'host-profile-form') {
+    event.preventDefault();
+    if (ui.hostProfileSaving || !ui.protocolReady) return;
+    const content = String(form.elements.content?.value || '').slice(0, 8192);
+    ui.hostProfileSaving = true;
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    void api('/api/host-profile', 'PUT', { content })
+      .then(saved => {
+        state.hostProfile = { content: String(saved?.content || ''), updated_at: saved?.updated_at || null, loaded: true };
+        toast(state.hostProfile.content ? '宿主画像已保存' : '宿主画像已清空');
+      })
+      .catch(error => toast(error.message || '保存失败', true))
+      .finally(() => {
+        ui.hostProfileSaving = false;
+        if (document.activeElement && form.contains(document.activeElement)) document.activeElement.blur();
+        refreshOpenSettingsBody();
+      });
+    return;
+  }
   if (form.id !== 'message-form' && !form.matches('.execution-input-form')) return;
   event.preventDefault();
   const action = form.id === 'message-form' ? submitRoomMessage(form) : submitExecutionInput(form);
@@ -3745,11 +3792,13 @@ function renderMessagePrompt(message, timeline) {
   if (!prompt?.questions?.length) return '';
   const kind = prompt.kind || 'question';
   const kindLabel = kind === 'secret' ? '隐私输入' : kind === 'permission' ? '权限确认' : kind === 'confirm' ? '操作确认' : '待你选择';
+  const descHtml = prompt.description ? `<p class="prompt-description">${esc(prompt.description)}</p>` : '';
   const answered = findPromptAnswer(message, timeline);
   if (answered) {
     if (answered.skipped) {
       return `<div class="prompt-card is-${esc(kind)} is-answered is-skipped" data-prompt-msg="${esc(message.id)}">
         <div class="prompt-card-head"><span class="prompt-kind-badge is-skipped">${kind === 'secret' ? '已取消' : '已跳过'}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+        ${descHtml}
         <div class="prompt-answer-row"><span class="prompt-answer-q">${kind === 'secret' ? '已取消本次隐私输入' : '已跳过本次选择，由 Bot 自行处理'}</span></div>
       </div>`;
     }
@@ -3764,6 +3813,7 @@ function renderMessagePrompt(message, timeline) {
     }).join('');
     return `<div class="prompt-card is-${esc(kind)} is-answered" data-prompt-msg="${esc(message.id)}">
       <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon('check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+      ${descHtml}
       <div class="prompt-answer-list">${rows}</div>
     </div>`;
   }
@@ -3775,6 +3825,7 @@ function renderMessagePrompt(message, timeline) {
         <span class="prompt-kind-badge">${icon('shield', 13)} 隐私输入</span>
         ${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}
       </div>
+      ${descHtml}
       <div class="prompt-card-foot">
         <button type="button" class="secondary-button prompt-skip-btn" data-action="prompt-skip" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>取消</button>
         <button type="button" class="primary-button prompt-submit-btn prompt-secret-open-btn" data-action="prompt-secret-open" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy ? 'disabled' : ''}>${busy ? '提交中…' : esc(openLabel)}</button>
@@ -3822,6 +3873,7 @@ function renderMessagePrompt(message, timeline) {
   }).join('');
   return `<div class="prompt-card is-${esc(kind)}" data-prompt-msg="${esc(message.id)}">
     <div class="prompt-card-head"><span class="prompt-kind-badge">${esc(kindLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+    ${descHtml}
     <div class="prompt-questions">${questionsHtml}</div>
     <div class="prompt-card-foot">
       <span class="prompt-enter-hint">Enter 提交</span>

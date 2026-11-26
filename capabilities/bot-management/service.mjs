@@ -135,7 +135,7 @@ export class BotManager {
     });
   }
 
-  applyAutoName(id, { name, publicDuty: duty } = {}, { syncFiles = true } = {}) {
+  applyAutoName(id, { name, publicDuty: duty, instructions: persona } = {}, { syncFiles = true } = {}) {
     const before = this.store.get(botRecords, id);
     if (!before || before.archivedAt || !before.auto_name_pending) return null;
     const cleanedName = typeof name === 'string' ? name.trim().slice(0, 100) : '';
@@ -146,6 +146,9 @@ export class BotManager {
     };
     if (typeof duty === 'string' && duty.trim()) {
       changes.public_duty = publicDuty(duty.trim().slice(0, 600));
+    }
+    if (typeof persona === 'string' && persona.trim() && !readBotInstructions(this.dataRoot, before).trim()) {
+      changes.instructions = instructionsOf(persona.trim().slice(0, 1200));
     }
     const updated = this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 });
     if (syncFiles) syncBotMetaFiles(this.dataRoot, updated);

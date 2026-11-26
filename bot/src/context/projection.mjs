@@ -57,8 +57,24 @@ export function isRoomMessageEvent(event, roomId) {
     (!roomId || (event.space?.id ?? event.roomId) === roomId);
 }
 
+const chatTimeFormatter = new Intl.DateTimeFormat('sv-SE', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+function formatChatTime(value) {
+  const ms = typeof value === 'number' ? value : Date.parse(value || '');
+  if (!Number.isFinite(ms)) return '';
+  try { return chatTimeFormatter.format(new Date(ms)); } catch { return ''; }
+}
+
 export function normalizeRoomMessage(event) {
   const roomId = event.space?.id ?? event.roomId;
+  const senderName = event.sender_name ?? event.senderName ?? null;
   return {
     id: event.id,
     kind: 'event',
@@ -67,6 +83,7 @@ export function normalizeRoomMessage(event) {
     sequence: event.sequence,
     time: event.time ?? event.createdAt,
     author: event.author,
+    ...(senderName ? { sender_name: senderName } : {}),
     text: event.text ?? event.content ?? '',
     attachments: event.attachments ?? [],
     references: event.references ?? [],
@@ -75,6 +92,70 @@ export function normalizeRoomMessage(event) {
     ...(event.prompt ? { prompt: event.prompt } : {}),
     ...(event.prompt_response || event.promptResponse ? { prompt_response: event.prompt_response ?? event.promptResponse } : {}),
     ...(event.prompt_answer || event.promptAnswer ? { prompt_answer: event.prompt_answer ?? event.promptAnswer } : {}),
+  };
+}
+
+export function formatRoomMessage(event) {
+  const msg = normalizeRoomMessage(event);
+  const timeStr = formatChatTime(msg.time);
+  const speaker = msg.author?.kind === 'user'
+    ? '宿主'
+    : msg.author?.kind === 'platform'
+      ? '系统'
+      : msg.sender_name
+        ? `${msg.sender_name} (${msg.author?.id || 'bot'})`
+        : (msg.author?.id || '成员');
+  const header = `${timeStr ? `[${timeStr}] ` : ''}${speaker} [msg:${msg.id}]`;
+  const meta = [];
+  if (msg.reply_to) {
+    const replyId = typeof msg.reply_to === 'string' ? msg.reply_to : msg.reply_to?.id;
+    if (replyId) meta.push(`回复: msg:${replyId}`);
+  }
+  if (msg.mentions?.length) {
+    const targets = msg.mentions.map(item => (typeof item === 'string' ? item : item?.id)).filter(Boolean);
+    if (targets.length) meta.push(`提及: ${targets.join(', ')}`);
+  }
+  if (msg.attachments?.length) {
+    const files = msg.attachments.map(file => (typeof file === 'string' ? `file:${file}` : `${file.name || file.id} (file:${file.id})`));
+    meta.push(`附件: ${files.join(', ')}`);
+  }
+  if (msg.references?.length) {
+    const refs = msg.references.map(item => (item?.kind === 'workspace_file'
+      ? `${item.workspace_id}:${item.path}`
+      : `${item?.kind || 'ref'}:${item?.id || ''}`));
+    meta.push(`引用: ${refs.join(', ')}`);
+  }
+  if (msg.prompt) {
+    const pKind = msg.prompt.kind || 'question';
+    const pHead = [msg.prompt.title, msg.prompt.description].filter(Boolean).join(' — ');
+    const qParts = (msg.prompt.questions || []).map(q => {
+      const opts = (q.options || []).map(o => o.label).filter(Boolean);
+      return opts.length ? `${q.label} [${opts.join(' / ')}]` : q.label;
+    }).filter(Boolean);
+    meta.push(`交互卡片(${pKind}): ${[pHead, ...qParts].filter(Boolean).join(' | ')}`);
+  }
+  if (msg.prompt_response) {
+    const pr = msg.prompt_response;
+    const summary = pr.skipped
+      ? '已跳过'
+      : (pr.answers || []).map(ans => {
+          const vals = [...(ans.selected_labels || []), ...(ans.custom_text ? [ans.custom_text] : [])];
+          return `${ans.label || ans.question_id}=${vals.join(' / ') || (ans.redacted ? '[隐私已安全提交]' : '—')}`;
+        }).join('; ');
+    meta.push(`卡片作答(针对 msg:${pr.prompt_message_id}): ${summary}`);
+  }
+  const lines = [header];
+  if (meta.length) lines.push(`(${meta.join(' | ')})`);
+  if (msg.text) lines.push(msg.text);
+  return lines.join('\n');
+}
+
+export function roomChatMessage(event) {
+  const ts = Date.parse(event.time ?? event.createdAt ?? '') || Date.now();
+  return {
+    role: 'user',
+    timestamp: ts,
+    content: [{ type: 'text', text: formatRoomMessage(event) }],
   };
 }
 

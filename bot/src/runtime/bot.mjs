@@ -57,6 +57,7 @@ const roomEvent = message => ({
   sequence: message.sequence, time: message.createdAt,
   author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
+  ...(message.senderName ? { sender_name: message.senderName } : {}),
   text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo,
   ...(message.forSessionId ? { for_session_id: message.forSessionId } : {}),
   ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),
@@ -1352,6 +1353,11 @@ export class BotRuntime {
       const result = event.result ?? observation.result;
       const content = JSON.stringify(result ?? null);
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
+        ...(session ? {
+          ...(session.work_summary ? { work_summary: session.work_summary } : {}),
+          can_steer: Boolean(session.can_steer),
+          can_continue: Boolean(session.can_continue),
+        } : {}),
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
         result: content.length <= 256_000 ? result : { preview: content.slice(0, 256_000), characters: content.length, truncated: true } }));
@@ -1387,6 +1393,9 @@ export class BotRuntime {
         const descendants = this.platform.executions.descendantSessions(work.id);
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status,
+          ...(work.live_progress ? { live_progress: work.live_progress } : {}),
+          can_steer: Boolean(work.can_steer),
+          can_continue: Boolean(work.can_continue),
           control: work.control, latest_call_id: work.latest_call_id,
           ...(descendants.length ? { descendants: descendants.map(child => ({
             session_id: child.id, engine: child.engine, parent_session_id: child.origin_execution?.id ?? null,

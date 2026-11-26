@@ -10,9 +10,38 @@ export function protectedRuntimeDirs(dataRoot, releaseRoot) {
   const root = resolve(dataRoot);
   const rel = resolve(releaseRoot);
   const installRoot = basename(dirname(rel)) === 'releases' ? dirname(dirname(rel)) : rel;
-  const dataProtected = ['config', 'capabilities', 'bots', 'engines', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json']
+  const dataProtected = ['config', 'capabilities', 'bots', 'engines', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json', 'host-profile.md']
     .map(name => join(root, name));
   return [...dataProtected, installRoot];
+}
+
+export function hostProfilePath(dataRoot) {
+  return join(resolve(dataRoot), 'host-profile.md');
+}
+
+export function readHostProfile(dataRoot) {
+  const file = hostProfilePath(dataRoot);
+  try {
+    if (!existsSync(file)) return { content: '', updated_at: null, size: 0 };
+    const info = statSync(file);
+    if (!info.isFile()) return { content: '', updated_at: null, size: 0 };
+    const content = readFileSync(file, 'utf8');
+    return { content, updated_at: info.mtime.toISOString(), size: Buffer.byteLength(content, 'utf8') };
+  } catch {
+    return { content: '', updated_at: null, size: 0 };
+  }
+}
+
+export function writeHostProfile(dataRoot, content) {
+  if (typeof content !== 'string' || content.length > 8192 || content.includes('\0')) {
+    reject('invalid_content', 'Host profile must be UTF-8 text of at most 8192 characters');
+  }
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  const file = hostProfilePath(dataRoot);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, normalized ? `${normalized}\n` : '', 'utf8');
+  const info = statSync(file);
+  return { content: normalized, updated_at: info.mtime.toISOString(), size: Buffer.byteLength(normalized, 'utf8') };
 }
 
 export function botRootDir(dataRoot, botId) {

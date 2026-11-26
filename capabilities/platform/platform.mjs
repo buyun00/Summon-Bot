@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
 import { botMaintenanceLeadId, botMaintenanceRoomId, eggbotRole, groupLeadRole, roleIds } from '../bot-management/roles.mjs';
-import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, validateBotRelPath, writeBotFolderFile } from '../bot-management/folders.mjs';
+import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, readHostProfile, validateBotRelPath, writeBotFolderFile, writeHostProfile } from '../bot-management/folders.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { EngineManager } from '../engines/service.mjs';
 import { Files } from '../filesystem/files.mjs';
@@ -368,7 +368,7 @@ export class SummonPlatform {
     return actor?.kind === 'user' || (actor?.kind === 'bot' && actor.id === botMaintenanceLeadId);
   }
 
-  applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty } = {}) {
+  applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty, leadPersona } = {}) {
     let updatedRoom = null;
     let updatedBot = null;
     this.store.transaction(() => {
@@ -396,10 +396,12 @@ export class SummonPlatform {
         : (finalRoomName && finalRoomName !== '新群聊'
           ? `负责「${finalRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`
           : '');
+      const cleanLeadPersona = typeof leadPersona === 'string' ? leadPersona.trim().slice(0, 600) : '';
       if (effectiveLeadId && cleanLeadName) {
         updatedBot = this.manager.applyAutoName(effectiveLeadId, {
           name: cleanLeadName,
           publicDuty: cleanLeadDuty,
+          ...(cleanLeadPersona ? { instructions: cleanLeadPersona } : {}),
         }, { syncFiles: false });
       }
     });
@@ -1155,6 +1157,20 @@ export class SummonPlatform {
         this.emit('bot', result);
         return { result, call_id: record.id };
       }
+      if (name === 'save_file' && args.space.kind === 'user' && args.space.id === 'user' && String(args.path || '').trim() === 'host-profile.md') {
+        if (context.session) {
+          reject('configuration_forbidden', 'Work Sessions cannot directly modify host-profile.md; return insights to the Room conversation', 403);
+        }
+        const content = typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
+        if (typeof content !== 'string') reject('invalid_content', 'Provide text content when updating host-profile.md');
+        const written = writeHostProfile(this.dataRoot, content);
+        this.emit('host_profile');
+        const result = this.store.transaction(() => {
+          this.calls.bind(record.id, { target: args.space });
+          return this.calls.finish(record.id, 'completed', { kind: 'host_profile', path: 'host-profile.md', ...written });
+        });
+        return result;
+      }
       if (name === 'save_file' && args.space.kind === 'engine') {
         if (!this.canConfigureEngine(context.actor)) {
           reject('configuration_forbidden', 'Only the host or the Summon maintenance lead can modify work engine files', 403);
@@ -1534,6 +1550,9 @@ export class SummonPlatform {
         reject('wait_not_found', 'Wait is unavailable', 404);
       }
       return { ...wait, kind: 'wait' };
+    }
+    if (ref.kind === 'user' && ref.id === 'user' && String(args.path || '').trim() === 'host-profile.md') {
+      return { ref, kind: 'host_profile', path: 'host-profile.md', ...readHostProfile(this.dataRoot) };
     }
     if (!this.canReadReference(ref, context)) reject('object_not_found', 'Object is unavailable', 404);
     switch (ref.kind) {

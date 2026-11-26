@@ -2099,6 +2099,13 @@ html.dark .prompt-card.is-answered {
   font-weight: 600;
   color: var(--ink);
 }
+.prompt-description {
+  margin: 0;
+  font-size: var(--text-meta);
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-line;
+}
 .prompt-questions {
   display: grid;
   gap: 12px;
