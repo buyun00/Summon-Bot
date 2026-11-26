@@ -1001,7 +1001,7 @@ private struct MessageContentView: View, Equatable {
     let text: String
     let isOwn: Bool
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.isOwn == rhs.isOwn
     }
 

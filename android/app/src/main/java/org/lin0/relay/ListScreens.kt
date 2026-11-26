@@ -447,12 +447,12 @@ fun ConversationListScreen(
                             val allSelected = store.filterNodeID == null
                             Surface(
                                 shape = CircleShape,
-                                color = if (allSelected) palette.textPrimary else palette.surface,
+                                color = if (allSelected) MaterialTheme.colorScheme.onSurface else palette.surface,
                                 modifier = Modifier.clickable { store.filterNodeID = null },
                             ) {
                                 Text(
                                     "全部 ${store.onlineNodes.size}",
-                                    color = if (allSelected) palette.background else palette.textPrimary,
+                                    color = if (allSelected) palette.background else MaterialTheme.colorScheme.onSurface,
                                     style = MaterialTheme.typography.labelMedium,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 )
@@ -461,12 +461,12 @@ fun ConversationListScreen(
                                 val selected = store.filterNodeID == node.id
                                 Surface(
                                     shape = CircleShape,
-                                    color = if (selected) palette.textPrimary else palette.surface,
+                                    color = if (selected) MaterialTheme.colorScheme.onSurface else palette.surface,
                                     modifier = Modifier.clickable { store.filterNodeID = node.id },
                                 ) {
                                     Text(
                                         "● ${node.name}",
-                                        color = if (selected) palette.background else palette.textPrimary,
+                                        color = if (selected) palette.background else MaterialTheme.colorScheme.onSurface,
                                         style = MaterialTheme.typography.labelMedium,
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     )
@@ -1479,7 +1479,7 @@ private fun SettingsSheet(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text(node.name, color = if (node.online) palette.textPrimary else palette.textSecondary)
+                                    Text(node.name, color = if (node.online) MaterialTheme.colorScheme.onSurface else palette.textSecondary)
                                     Text(if (node.online) "在线" else "离线", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
                                 }
                                 if (node.id == store.activeNodeID) {
