@@ -124,7 +124,7 @@ export class GoalManager {
     if (args.clear === true) {
       const existing = this.get(roomId);
       if (existing) {
-        this.platform.store.delete(goalRecords, roomId);
+        this.platform.store.remove(goalRecords, roomId);
         this.platform.emit('room', { id: roomId });
         this.platform.emit('execution', { room_id: roomId });
       }
@@ -227,7 +227,7 @@ export class GoalManager {
     const goal = this.get(roomId);
     if (!goal) return;
     if (goal.status === 'completed' || goal.status === 'stopped') {
-      this.platform.store.delete(goalRecords, roomId);
+      this.platform.store.remove(goalRecords, roomId);
       this.platform.emit('room', { id: roomId });
       this.platform.emit('execution', { room_id: roomId });
       return;
@@ -343,7 +343,7 @@ export class GoalManager {
 
   remove(roomId) {
     if (this.get(roomId)) {
-      this.platform.store.delete(goalRecords, roomId);
+      this.platform.store.remove(goalRecords, roomId);
       this.platform.emit('room', { id: roomId });
       this.platform.emit('execution', { room_id: roomId });
     }

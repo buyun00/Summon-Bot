@@ -709,7 +709,7 @@ export class SummonPlatform {
         const previous = this.store.get('platform-workspaces', input.id);
         if (!previous) reject('workspace_not_found', 'Workspace not found', 404);
         if (input.revision !== undefined) assertRevision(previous.revision, input.revision);
-        this.store.delete('platform-workspaces', input.id);
+        this.store.remove('platform-workspaces', input.id);
         this.emit('workspace', { id: input.id, removed: true });
         return { id: input.id, kind: 'workspace', removed: true };
       });
