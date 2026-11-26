@@ -42,7 +42,7 @@ iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，
 
 - 运行需要 Node.js 24+，Windows 构建所用运行时须避开受 libuv TCP keepalive 缺陷影响的旧版本（详见 [运行维护 · 发行与升级](OPERATIONS.zh-CN.md#2-发行与升级)）。依赖由 `package-lock.json` 锁定，需要安装时在源码根目录运行 `npm ci`。
 - 模型连接与用途路由表保存在数据根 `config/model-connections.json`，API Key 与独立订阅授权保存在 `config/model-credentials.json`，既有 `config/runtime.env` 凭据按显式变量名引用。本机 Codex / Grok 导入直接引用其登录文件，绝不将密钥写入聊天或代码。客户端签名与发布凭据沿用既有私有配置及当前应用 ID。
-- 首次启动后可在网页设置中配置模型连接、用途路由表与执行连接，并创建群聊与 Bot。网页与 Electron 桌面端共用正式页面；iOS 与 Android 为原生客户端，统一使用协议 3。
+- 首次启动后可在网页设置中配置模型连接、用途路由表与执行连接，并创建群聊与 Bot。网页与 Tauri 桌面端共用正式页面；iOS 与 Android 为原生客户端，统一使用协议 3。
 
 ## 3. 按任务选择操作入口
 
@@ -70,14 +70,14 @@ iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，
 npm run release:web
 ```
 
-安装与现行协议兼容的工作区构建，由安装器自动完成有序排空、切换与启动。制作阶段的界面或逻辑改动在唯一正式网页生效，Electron 桌面端刷新后同步呈现。
+安装与现行协议兼容的工作区构建，由安装器自动完成有序排空、切换与启动。制作阶段的界面或逻辑改动在唯一正式网页生效，Tauri 桌面端刷新后同步呈现。
 
 ### 定稿后的完整发布
 
-先按 [开发方式](DEVELOPMENT.zh-CN.md) 同步原生移动端与必要的桌面代码，按 [客户端发行与更新](CLIENT_RELEASES.zh-CN.md#2-版本递增与-windows-本地发布) 运行 `npm run release:version` 递增版本与构建号，提交并推送本次负责的文件。首次准备桌面依赖时运行：
+先按 [开发方式](DEVELOPMENT.zh-CN.md) 同步原生移动端与必要的桌面代码，按 [客户端发行与更新](CLIENT_RELEASES.zh-CN.md#2-版本递增与-windows-本地发布) 运行 `npm run release:version` 递增版本与构建号，提交并推送本次负责的文件。首次准备 Tauri 桌面依赖时运行：
 
 ```powershell
-npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+npm ci --prefix desktop-tauri --no-audit --no-fund
 ```
 
 随后执行：

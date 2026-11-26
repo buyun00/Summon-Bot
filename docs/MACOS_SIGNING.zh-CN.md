@@ -4,7 +4,7 @@
 
 GitHub Releases 发布的 macOS Apple Silicon（`arm64`）DMG 使用 **Developer ID Application** 签名与 Hardened Runtime，并由 Apple 公证服务（notarytool）完成公证后将票据（staple）附加至 `.app`。缺少签名材料或公证失败时，正式发布流程会中止。
 
-macOS 端通过 GitHub Releases 分发，应用 ID 沿用 `org.lin0.relay.desktop`，产品展示名为 `Summon Bot`，无需创建 Mac App Store 应用记录；用户收到更新提示后下载新版 DMG 手动覆盖安装。
+macOS 端通过 GitHub Releases 分发，Tauri 应用 ID 为 `org.lin0.relay.desktop.tauri`，产品展示名为 `Summon Bot`，无需创建 Mac App Store 应用记录；已安装客户端会自动在后台下载公证新版 DMG，点击头像菜单「安装更新」即可一键替换并重启。
 
 ## 1. 申请 Developer ID Application 证书
 
@@ -32,10 +32,10 @@ Apple 公证环节直接复用仓库已有的 App Store Connect API 凭据（`SU
 配置完成后，可通过以下指令单独触发 macOS 正式构建与发布（或在推送 `release.json` 版本变更时随全平台自动发布）：
 
 ```powershell
-gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos
+gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos-tauri
 ```
 
-GitHub Mac runner 会导入签名证书，构建 Apple Silicon `arm64` 应用并提交 Apple 公证，公证通过并附加票据后生成并发布 DMG 至 `client-macos-arm64` 标签。
+GitHub Mac runner 会导入签名证书，构建 Apple Silicon `arm64` Tauri 应用并提交 Apple 公证，公证通过并附加票据后生成并发布 DMG 至 `client-macos-arm64-tauri` 标签。
 
 ## 3. 安装效果说明
 

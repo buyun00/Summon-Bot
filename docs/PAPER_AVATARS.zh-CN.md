@@ -2,7 +2,7 @@
 
 # Bloub 纸片几何头像
 
-网页、Electron 桌面端、iOS 与 Android 四端的 Bot 头像统一采用 **Bloub 矢量动画引擎 + Summon Bot 纸片拼贴材质**。跨端共享同一套造型、配色、衬纸、细纸纹与眼睛留白规范，同时保留用户自定义上传的图片头像（PNG / JPEG / WebP）。
+网页、Tauri 桌面端、iOS 与 Android 四端的 Bot 头像统一采用 **Bloub 矢量动画引擎 + Summon Bot 纸片拼贴材质**。跨端共享同一套造型、配色、衬纸、细纸纹与眼睛留白规范，同时保留用户自定义上传的图片头像（PNG / JPEG / WebP）。
 
 ## 1. 造型与纸色规范
 

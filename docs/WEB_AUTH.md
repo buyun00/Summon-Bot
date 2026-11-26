@@ -13,7 +13,7 @@ User access control is enforced by `web/backend/auth.mjs` ahead of every HTTP ro
 ## 2. Client Authentication Flows
 
 - **Native iOS & Android**: Users enter the access token in connection settings (stored in iOS Keychain / Android encrypted storage) and send `Authorization: Bearer <token>` on requests.
-- **Web & Electron Desktop**:
+- **Web & Tauri Desktop**:
   - Unauthenticated requests to `/` or pages receive a minimal `401` login shell containing zero application data, hardened with a per-request CSP script/style nonce, `Referrer-Policy: no-referrer`, and `frame-ancestors 'none'`.
   - Submitting the token calls `POST /auth/session` via the `Authorization: Bearer` header (never placed in URLs or `localStorage`). On success, the server sets an HMAC-SHA256 signed session cookie:
     - Public HTTPS uses `__Host-summon_session` with `Secure`;

@@ -16,7 +16,7 @@ Summon Bot is a locally self-hosted multi-Bot group collaboration platform backe
 | `capabilities/services` & `capabilities/connectors` | Real invocations, process management, and native input targets for Codex App Server, Grok Build, Claude Code, local CLI, SSH, MCP, and HTTP |
 | `bot/src` | `BotRuntime`, `FastReadRuntime`, Pi engine, context projection & trunk/fork management, material index, and token ledger (`usage.sqlite`) |
 | `roles` & `skills` | 5 built-in role instructions (`roles/index.mjs`) and execution onboarding guide (`skills/summon-execution-onboarding/SKILL.md`) |
-| `web`, `desktop`, `ios`, `android` | Standard Web app (Paper / Midnight), Electron Desktop shell, SwiftUI native iOS 26 client, and Jetpack Compose native Android client |
+| `web`, `desktop-tauri`, `ios`, `android` | Standard Web app (Paper / Midnight), Tauri Desktop shell, SwiftUI native iOS 26 client, and Jetpack Compose native Android client |
 | `scripts` | Release builder (`scripts/build`), formal installer & watchdog (`scripts/installation`), maintenance (`scripts/maintenance`), and multi-platform release CLI (`scripts/release`) |
 
 ## 2. Chat & Work Separation (Three-Layer Runtime)

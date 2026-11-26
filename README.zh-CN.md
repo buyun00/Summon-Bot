@@ -165,10 +165,10 @@
 ### 5. 全自研原生四端随时接力
 
 <p align="center">
-  <img src="docs/assets/readme-clients-zh.svg" alt="全自研原生四端实时同步（Protocol 3）与 Bloub 纸片几何头像、按用途精细记账：涵盖普通网页（Paper / Midnight）、Electron 桌面端（Win x64 / Mac arm64）、iOS 26 原生客户端（SwiftUI Liquid Glass）与 Android 原生客户端（Jetpack Compose），所有对话与凭据保存在本地电脑，出门拿手机随时查看进度或改行程。" width="100%" />
+  <img src="docs/assets/readme-clients-zh.svg" alt="全自研原生四端实时同步（Protocol 3）与 Bloub 纸片几何头像、按用途精细记账：涵盖普通网页（Paper / Midnight）、Tauri 桌面端（Win x64 / Mac arm64）、iOS 26 原生客户端（SwiftUI Liquid Glass）与 Android 原生客户端（Jetpack Compose），所有对话与凭据保存在本地电脑，出门拿手机随时查看进度或改行程。" width="100%" />
 </p>
 
-- 提供 **普通网页（Paper / Midnight 双主题）**、**Windows / macOS (arm64) Electron 桌面端**、**iOS 26 原生客户端（SwiftUI Liquid Glass）** 与 **Android 原生客户端（Jetpack Compose）**，统一支持 Protocol 3 实时同步、Bloub 纸片几何动画头像与按用途精细记账。电脑上开好工，出门冲杯咖啡、拿手机随时看成品或拍板下一步。
+- 提供 **普通网页（Paper / Midnight 双主题）**、**Windows / macOS (arm64) Tauri 桌面端**、**iOS 26 原生客户端（SwiftUI Liquid Glass）** 与 **Android 原生客户端（Jetpack Compose）**，统一支持 Protocol 3 实时同步、Bloub 纸片几何动画头像与按用途精细记账。电脑上开好工，出门冲杯咖啡、拿手机随时看成品或拍板下一步。
 
 ---
 
@@ -328,10 +328,10 @@ The continuous walkthrough above used an indie game as one end-to-end example, b
 ### 5. Four First-Party Native Clients in Sync
 
 <p align="center">
-  <img src="docs/assets/readme-clients-en.svg" alt="4 First-Party Clients (Protocol 3), Bloub Vector Paper Avatars, and Purpose-Based Token Ledger: Web App (Paper / Midnight), Electron Desktop (Win / Mac arm64), Native iOS 26 (SwiftUI Liquid Glass), and Native Android (Jetpack Compose). All data stays on your own machine while your phone stays live in sync." width="100%" />
+  <img src="docs/assets/readme-clients-en.svg" alt="4 First-Party Clients (Protocol 3), Bloub Vector Paper Avatars, and Purpose-Based Token Ledger: Web App (Paper / Midnight), Tauri Desktop (Win / Mac arm64), Native iOS 26 (SwiftUI Liquid Glass), and Native Android (Jetpack Compose). All data stays on your own machine while your phone stays live in sync." width="100%" />
 </p>
 
-- Built across **Web (Paper & Midnight themes)**, **Windows / macOS (arm64) Electron Desktop**, **Native iOS 26 (SwiftUI Liquid Glass)**, and **Native Android (Jetpack Compose)**—complete with Protocol 3 real-time sync, Bloub vector paper avatars, and purpose-based token accounting. Kick off a project at your desk, step away to make coffee, and review deliverables or tweak plans right from your phone.
+- Built across **Web (Paper & Midnight themes)**, **Windows / macOS (arm64) Tauri Desktop**, **Native iOS 26 (SwiftUI Liquid Glass)**, and **Native Android (Jetpack Compose)**—complete with Protocol 3 real-time sync, Bloub vector paper avatars, and purpose-based token accounting. Kick off a project at your desk, step away to make coffee, and review deliverables or tweak plans right from your phone.
 
 ---
 

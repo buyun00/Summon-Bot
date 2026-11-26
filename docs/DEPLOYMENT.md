@@ -42,7 +42,7 @@ explicitly requested. Fix real errors directly and report exact modified files, 
 
 - Requires Node.js 24+; Windows builds must avoid Node builds affected by the Windows libuv TCP keepalive bug (see [Operations · Releases & Upgrades](OPERATIONS.md#2-releases--upgrades)). Dependencies are pinned by `package-lock.json` (`npm ci` from the repo root when needed).
 - Model connections and purpose routing tables live in `config/model-connections.json`, API keys and standalone subscription credentials live in `config/model-credentials.json`, and existing `config/runtime.env` entries are referenced explicitly by variable name. Local Codex/Grok imports reference their auth files directly without copying secrets into chat or source. Client signing credentials stay in existing host private configs and preserve existing app IDs.
-- After first startup, configure model connections, purpose tables, execution connections, Bots, and rooms in Web settings. Web and Electron share the formal UI; iOS and Android are native Protocol 3 clients.
+- After first startup, configure model connections, purpose tables, execution connections, Bots, and rooms in Web settings. Web and Tauri Desktop share the formal UI; iOS and Android are native Protocol 3 clients.
 
 ## 3. Task Entrypoints
 
@@ -70,14 +70,14 @@ Startup launches the currently selected installed release; source changes take e
 npm run release:web
 ```
 
-Installs a protocol-compatible workspace build via the formal installer (including graceful drain, cutover, and restart). Changes take effect immediately on the single formal Web entry and appear in Electron on refresh.
+Installs a protocol-compatible workspace build via the formal installer (including graceful drain, cutover, and restart). Changes take effect immediately on the single formal Web entry and appear in Tauri Desktop on refresh.
 
 ### Full Release After Finalization
 
-Sync native mobile clients and desktop code per [Development Conventions](DEVELOPMENT.md), bump version and build number with `npm run release:version` per [Client Releases](CLIENT_RELEASES.md#2-versioning--local-windows-release), and commit and push your changes. If desktop dependencies need initial setup:
+Sync native mobile clients and desktop code per [Development Conventions](DEVELOPMENT.md), bump version and build number with `npm run release:version` per [Client Releases](CLIENT_RELEASES.md#2-versioning--local-windows-release), and commit and push your changes. If Tauri desktop dependencies need initial setup:
 
 ```powershell
-npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+npm ci --prefix desktop-tauri --no-audit --no-fund
 ```
 
 Then run:

@@ -46,11 +46,9 @@ async function recordedRelease(ref, endpoint) {
 
 export function releaseDescription(metadata, repository) {
   const platform = { windows: 'Windows', macos: 'macOS', android: 'Android' }[metadata.platform];
-  const isTauri = typeof metadata.arch === 'string' && metadata.arch.endsWith('-tauri');
   const baseArch = String(metadata.arch || '').replace(/-tauri$/, '');
-  const engineLabel = metadata.platform === 'android' ? '' : (isTauri ? 'Tauri 轻量版 · ' : 'Electron · ');
-  const architecture = metadata.platform === 'macos' ? `${engineLabel}Apple Silicon（M 系列芯片），不支持 Intel`
-    : metadata.arch === 'universal' ? '通用版' : `${engineLabel}${baseArch}`;
+  const architecture = metadata.platform === 'macos' ? 'Tauri · Apple Silicon（M 系列芯片），不支持 Intel'
+    : metadata.arch === 'universal' ? '通用版' : `Tauri · ${baseArch}`;
   const url = `${githubBase(repository, metadata.platform, metadata.arch)}${encodeURIComponent(metadata.mainFile)}`;
   const instructions = {
     windows: '下载安装程序并运行，按提示完成安装。已安装的用户可通过应用内自动更新一键升级。',

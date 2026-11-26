@@ -16,7 +16,7 @@ Summon Bot 是本地自托管的多 Bot 群聊协作平台，采用单一正式�
 | `capabilities/services` & `capabilities/connectors` | Codex App Server、Grok Build、Claude Code、本地 CLI、SSH、MCP、HTTP 的真实调用、进程管理与原生输入目标 |
 | `bot/src` | `BotRuntime`、快读收件器（`FastReadRuntime`）、Pi 引擎、上下文投影与主线/Fork 管理、资料索引与 Token 账本（`usage.sqlite`） |
 | `roles` & `skills` | 5 个内置角色说明（`roles/index.mjs`）与执行接入指南（`skills/summon-execution-onboarding/SKILL.md`） |
-| `web`、`desktop`、`ios`、`android` | 普通网页（Paper / Midnight）、Electron 桌面外壳、SwiftUI iOS 26 原生客户端、Jetpack Compose Android 原生客户端 |
+| `web`、`desktop-tauri`、`ios`、`android` | 普通网页（Paper / Midnight）、Tauri 桌面外壳、SwiftUI iOS 26 原生客户端、Jetpack Compose Android 原生客户端 |
 | `scripts` | 发行构建（`scripts/build`）、正式安装与看门狗（`scripts/installation`）、数据维护（`scripts/maintenance`）与四端发布（`scripts/release`） |
 
 ## 2. 聊干分离与三层运行机制

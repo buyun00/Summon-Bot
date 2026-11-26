@@ -2,7 +2,7 @@
 
 # Bloub Vector Paper Avatars
 
-Web, Electron Desktop, iOS, and Android share a unified Bot avatar system combining the **Bloub vector animation engine** with **Summon Bot paper-collage textures**. All platforms share the same shapes, palettes, backing sheets, fine paper fibers, and eye cutouts while continuing to support user-uploaded image avatars (PNG / JPEG / WebP).
+Web, Tauri Desktop, iOS, and Android share a unified Bot avatar system combining the **Bloub vector animation engine** with **Summon Bot paper-collage textures**. All platforms share the same shapes, palettes, backing sheets, fine paper fibers, and eye cutouts while continuing to support user-uploaded image avatars (PNG / JPEG / WebP).
 
 ## 1. Shapes & Paper Palettes
 

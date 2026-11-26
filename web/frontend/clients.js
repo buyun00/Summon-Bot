@@ -79,7 +79,7 @@
     if (!desktop?.windowControlsOverlay) return;
     root.classList.add('desktop-overlay');
     root.dataset.desktopPlatform = desktop.platform;
-    root.dataset.desktopEngine = desktop.engine || 'electron';
+    root.dataset.desktopEngine = desktop.engine || 'tauri';
     if (desktop.windowControlsInsets) {
       const left = Number(desktop.windowControlsInsets.left) || 0;
       const right = Number(desktop.windowControlsInsets.right) || 0;
@@ -123,17 +123,14 @@
   }
   function archLabel(platform, arch) {
     if (platform === 'android') return '';
-    const tauri = typeof arch === 'string' && arch.endsWith('-tauri');
-    const base = platform === 'macos' ? 'Apple Silicon' : String(arch || '').replace(/-tauri$/, '');
-    return tauri ? `Tauri 轻量版 · ${base}` : `Electron · ${base}`;
+    return platform === 'macos' ? 'Apple Silicon' : String(arch || '').replace(/-tauri$/, '');
   }
   function render() {
     const content = document.querySelector('#client-release-content');
     if (!content) return;
     const releases = catalog?.releases || [];
     const installable = ['downloaded', 'manual'].includes(desktopUpdate?.status);
-    const engineSuffix = desktop?.engine === 'tauri' ? ' · Tauri 轻量版' : '';
-    content.innerHTML = `${desktop ? `<section class="client-update-card"><div><strong>当前桌面客户端 ${escape(desktop.version)}${engineSuffix}</strong><p role="status">${escape(statusText())}</p></div><div class="client-update-actions"><button type="button" class="primary-button small-button" data-client-action="${installable ? 'install' : 'check'}" ${['checking', 'downloading'].includes(desktopUpdate?.status) ? 'disabled' : ''}>${desktopUpdate?.status === 'manual' ? '下载更新' : desktopUpdate?.status === 'downloaded' ? '重启并更新' : '检查更新'}</button>${installable ? '<button type="button" class="secondary-button small-button" data-client-action="check">重新检查</button>' : ''}</div></section>` : ''}
+    content.innerHTML = `${desktop ? `<section class="client-update-card"><div><strong>当前桌面客户端 ${escape(desktop.version)}</strong><p role="status">${escape(statusText())}</p></div><div class="client-update-actions"><button type="button" class="primary-button small-button" data-client-action="${installable ? 'install' : 'check'}" ${['checking', 'downloading'].includes(desktopUpdate?.status) ? 'disabled' : ''}>${desktopUpdate?.status === 'manual' ? '下载更新' : desktopUpdate?.status === 'downloaded' ? '重启并更新' : '检查更新'}</button>${installable ? '<button type="button" class="secondary-button small-button" data-client-action="check">重新检查</button>' : ''}</div></section>` : ''}
       ${failure ? `<div class="client-release-error"><p class="form-error" role="alert">${escape(failure)}</p><button type="button" class="secondary-button small-button" data-client-action="reload">重新获取</button></div>` : ''}
       ${!catalog && !failure ? '<p class="client-release-loading" role="status">正在获取客户端版本…</p>' : ''}
       <div class="client-release-list">${['windows', 'macos', 'android'].map(platform => {

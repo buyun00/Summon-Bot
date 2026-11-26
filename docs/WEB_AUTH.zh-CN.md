@@ -13,7 +13,7 @@ Summon Bot 的用户访问控制由 `web/backend/auth.mjs` 在全部 HTTP 路由
 ## 2. 各端认证方式
 
 - **iOS / Android 原生客户端**：用户在连接设置中输入访问令牌（iOS 存系统 Keychain，Android 存加密存储），请求时通过 `Authorization: Bearer <token>` 认证。
-- **网页与 Electron 桌面端**：
+- **网页与 Tauri 桌面端**：
   - 首次未登录访问根路径或页面时，仅返回状态码 `401` 的独立最小登录页（不泄露任何业务数据，启用严格 `Content-Security-Policy` 随机 nonce、`Referrer-Policy: no-referrer` 与 `frame-ancestors 'none'`）。
   - 提交令牌调用 `POST /auth/session`（以 Bearer 头携带，令牌不放入 URL 或 `localStorage`）校验通过后，服务端签发 HMAC-SHA256 签名会话 Cookie：
     - 公网 HTTPS 使用 `__Host-summon_session` 并启用 `Secure`；

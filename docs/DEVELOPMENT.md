@@ -13,7 +13,7 @@ Repository-wide rules live in [AGENTS.md](../AGENTS.md); explicit follow-up user
 ## 2. Standard Development & Release Workflow
 
 1. **Craft & iterate on Web first**: Build and visually debug new features on the Web client through the single formal entry. During crafting, uncommitted workspace edits may be deployed to the formal Web entry with `npm run release:web`; do not finalize commits or publish mobile/desktop installers prematurely.
-2. **Sync native clients & desktop shell**: Once Web behavior, UX, and protocol are finalized, mirror them into native iOS (SwiftUI), native Android (Kotlin/Compose), and any required Electron desktop code. Web edits never auto-generate native mobile UIs.
+2. **Sync native clients & desktop shell**: Once Web behavior, UX, and protocol are finalized, mirror them into native iOS (SwiftUI), native Android (Kotlin/Compose), and any required Tauri desktop code (`desktop-tauri/`). Web edits never auto-generate native mobile UIs.
 3. **Commit & push a unified baseline**: Bump versions via `npm run release:version` when shipping client updates, then commit and push so every platform artifact builds from the same Git commit.
 4. **Publish through platform channels**:
    - Windows desktop builds locally and publishes only to `D:/Relay-Bot-data/client-releases` (never uploaded from localhost to GitHub);
@@ -26,11 +26,11 @@ Repository-wide rules live in [AGENTS.md](../AGENTS.md); explicit follow-up user
 | Client | Implementation | Update Mechanism |
 | --- | --- | --- |
 | Web | Standard browser app (PWA retired) | Reload after deployment; legacy `/sw.js` only clears old offline caches and unregisters itself while keeping drafts and settings |
-| Desktop (Windows / macOS) | Electron loading formal Web UI | Web content updates on reload; Windows auto-checks and restarts to update; macOS downloads signed/notarized `arm64` DMG for manual drag-replace |
-| Android | Native Kotlin / Jetpack Compose | Foreground version check, APK download, and system package installer confirmation |
+| Desktop (Windows / macOS) | Tauri (`desktop-tauri`) loading formal Web UI | Auto-checks and downloads in background; click "Install Update" in the avatar menu to stop local runtime, apply update (NSIS silent install on Windows / atomic DMG replace on macOS), and relaunch |
+| Android | Native Kotlin / Jetpack Compose | Foreground check, background APK download, and one-click install from the avatar menu |
 | iOS | Native SwiftUI (iOS 26+) | Installed and updated via TestFlight internal testing |
 
-> Because Electron loads the formal Web UI, Web changes deployed during crafting also appear in Desktop on refresh.
+> Because Tauri Desktop loads the formal Web UI, Web changes deployed during crafting on the host machine also appear in Desktop on refresh.
 
 ## 4. Fixed Paths & Release Sources
 

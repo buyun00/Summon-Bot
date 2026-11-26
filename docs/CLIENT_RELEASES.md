@@ -2,7 +2,7 @@
 
 # Client Releases & Auto-Update
 
-Summon Bot ships four first-party clients: standard Web, Windows / macOS (Apple Silicon) Electron Desktop, native Kotlin / Compose Android, and native SwiftUI iOS 26. Web and Electron Desktop share the same production Web UI.
+Summon Bot ships four first-party clients: standard Web, Windows / macOS (Apple Silicon) Tauri Desktop, native Kotlin / Compose Android, and native SwiftUI iOS 26. Web and Tauri Desktop share the same production Web UI.
 
 Once Web changes are finalized, synced to native clients, committed, and pushed:
 - **Windows**: Packaged locally on Windows and published only to the local release directory (never uploaded from the local machine to GitHub).
@@ -11,7 +11,7 @@ Once Web changes are finalized, synced to native clients, committed, and pushed:
 
 ## 1. Download & Update Source Order
 
-Windows x64 ships an EXE installer, Apple Silicon macOS ships an `arm64` DMG, and Android ships a universal APK. Native iOS and Android prompt for the instance URL and access token on first launch; desktop CLI commands and candidate builds are covered in [Desktop README](../desktop/README.md).
+Windows x64 ships a Tauri NSIS EXE installer, Apple Silicon macOS ships a signed/notarized Tauri `arm64` DMG, and Android ships a universal APK. Native iOS and Android prompt for the instance URL and access token on first launch.
 
 Every client checks and downloads updates in strict fallback order:
 
@@ -21,11 +21,11 @@ Every client checks and downloads updates in strict fallback order:
 The Web "Client Downloads & Updates" panel uses the same lookup order. Remote `GET /api/releases` returns only the GitHub catalog and direct links; the local endpoint reads local artifacts (`?local=1` checks localhost only without contacting GitHub). When browser policies block localhost access, it falls back seamlessly to GitHub.
 
 GitHub Releases maintain 3 rolling tags:
-- `client-windows-x64`
-- `client-macos-arm64`
+- `client-windows-x64-tauri`
+- `client-macos-arm64-tauri`
 - `client-android-universal`
 
-Each tag retains only the latest installer and metadata (`latest.json` for native clients, plus `latest.yml` on Windows for Electron auto-updater). Publishing uploads the new binary first, updates metadata next, and deletes superseded assets last.
+Each tag retains only the latest installer and `latest.json` update metadata. Publishing uploads the new binary first, updates metadata next, and deletes superseded assets last.
 
 ## 2. Versioning & Local Windows Release
 
@@ -44,24 +44,24 @@ npm run release:all
 This builds the local Windows package plus the formal Web and backend from the current Git commit:
 - **Same-protocol releases**: Update Web/backend immediately while clients roll out via their respective channels.
 - **Protocol-changing releases**: Stage the local Windows package first, then verify that same-commit GitHub Releases and TestFlight internal builds are actually available before switching the formal server (querying App Store Connect directly when configured, or reading the same-commit Actions result).
-- For initial desktop dependency installation, run `npm ci --prefix desktop --ignore-scripts --no-audit --no-fund`.
+- For initial Tauri desktop dependency installation, run `npm ci --prefix desktop-tauri --no-audit --no-fund`.
 
 You can also invoke individual release commands:
 
 ```powershell
-npm run release:desktop
+npm run release:desktop:tauri
 npm run release:web -- --committed-only
 ```
 
 - During active Web crafting, `npm run release:web` installs a protocol-compatible workspace build to the single formal Web entry so changes can be inspected live.
-- On Windows, `release:desktop` publishes only to the local release directory by default (`--publish` is also local-only; `--github` is reserved for GitHub Actions). Re-running `release:all` reuses an already staged same-commit Windows package.
-- If Electron runtime downloads face network constraints, set `SUMMON_ELECTRON_DIST` to the absolute path of the matching Electron ZIP archive.
+- On Windows, `release:desktop:tauri` publishes only to the local release directory by default (`--publish` is also local-only; `--github` is reserved for GitHub Actions).
 
 ## 3. GitHub Actions Workflows
 
-The [Client releases workflow](../.github/workflows/client-releases.yml) triggers automatically on `main` when `release.json` changes, or manually for `cloud`, `windows`, `macos`, or `android`. It installs dependencies, builds, and publishes without running tests or spawning preview servers.
+The [Client releases workflow](../.github/workflows/client-releases.yml) triggers automatically on `main` when `release.json` changes, or manually for `cloud`, `windows-tauri`, `macos-tauri`, or `android`. It installs dependencies, builds, and publishes without running tests or spawning preview servers.
 
-- **macOS (Apple Silicon `arm64`)**: Built on a GitHub macOS runner as an `arm64` DMG signed with Developer ID Application + Hardened Runtime, notarized by Apple, and stapled. See [macOS Signing & Notarization](MACOS_SIGNING.md).
+- **Windows (x64 Tauri)**: Built on a GitHub Windows runner with Rust + Tauri NSIS and published to `client-windows-x64-tauri`.
+- **macOS (Apple Silicon `arm64` Tauri)**: Built on a GitHub macOS runner as an `arm64` DMG signed with Developer ID Application + Hardened Runtime, notarized by Apple, stapled, and published to `client-macos-arm64-tauri`. See [macOS Signing & Notarization](MACOS_SIGNING.md).
 - **Android**: Built on a Linux runner with Java 17 and the repository Gradle wrapper using the existing signing identity supplied via GitHub Actions Secrets (original keystore stays only in host private config):
   - `SUMMON_ANDROID_KEYSTORE_BASE64`
   - `SUMMON_ANDROID_KEY_ALIAS`
@@ -71,9 +71,9 @@ The [Client releases workflow](../.github/workflows/client-releases.yml) trigger
 
 ## 4. Per-Platform Update Experience
 
-- **Windows Desktop**: Installs per-user via EXE. On first launch, choose the local formal instance or enter a remote URL and access token. Updates check automatically at startup and runtime (1.2 s local probe timeout before falling back to GitHub); click "Restart & Update" once downloaded.
-- **macOS Desktop**: Web UI updates on page refresh; shell updates prompt the user to download the notarized DMG and drag-replace the app.
-- **Android**: Checks for updates on foreground resume, reuses any already-cached matching APK, and hands installation to the Android package installer (requiring "Install unknown apps" permission on first install).
+- **Windows Tauri Desktop**: Installs per-user via NSIS EXE. Automatically checks for updates on startup and periodically (1.2 s local probe before falling back to GitHub Releases) and downloads in the background; once ready, an indicator dot appears on the bottom-left avatar and clicking **Install Update** in the avatar popup menu stops any self-managed local runtime, silently installs, and restarts automatically.
+- **macOS Tauri Desktop**: Automatically checks and downloads the notarized `arm64` DMG in the background; clicking **Install Update** in the avatar popup menu stops any self-managed local runtime, silently mounts the DMG, atomically replaces the `.app`, and relaunches (falling back to opening the downloaded DMG if the install directory is read-only).
+- **Android**: Checks for updates on foreground resume, automatically downloads newer APKs in the background, shows an indicator dot on the avatar with an **Install Update** entry in the avatar menu, and hands installation to the Android package installer.
 - **iOS**: Installed and updated through TestFlight internal testing; see [iOS Auto-Packaging, TestFlight & APNs Guide](IOS_TESTFLIGHT.md).
 
 ## 5. Production Boundaries & PWA Retirement

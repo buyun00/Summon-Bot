@@ -4,7 +4,7 @@
 
 macOS Apple Silicon (`arm64`) DMGs published to GitHub Releases are signed with **Developer ID Application** + Hardened Runtime, submitted to Apple Notarization (`notarytool`), and stapled onto the `.app` bundle. Official releases abort if signing material is missing or notarization fails.
 
-macOS distributes via GitHub Releases using the existing app ID `org.lin0.relay.desktop` and display name `Summon Bot` (no Mac App Store record is required). Users receive update prompts and drag-replace the app from the downloaded DMG.
+macOS distributes via GitHub Releases using the Tauri bundle identifier `org.lin0.relay.desktop.tauri` and display name `Summon Bot` (no Mac App Store record is required). Installed apps automatically download notarized updates in the background and apply them in-app from the avatar menu.
 
 ## 1. Issue the Developer ID Application Certificate
 
@@ -32,10 +32,10 @@ Notarization reuses the repository's existing App Store Connect API credentials 
 Trigger a standalone macOS build and release (or let a `release.json` push build all platforms automatically):
 
 ```powershell
-gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos
+gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos-tauri
 ```
 
-The GitHub macOS runner imports the signing certificate, builds the Apple Silicon `arm64` app, submits it for Apple notarization, staples the ticket, and publishes the DMG to the `client-macos-arm64` release tag.
+The GitHub macOS runner imports the signing certificate, builds the Apple Silicon `arm64` Tauri app, submits it for Apple notarization, staples the ticket, and publishes the DMG to the `client-macos-arm64-tauri` release tag.
 
 ## 3. Installation Behavior
 
