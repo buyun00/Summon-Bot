@@ -11,19 +11,18 @@ import { findTestFlightBuild, testFlightCredentials } from './testflight.mjs';
 const run = promisify(execFile);
 
 export async function localWindowsRelease(root, expected) {
-  const folder = join(root, 'windows', 'x64');
+  const folder = join(root, 'windows', 'x64-tauri');
   const current = await readJson(join(folder, 'current.json')).catch(error => {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
   if (!current || !sameRelease(current, expected)) return null;
   const release = validateRelease(current);
-  if (release.platform !== 'windows' || release.arch !== 'x64' || !/^release-[A-Za-z0-9._-]+$/.test(current.directory)) {
+  if (release.platform !== 'windows' || release.arch !== 'x64-tauri' || !/^release-[A-Za-z0-9._-]+$/.test(current.directory)) {
     throw new Error('Invalid local Windows release pointer');
   }
   try {
     if (!(await stat(join(folder, current.directory, release.mainFile))).isFile()) return null;
-    if (!(await stat(join(folder, current.directory, 'latest.yml'))).isFile()) return null;
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -106,13 +105,12 @@ export async function assertClientAvailability({ dataRoot, release, expected }) 
       release.buildNumber !== expected.buildNumber) {
     throw new Error('Build the protocol update from the same committed release as the clients');
   }
-  githubBase(release.githubRepository, 'windows', 'x64');
-  const requiredTargets = releaseTargets.filter(([, arch]) => !arch.endsWith('-tauri'));
+  githubBase(release.githubRepository, 'windows', 'x64-tauri');
   const outcomes = await Promise.allSettled([
     localWindowsRelease(join(dataRoot, 'client-releases'), expected).then(current => {
       if (!current) throw new Error(`The local Windows release needs build ${expected.buildNumber} from the selected commit`);
     }),
-    ...requiredTargets.map(([platform, arch]) => githubPackage(release.githubRepository, platform, arch, expected)),
+    ...releaseTargets.map(([platform, arch]) => githubPackage(release.githubRepository, platform, arch, expected)),
     testFlightBuild(release.githubRepository, expected),
   ]);
   const failures = outcomes.filter(result => result.status === 'rejected');

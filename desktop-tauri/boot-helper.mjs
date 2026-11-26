@@ -55,6 +55,7 @@ async function main() {
   const desktopScript = join(runtimeRoot, 'scripts/installation/desktop.mjs');
   const {
     ensureLocalRunning,
+    stopLocalInstance,
     resolveLocalDataRoot,
     bearerHeader,
     instanceRequest,
@@ -62,6 +63,13 @@ async function main() {
   } = await import(pathToFileURL(desktopScript).href);
 
   const dataRoot = resolveLocalDataRoot(undefined, profileRoot || undefined);
+
+  if (args.includes('--stop-local')) {
+    await stopLocalInstance({ dataRoot, releaseRoot: runtimeRoot }).catch(() => {});
+    emit({ event: 'stopped' });
+    process.stdout.write('', () => process.exit(0));
+    return;
+  }
 
   let needsEmbeddedDeps = true;
   try {
@@ -75,6 +83,9 @@ async function main() {
   } catch {}
 
   if (needsEmbeddedDeps) {
+    if (existsSync(join(runtimeRoot, 'node_modules.tar'))) {
+      await stopLocalInstance({ dataRoot, releaseRoot: runtimeRoot }).catch(() => {});
+    }
     await ensureRuntimeDependencies();
   }
 

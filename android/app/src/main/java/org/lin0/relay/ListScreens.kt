@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
@@ -739,9 +740,34 @@ fun ConversationListScreen(
                                 .background(if (store.isConnected) palette.ok else palette.textTertiary)
                                 .border(1.6.dp, palette.background, CircleShape),
                         )
+                        if (updater.state.downloaded != null) {
+                            Box(
+                                Modifier.align(Alignment.TopEnd).padding(2.dp).size(9.dp).clip(CircleShape)
+                                    .background(palette.ok)
+                                    .border(1.6.dp, palette.background, CircleShape),
+                            )
+                        }
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(216.dp).heightIn(max = menuHeight)) {
+                    val updateState = updater.state
+                    if (updateState.downloaded != null) {
+                        val ver = updateState.latest?.version?.takeIf { it.isNotBlank() }?.let { " v$it" }.orEmpty()
+                        DropdownMenuItem(
+                            text = { Text("安装更新$ver", color = palette.ok) },
+                            leadingIcon = { Icon(Icons.Filled.Download, null, tint = palette.ok) },
+                            onClick = { menu = false; updater.install(context) },
+                        )
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
+                    } else if (updateState.downloading) {
+                        DropdownMenuItem(
+                            text = { Text("正在下载更新 ${updateState.progress}%", color = palette.textSecondary) },
+                            leadingIcon = { Icon(Icons.Filled.Download, null, tint = palette.textSecondary) },
+                            enabled = false,
+                            onClick = {},
+                        )
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
+                    }
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         ModelQuotaSignal(model, "默认模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
                     }

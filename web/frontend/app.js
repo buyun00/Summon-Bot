@@ -538,8 +538,13 @@ const ui = {
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', archiveDrawerOpen:false, menu:null, sendingRooms:new Set(), navigationSeq:0,
   messageCache:new Map(), roomReadSeq:{}, executionInputs:new Map(), loadingExecutions:new Map(),
   promptDrafts:new Map(), promptSubmitting:new Set(), execPromptDrafts:new Map(), execPromptBusy:new Set(), execPromptMasked:new Map(),
-  historyEpoch:null, historyGeneration:0, retiredHistoryEpochs:new Set(),
+  historyEpoch:null, historyGeneration:0, retiredHistoryEpochs:new Set(), desktopUpdate:null,
 };
+document.addEventListener('summon-desktop-update', event => {
+  ui.desktopUpdate = event.detail || null;
+  ui.lastSidebarHtml = null;
+  renderTopbar();
+});
 const attachmentLimit = 8, attachmentMaxBytes = 20 * 1024 * 1024;
 const attachmentDrafts = (roomId = ui.roomId) => ui.draftAttachments[roomId] || [];
 const attachmentBusy = (roomId = ui.roomId) => attachmentDrafts(roomId).some(item => item.status !== 'ready');
@@ -2481,6 +2486,10 @@ async function act(action, element) {
     return;
   }
   if (action === 'client-downloads') return openSettingsModal('updates', ui.releasesUrl);
+  if (action === 'install-desktop-update') {
+    closeFloatingMenus();
+    return window.SummonClients?.install?.();
+  }
   if (action === 'desktop-connection') return window.SummonDesktop?.openConnectionSettings();
   if (action === 'update-app') { await persistClientSession(); location.reload(); return; }
   if (action === 'display-settings') return openSettingsModal('general');
@@ -3509,7 +3518,16 @@ function renderTopbar() {
     }
   }
   const identity = ownerIdentity();
+  const desktopUpdate = ui.desktopUpdate || window.SummonClients?.getDesktopUpdate?.() || null;
+  const updateReady = Boolean(window.SummonDesktop && ['downloaded', 'manual'].includes(desktopUpdate?.status));
+  const updateDownloading = Boolean(window.SummonDesktop && desktopUpdate?.status === 'downloading');
+  const updateMenuItem = updateReady
+    ? `<button class="apps-menu-update" data-action="install-desktop-update">${icon('install', 17)}<span>安装更新${desktopUpdate?.version ? ` v${esc(desktopUpdate.version)}` : ''}</span></button><div class="apps-menu-divider"></div>`
+    : updateDownloading
+      ? `<div class="apps-menu-update-progress">${icon('install', 15)}<span>正在下载更新 ${Number(desktopUpdate?.percent) || 0}%</span></div><div class="apps-menu-divider"></div>`
+      : '';
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
+    ${updateMenuItem}
     ${identity.signedIn
       ? `<div class="apps-menu-account"><strong>${esc(identity.name)}</strong><small>@${esc(identity.username || '')} · 云端账号</small></div>`
       : `<button class="apps-menu-login" data-action="open-account-login">${icon('link', 17)}<span>登录云端账号</span></button>`}
@@ -3534,9 +3552,9 @@ function renderTopbar() {
         <button type="button" class="rail-action-btn" data-action="open-settings" title="设置" aria-label="设置">${icon('settings', 18)}</button>
       </div>
     <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor">
-      <button class="sidebar-owner ${identity.signedIn ? '' : 'is-guest'}" data-action="owner-click" title="${identity.signedIn ? esc(identity.name) : '点击登录云端账号或管理设置'}" aria-label="${identity.signedIn ? esc(identity.name) : '登录或设置'}" aria-expanded="${ui.menu === 'apps'}">
+      <button class="sidebar-owner ${identity.signedIn ? '' : 'is-guest'} ${updateReady ? 'has-update' : ''}" data-action="owner-click" title="${updateReady ? `有新版本 v${esc(desktopUpdate?.version || '')} 可安装` : (identity.signedIn ? esc(identity.name) : '点击登录云端账号或管理设置')}" aria-label="${updateReady ? '有新版本可安装' : (identity.signedIn ? esc(identity.name) : '登录或设置')}" aria-expanded="${ui.menu === 'apps'}">
       <span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png" width="100" height="100" alt="">
-        ${avatar('user', 48)}<i class="presence-dot ${connected ? (identity.signedIn ? 'idle' : 'local') : 'unknown'}" aria-hidden="true"></i></span></span>
+        ${avatar('user', 48)}<i class="presence-dot ${connected ? (identity.signedIn ? 'idle' : 'local') : 'unknown'}" aria-hidden="true"></i>${updateReady ? '<i class="update-ready-dot" aria-hidden="true"></i>' : ''}</span></span>
       <span class="sidebar-owner-name">${esc(identity.sidebarLabel)}</span></button>${settings}</div>
       ${globalThis.SummonModels.sidebar({ esc, icon, invalidate:() => { ui.lastSidebarHtml = null; } })}</div></div>`;
   const signature = renderSignature(html);

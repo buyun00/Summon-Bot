@@ -2578,14 +2578,44 @@ html.dark .draft-group-avatar {
 
 /* ==================== COMPACT AVATAR POPOVER & UNIFIED SETTINGS MODAL ==================== */
 .apps-menu {
-  min-width: 152px !important;
-  width: 152px !important;
+  min-width: 176px !important;
+  width: max-content !important;
+  max-width: 232px !important;
   padding: 6px !important;
 }
 .apps-menu > button {
   padding: 9px 12px;
   gap: 10px;
   font-weight: 500;
+  white-space: nowrap;
+}
+.apps-menu > button.apps-menu-update {
+  color: var(--ok, #4a7a5c);
+  background: color-mix(in srgb, var(--ok, #4a7a5c) 11%, transparent);
+  font-weight: 600;
+}
+.apps-menu > button.apps-menu-update:hover {
+  background: color-mix(in srgb, var(--ok, #4a7a5c) 18%, transparent);
+}
+.apps-menu-update-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.update-ready-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ok, #4a7a5c);
+  box-shadow: 0 0 0 2px var(--sidebar, var(--bg));
+  pointer-events: none;
 }
 
 .modal.settings-modal {

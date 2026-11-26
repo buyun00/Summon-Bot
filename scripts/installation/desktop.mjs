@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -32,6 +32,40 @@ function isExternalFormalRoot(dataRoot) {
   return process.platform === 'win32' && resolve(dataRoot).toLowerCase() === resolve(formalDataRoot).toLowerCase();
 }
 
+export function releaseBuildId(releaseRoot) {
+  try {
+    const manifestPath = join(resolve(releaseRoot), 'release-manifest.json');
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      if (typeof manifest?.buildId === 'string' && manifest.buildId.trim()) return manifest.buildId.trim();
+    }
+  } catch {}
+  try {
+    const releasePath = join(resolve(releaseRoot), 'release.json');
+    if (existsSync(releasePath)) {
+      const release = JSON.parse(readFileSync(releasePath, 'utf8'));
+      if (release?.version && release?.buildNumber) return `${release.version}-${release.buildNumber}`;
+    }
+  } catch {}
+  return null;
+}
+
+export async function stopLocalInstance({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
+  const file = join(resolve(dataRoot), 'config', 'deployment.json');
+  if (!existsSync(file)) return false;
+  let config;
+  try { config = await readJson(file); } catch { return false; }
+  if (isExternalFormalRoot(config.dataRoot)) return false;
+  if (releaseRoot && config.releaseRoot && resolve(config.releaseRoot).toLowerCase() !== resolve(releaseRoot).toLowerCase()) {
+    return false;
+  }
+  const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
+  const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
+  if (webState.state === 'stopped' && gwState.state === 'stopped') return false;
+  await stopSystem(config).catch(() => {});
+  return true;
+}
+
 export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
   const file = join(dataRoot, 'config', 'deployment.json');
   if (existsSync(file)) return readJson(file);
@@ -39,11 +73,13 @@ export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(),
   await mkdir(join(dataRoot, 'workspace', 'scripts'), { recursive: true });
   const token = () => randomBytes(32).toString('base64url');
   const selfManaged = !isExternalFormalRoot(dataRoot);
+  const buildId = releaseBuildId(releaseRoot);
   const config = {
     schemaVersion: 4,
     dataFormat,
     dataRoot,
     releaseRoot,
+    ...(buildId ? { installedBuildId: buildId } : {}),
     defaultCwd: join(dataRoot, 'workspace'),
     runIntent: 'running',
     environmentFile: join(dataRoot, 'config', 'runtime.env'),
@@ -84,8 +120,10 @@ export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), re
   const desiredRelease = selfManaged && existsSync(releaseRoot)
     ? resolve(releaseRoot)
     : (existsSync(config.releaseRoot) ? resolve(config.releaseRoot) : resolve(releaseRoot));
+  const desiredBuildId = selfManaged ? releaseBuildId(desiredRelease) : null;
+  const buildChanged = Boolean(desiredBuildId && config.installedBuildId !== desiredBuildId);
 
-  if (selfManaged && (resolve(config.releaseRoot) !== desiredRelease || config.web?.autoPort !== true)) {
+  if (selfManaged && (resolve(config.releaseRoot) !== desiredRelease || buildChanged || config.web?.autoPort !== true)) {
     const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
     const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
     if (webState.state !== 'stopped' || gwState.state !== 'stopped') {
@@ -95,6 +133,7 @@ export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), re
     config = {
       ...config,
       releaseRoot: desiredRelease,
+      ...(desiredBuildId ? { installedBuildId: desiredBuildId } : {}),
       runIntent: 'running',
       web: { ...config.web, autoPort: true },
     };

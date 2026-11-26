@@ -113,11 +113,7 @@ impl Default for ReleaseMeta {
             build_number: 0,
             github_repository: "buyun00/Summon-Bot".to_string(),
             update_path,
-            update_mode: if cfg!(target_os = "macos") {
-                "manual".to_string()
-            } else {
-                "automatic".to_string()
-            },
+            update_mode: "automatic".to_string(),
         }
     }
 }
@@ -1261,8 +1257,13 @@ async fn perform_check_update(app: &AppHandle, force: bool) -> UpdateState {
                 }
                 match resp.json::<LatestReleaseManifest>().await {
                     Ok(manifest) => {
-                        found = Some(((*feed).clone(), manifest));
-                        break;
+                        let is_newer = manifest.build_number > state.release.build_number;
+                        if is_newer || found.is_none() {
+                            found = Some(((*feed).clone(), manifest));
+                        }
+                        if is_newer {
+                            break;
+                        }
                     }
                     Err(e) => {
                         last_err = e.to_string();
@@ -1397,7 +1398,8 @@ async fn download_update_installer(
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
-    let file_path = dir.join(format!("Summon-Bot-{version}-tauri-setup.exe"));
+    let ext = if cfg!(target_os = "macos") { "dmg" } else { "exe" };
+    let file_path = dir.join(format!("Summon-Bot-{version}-tauri-setup.{ext}"));
     let mut file = tokio::fs::File::create(&file_path)
         .await
         .map_err(|e| e.to_string())?;
@@ -1449,7 +1451,51 @@ fn open_manual_update_download(app: &AppHandle, state: &AppState) -> bool {
     app.opener().open_url(&dl, None::<&str>).is_ok()
 }
 
-fn launch_downloaded_installer_and_quit(app: &AppHandle, state: &AppState) -> bool {
+async fn stop_bundled_runtime_before_update(app: &AppHandle) {
+    let (runtime_root, node_bin, helper_path, is_bundled) = resolve_runtime_paths(app);
+    if !is_bundled || !node_bin.exists() || !helper_path.exists() {
+        return;
+    }
+    let profile = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("summon-bot"));
+    let mut cmd = tokio::process::Command::new(&node_bin);
+    cmd.arg(&helper_path)
+        .arg("--stop-local")
+        .arg("--runtime")
+        .arg(&runtime_root)
+        .arg("--profile")
+        .arg(&profile)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    if let Ok(mut child) = cmd.spawn() {
+        let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn current_macos_app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    for ancestor in exe.ancestors() {
+        if ancestor
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("app"))
+            .unwrap_or(false)
+        {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+async fn launch_downloaded_installer_and_quit(app: &AppHandle, state: &AppState) -> bool {
     let path = state.downloaded_installer.lock().unwrap().clone();
     let Some(installer) = path else {
         return false;
@@ -1457,6 +1503,8 @@ fn launch_downloaded_installer_and_quit(app: &AppHandle, state: &AppState) -> bo
     if !installer.exists() {
         return false;
     }
+    stop_bundled_runtime_before_update(app).await;
+
     #[cfg(target_os = "windows")]
     {
         if std::process::Command::new(&installer)
@@ -1472,6 +1520,122 @@ fn launch_downloaded_installer_and_quit(app: &AppHandle, state: &AppState) -> bo
             return true;
         }
     }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(target_app) = current_macos_app_bundle() {
+            let parent_writable = target_app
+                .parent()
+                .map(|dir| {
+                    let probe = dir.join(format!(".summon-upd-probe-{}", std::process::id()));
+                    let ok = std::fs::File::create(&probe).is_ok();
+                    let _ = std::fs::remove_file(&probe);
+                    ok
+                })
+                .unwrap_or(false);
+            if parent_writable {
+                let script_path = std::env::temp_dir()
+                    .join(format!("summon-apply-update-{}.sh", std::process::id()));
+                let script = r#"#!/bin/sh
+OLD_PID="$1"
+DMG_PATH="$2"
+TARGET_APP="$3"
+SCRIPT_PATH="$4"
+
+i=0
+while kill -0 "$OLD_PID" 2>/dev/null && [ "$i" -lt 80 ]; do
+  sleep 0.15
+  i=$((i + 1))
+done
+
+MNT_DIR=$(mktemp -d /tmp/summon-update-mnt.XXXXXX)
+cleanup() {
+  if [ -n "$MNT_DIR" ] && [ -d "$MNT_DIR" ]; then
+    hdiutil detach "$MNT_DIR" -quiet 2>/dev/null || hdiutil detach "$MNT_DIR" -force -quiet 2>/dev/null || true
+    rmdir "$MNT_DIR" 2>/dev/null || true
+  fi
+  rm -f "$SCRIPT_PATH" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+if ! hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MNT_DIR" -quiet; then
+  open "$DMG_PATH"
+  exit 1
+fi
+
+SRC_APP="$MNT_DIR/Summon Bot.app"
+if [ ! -d "$SRC_APP" ]; then
+  SRC_APP=$(find "$MNT_DIR" -maxdepth 1 -name "*.app" | head -n 1)
+fi
+if [ -z "$SRC_APP" ] || [ ! -d "$SRC_APP" ]; then
+  open "$DMG_PATH"
+  exit 1
+fi
+
+STAGING="${TARGET_APP}.updating"
+BACKUP="${TARGET_APP}.old"
+rm -rf "$STAGING" "$BACKUP" 2>/dev/null || true
+if ! ditto "$SRC_APP" "$STAGING"; then
+  rm -rf "$STAGING" 2>/dev/null || true
+  open "$DMG_PATH"
+  exit 1
+fi
+
+if [ -d "$TARGET_APP" ]; then
+  if ! mv "$TARGET_APP" "$BACKUP"; then
+    rm -rf "$STAGING" 2>/dev/null || true
+    open "$DMG_PATH"
+    exit 1
+  fi
+fi
+
+if mv "$STAGING" "$TARGET_APP"; then
+  rm -rf "$BACKUP" 2>/dev/null || true
+  xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+  open "$TARGET_APP"
+  exit 0
+else
+  if [ -d "$BACKUP" ]; then
+    mv "$BACKUP" "$TARGET_APP" 2>/dev/null || true
+  fi
+  rm -rf "$STAGING" 2>/dev/null || true
+  open "$DMG_PATH"
+  exit 1
+fi
+"#;
+                if std::fs::write(&script_path, script).is_ok() {
+                    let spawned = std::process::Command::new("/bin/sh")
+                        .arg(&script_path)
+                        .arg(std::process::id().to_string())
+                        .arg(&installer)
+                        .arg(&target_app)
+                        .arg(&script_path)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .is_ok();
+                    if spawned {
+                        let app_exit = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(120)).await;
+                            app_exit.exit(0);
+                        });
+                        return true;
+                    }
+                }
+            }
+        }
+        // Fallback: open downloaded DMG directly if app dir is read-only
+        if std::process::Command::new("open")
+            .arg(&installer)
+            .spawn()
+            .is_ok()
+        {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -1805,7 +1969,7 @@ async fn check_update(
 }
 
 #[tauri::command]
-fn install_update(
+async fn install_update(
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -1818,7 +1982,7 @@ fn install_update(
     if status != "downloaded" {
         return Ok(false);
     }
-    Ok(launch_downloaded_installer_and_quit(&app, &state))
+    Ok(launch_downloaded_installer_and_quit(&app, &state).await)
 }
 
 #[tauri::command]
@@ -1960,7 +2124,11 @@ fn setup_menu(app: &AppHandle, release: &ReleaseMeta) -> tauri::Result<()> {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.emit("summon:request-install", ());
                 } else {
-                    let _ = launch_downloaded_installer_and_quit(app, &st);
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let st = app_clone.state::<AppState>();
+                        let _ = launch_downloaded_installer_and_quit(&app_clone, &st).await;
+                    });
                 }
             }
         }

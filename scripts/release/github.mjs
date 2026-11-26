@@ -53,18 +53,18 @@ export function releaseDescription(metadata, repository) {
     : metadata.arch === 'universal' ? '通用版' : `${engineLabel}${baseArch}`;
   const url = `${githubBase(repository, metadata.platform, metadata.arch)}${encodeURIComponent(metadata.mainFile)}`;
   const instructions = {
-    windows: '下载安装程序并运行，按提示完成安装。已安装的用户可通过应用内更新升级。',
-    macos: '打开 DMG，将 Summon Bot 拖入 Applications（应用程序）文件夹。更新时先退出应用，再覆盖安装。',
-    android: '在 Android 手机上下载并打开 APK，按系统提示允许此次安装；更新时直接覆盖安装。',
+    windows: '下载安装程序并运行，按提示完成安装。已安装的用户可通过应用内自动更新一键升级。',
+    macos: '打开 DMG，将 Summon Bot 拖入 Applications（应用程序）文件夹。已安装的用户可通过应用内自动更新一键升级。',
+    android: '在 Android 手机上下载并打开 APK，按系统提示允许此次安装；已安装的用户可在应用内自动下载并一键覆盖更新。',
   }[metadata.platform];
   return [
     `**${platform} · ${architecture}**　|　版本 **${metadata.version}**`, '',
     `## [下载 Summon Bot](${url})`, '', instructions, '',
     ...(metadata.notes?.trim() ? ['### 更新内容', '', metadata.notes.trim(), ''] : []),
     '---', '',
-    '其他平台：[Windows](https://github.com/' + repository + '/releases/tag/client-windows-x64) · [Windows Tauri 轻量版](https://github.com/' + repository + '/releases/tag/client-windows-x64-tauri) · [macOS](https://github.com/' + repository + '/releases/tag/client-macos-arm64) · [macOS Tauri 轻量版](https://github.com/' + repository + '/releases/tag/client-macos-arm64-tauri) · [Android](https://github.com/' + repository + '/releases/tag/client-android-universal)', '',
+    '其他平台：[Windows Tauri](https://github.com/' + repository + '/releases/tag/client-windows-x64-tauri) · [macOS Tauri](https://github.com/' + repository + '/releases/tag/client-macos-arm64-tauri) · [Android](https://github.com/' + repository + '/releases/tag/client-android-universal)', '',
     'iPhone / iPad 请通过 TestFlight 邀请安装。', '',
-    '下方 Assets 中的 JSON、YML 和 blockmap 文件用于自动更新，无需手动下载。', '',
+    '下方 Assets 中的 JSON 文件用于自动更新，无需手动下载。', '',
   ].join('\n');
 }
 

@@ -96,12 +96,16 @@
     ensureCustomWindowControls();
     ensureCustomDragRegion();
   }
+  function emitDesktopUpdate() {
+    document.dispatchEvent(new CustomEvent('summon-desktop-update', { detail: desktopUpdate || desktop?.update || null }));
+  }
   function setDesktopInfo(value) {
     if (value.selectionWarning && value.selectionWarning !== desktop?.selectionWarning) {
       document.dispatchEvent(new CustomEvent('summon-selection-warning', { detail:value.selectionWarning }));
     }
     desktop = value; desktopUpdate = value.update; syncWindowChrome();
     document.documentElement.dataset.localInstance = String(value.localInstance === true);
+    emitDesktopUpdate();
   }
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const size = bytes => bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '';
@@ -181,6 +185,7 @@
   async function check() {
     try { desktopUpdate = await window.SummonDesktop.checkForUpdates(); }
     catch { desktopUpdate = { status: 'error' }; }
+    emitDesktopUpdate();
     render();
   }
   async function install() {
@@ -201,7 +206,13 @@
     if (window.SummonOpenSettings) return window.SummonOpenSettings('updates', releasesUrl);
     return mount(releasesUrl);
   }
-  window.SummonClients = Object.freeze({ open, mount });
+  window.SummonClients = Object.freeze({
+    open,
+    mount,
+    check,
+    install,
+    getDesktopUpdate: () => desktopUpdate || desktop?.update || null,
+  });
   document.addEventListener('click', event => {
     const action = event.target.closest('[data-client-action]')?.dataset.clientAction;
     if (action === 'reload') load();
@@ -212,7 +223,7 @@
     window.SummonDesktop.getInfo().then(value => { setDesktopInfo(value); render(); }).catch(err => { console.error('[SummonDesktop] getInfo failed:', err); });
     window.addEventListener('resize', syncWindowChrome);
     navigator.windowControlsOverlay?.addEventListener('geometrychange', syncWindowChrome);
-    window.SummonDesktop.onUpdate(value => { desktopUpdate = value; render(); });
+    window.SummonDesktop.onUpdate(value => { desktopUpdate = value; emitDesktopUpdate(); render(); });
     window.SummonDesktop.onOpenUpdates(open);
     window.SummonDesktop.onInstallRequested(install);
   }

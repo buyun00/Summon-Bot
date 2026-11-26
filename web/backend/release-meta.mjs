@@ -1,7 +1,5 @@
 export const releaseTargets = [
-  ['windows', 'x64'],
   ['windows', 'x64-tauri'],
-  ['macos', 'arm64'],
   ['macos', 'arm64-tauri'],
   ['android', 'universal'],
 ];
@@ -25,13 +23,12 @@ export function validateRelease(value) {
     || !value.files.some(file => file.name === value.mainFile)) throw new Error('Invalid client release');
   const extension = value.platform === 'windows' ? '.exe' : value.platform === 'macos' ? '.dmg' : '.apk';
   if (!value.mainFile.endsWith(extension)) throw new Error('Incorrect primary package for platform');
-  if (value.platform === 'windows' && value.arch === 'x64' && !value.files.some(file => file.name === 'latest.yml')) throw new Error('Windows update metadata missing');
   return {
     platform: value.platform,
     arch: value.arch,
     version: value.version,
     buildNumber: value.buildNumber,
-    updateMode: value.platform === 'macos' ? 'manual' : 'automatic',
+    updateMode: 'automatic',
     sourceCommit: typeof value.sourceCommit === 'string' ? value.sourceCommit.slice(0, 80) : null,
     notes: typeof value.notes === 'string' ? value.notes.slice(0, 8000) : '',
     mainFile: value.mainFile,

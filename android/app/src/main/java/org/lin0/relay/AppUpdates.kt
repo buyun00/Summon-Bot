@@ -91,7 +91,11 @@ class SummonAppUpdater(private val app: Context, private val scope: CoroutineSco
                 val available = latest?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE }
                 val cached = available?.let { release -> apkFile(release).takeIf { it.isFile && it.length() == release.size } }
                 state = state.copy(checking = false, checked = true, latest = available, downloaded = cached)
-                if (available == null) withContext(Dispatchers.IO) { updateDirectory().listFiles()?.forEach { it.delete() } }
+                if (available == null) {
+                    withContext(Dispatchers.IO) { updateDirectory().listFiles()?.forEach { it.delete() } }
+                } else if (cached == null) {
+                    download()
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 state = state.copy(checking = false, error = "暂时无法检查更新，请稍后重试。")

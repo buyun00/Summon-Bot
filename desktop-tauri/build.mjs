@@ -107,7 +107,7 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
       buildNumber: release.buildNumber,
       githubRepository: release.githubRepository,
       updatePath,
-      updateMode: platform === 'macos' ? 'manual' : 'automatic',
+      updateMode: 'automatic',
       engine: 'tauri',
     };
     await writeJson(join(stagedResourcesDir, 'release.json'), releaseMeta);
