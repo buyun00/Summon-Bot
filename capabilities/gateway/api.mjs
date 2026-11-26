@@ -78,7 +78,8 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       };
       const enrichRoom = roomItem => {
         const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });
-        return { ...roomItem, room_files };
+        const goal = platform.goals.view(roomItem.id);
+        return { ...roomItem, room_files, ...(goal ? { goal } : { goal: null }) };
       };
       const allRooms = room.rooms(user.id).map(enrichRoom);
       const state = {
@@ -230,6 +231,13 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
     if ((match = path.match(/^\/api\/rooms\/([^/]+)\/stop$/)) && method === 'POST') {
       return platform.stopRoom(decodeURIComponent(match[1]), user);
     }
+    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/goal$/)) && method === 'POST') {
+      const id = decodeURIComponent(match[1]);
+      if (args.action === 'stop') return platform.goals.stop(id, user);
+      if (args.action === 'resume') return platform.goals.resume(id, user);
+      if (args.action === 'clear') return platform.goals.update({ room: id, clear: true }, userContext);
+      return mutation('update_goal', { ...args, room: { kind: 'room', id } }, clientId);
+    }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
       if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
@@ -237,13 +245,15 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         const result = await read(ref, params);
         const activities = platform.runtime?.roomActivities?.(ref.id) || [];
         const suspendedRuns = platform.runtime.suspendedRunsForRoom(ref.id);
-        const value = { ...result, activities, suspendedRuns, historyEpoch };
+        const goal = platform.goals.view(ref.id);
+        const value = { ...result, activities, suspendedRuns, goal, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
       if (method === 'PATCH' && !match[2]) return mutation('configure_room', { ...args, room: ref }, clientId);
       if (method === 'DELETE' && !match[2]) {
         const result = room.deleteGroup(ref.id, args.revision, user);
+        platform.goals.remove(ref.id);
         emit('room');
         await platform.revokeSessions(ref);
         platform.runtime.wake();

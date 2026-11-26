@@ -223,6 +223,106 @@ data class SummonMessage(
     }
 }
 
+data class SummonGoalStep(
+    val id: String,
+    val title: String,
+    val owner: String? = null,
+    val status: String = "pending",
+    val note: String? = null,
+    val updatedAt: String? = null,
+) {
+    fun toJson(): SummonJson = SummonJson.obj(
+        "id" to SummonJson.Str(id),
+        "title" to SummonJson.Str(title),
+        "owner" to owner.strOrNull(),
+        "status" to SummonJson.Str(status),
+        "note" to note.strOrNull(),
+        "updated_at" to updatedAt.strOrNull(),
+    )
+
+    companion object {
+        fun parse(json: SummonJson): SummonGoalStep? {
+            val id = json["id"].string ?: return null
+            val title = json["title"].string ?: return null
+            return SummonGoalStep(
+                id = id,
+                title = title,
+                owner = json["owner"].string,
+                status = json["status"].string ?: "pending",
+                note = json["note"].string,
+                updatedAt = json["updated_at"].string,
+            )
+        }
+    }
+}
+
+data class SummonRoomGoal(
+    val id: String,
+    val roomId: String,
+    val title: String,
+    val doneCriteria: String? = null,
+    val status: String = "active",
+    val ownerBotId: String? = null,
+    val steps: List<SummonGoalStep> = emptyList(),
+    val stalled: Boolean = false,
+    val stallReason: String? = null,
+    val revision: Int? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
+) {
+    val doneCount: Int get() = steps.count { it.status == "done" || it.status == "skipped" }
+    val totalCount: Int get() = steps.size
+    val currentStep: SummonGoalStep?
+        get() = steps.firstOrNull { it.status == "in_progress" }
+            ?: steps.firstOrNull { it.status == "awaiting_user" }
+            ?: steps.firstOrNull { it.status == "blocked" }
+            ?: steps.firstOrNull { it.status == "pending" }
+            ?: steps.lastOrNull()
+    val currentStepIndex: Int
+        get() {
+            val active = currentStep ?: return totalCount
+            val idx = steps.indexOfFirst { it.id == active.id }
+            return if (idx >= 0) idx + 1 else totalCount
+        }
+
+    fun toJson(): SummonJson = SummonJson.obj(
+        "id" to SummonJson.Str(id),
+        "room_id" to SummonJson.Str(roomId),
+        "title" to SummonJson.Str(title),
+        "done_criteria" to doneCriteria.strOrNull(),
+        "status" to SummonJson.Str(status),
+        "owner_bot_id" to ownerBotId.strOrNull(),
+        "steps" to SummonJson.Arr(steps.map(SummonGoalStep::toJson)),
+        "stalled" to SummonJson.Bool(stalled),
+        "stall_reason" to stallReason.strOrNull(),
+        "revision" to revision.numOrNull(),
+        "created_at" to createdAt.strOrNull(),
+        "updated_at" to updatedAt.strOrNull(),
+    )
+
+    companion object {
+        fun parse(json: SummonJson): SummonRoomGoal? {
+            if (json.obj == null) return null
+            val id = json["id"].string ?: json["room_id"].string ?: return null
+            val title = json["title"].string ?: return null
+            return SummonRoomGoal(
+                id = id,
+                roomId = json["room_id"].string ?: id,
+                title = title,
+                doneCriteria = json["done_criteria"].string,
+                status = json["status"].string ?: "active",
+                ownerBotId = json["owner_bot_id"].string,
+                steps = json["steps"].array.orEmpty().mapNotNull(SummonGoalStep::parse),
+                stalled = json["stalled"].bool == true,
+                stallReason = json["stall_reason"].string,
+                revision = json["revision"].int,
+                createdAt = json["created_at"].string,
+                updatedAt = json["updated_at"].string,
+            )
+        }
+    }
+}
+
 data class SummonRoom(
     val id: String,
     val name: String,
@@ -238,6 +338,7 @@ data class SummonRoom(
     val leadBotId: String? = null,
     val autoTitlePending: Boolean = false,
     val mode: String? = null,
+    val goal: SummonRoomGoal? = null,
 ) {
     val isArchived: Boolean get() = !archivedAt.isNullOrBlank()
     val isGroup: Boolean get() = if (mode != null) mode != "direct" else members.size != 2 || "user" !in members
@@ -252,6 +353,7 @@ data class SummonRoom(
         "auto_title_pending" to SummonJson.Bool(autoTitlePending),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
+        "goal" to (goal?.toJson() ?: SummonJson.Null),
         "createdAt" to createdAt.strOrNull(), "updatedAt" to updatedAt.strOrNull(),
     )
 
@@ -271,6 +373,7 @@ data class SummonRoom(
             leadBotId = json["lead_bot_id"].string,
             autoTitlePending = json["auto_title_pending"].bool == true,
             mode = json["mode"].string,
+            goal = SummonRoomGoal.parse(json["goal"]),
         )
     }
 }

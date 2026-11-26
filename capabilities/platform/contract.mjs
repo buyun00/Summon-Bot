@@ -168,6 +168,32 @@ const openSessionInput = object({
 }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, work_summary: text }, ['target']);
+const goalStepStatus = oneOf('pending', 'in_progress', 'awaiting_user', 'done', 'blocked', 'skipped');
+const goalStepInput = object({
+  id: text,
+  title: text,
+  owner: principal,
+  status: goalStepStatus,
+  note: text,
+}, ['title']);
+const goalStepUpdate = object({
+  id: text,
+  title: text,
+  owner: principal,
+  status: goalStepStatus,
+  note: text,
+}, ['id']);
+const updateGoalInput = object({
+  room: roomOrId,
+  title: text,
+  done_criteria: text,
+  status: oneOf('active', 'awaiting_user', 'completed', 'stopped'),
+  owner: principal,
+  origin_message_id: eventOrId,
+  steps: array(goalStepInput),
+  step_updates: array(goalStepUpdate),
+  clear: flag,
+}, ['room']);
 
 const createRoomOpeningMessage = {
   anyOf: [
@@ -230,10 +256,12 @@ const definitions = [
     }, ['members'])],
   ['configure_room', 'Update the title, membership, pins, or project workspace in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal), pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
-  ['open_session', 'Open an async background Session. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?, sandbox?, approvalPolicy?, extraArgs?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn silently and deliver one concise reply once the completion receipt arrives.',
+  ['open_session', 'Open an async background Session. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn silently and deliver one concise reply once the completion receipt arrives.',
     openSessionInput],
   ['configure_session', 'Update work_summary on a Session.',
     configureSessionInput],
+  ['update_goal', 'Create or update the Room’s shared Goal & step-by-step execution plan (shown live above the user’s composer and monitored by the runtime Goal Loop so multi-step work never silently stalls). Use title + done_criteria + steps (3–6 crisp steps with owner and status) when starting or replanning a multi-step/multi-Bot task; use step_updates to advance individual step status/note; set status:"awaiting_user" when genuinely paused on a user decision, or status:"completed" when delivered.',
+    updateGoalInput],
   ['send_input', 'Send reply (with optional request_id), steer (mid-run adjustment), or next (follow-up turn) directly to a Session or Conversation.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next'), input: value, request_id: text, control_version: integer }, ['target', 'kind'])],
   ['stop_session', 'Interrupt the current in-flight run, turn, or process for the selected scope.',

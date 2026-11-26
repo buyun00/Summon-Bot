@@ -120,6 +120,8 @@ function describeToolActivity(name, args = {}, platform = null) {
     }
     case 'configure_session':
       return args.work_summary ? ensureDoingText(args.work_summary, 44) : '正在更新任务状态';
+    case 'update_goal':
+      return args.title ? `正在更新计划：${compactActivityText(args.title, 26)}` : '正在更新目标与执行步骤';
     case 'send_input':
       return args.kind === 'reply' ? '正在回应执行请求' : '正在向执行会话发送指令';
     case 'stop_session':
@@ -1214,6 +1216,26 @@ export class BotRuntime {
         facts.push(textMessage({ type: 'room_pins', room: conversation.space, pins: readablePins }));
       }
     }
+    const goalRoomId = conversation.kind === 'room' && conversation.space?.kind === 'room'
+      ? conversation.space.id
+      : (view.session?.origin_room?.id || null);
+    const activeRoomGoal = goalRoomId ? this.platform.goals?.view(goalRoomId) : null;
+    if (activeRoomGoal) {
+      facts.push(textMessage({
+        type: 'room_goal',
+        room: { kind: 'room', id: goalRoomId },
+        goal: {
+          title: activeRoomGoal.title,
+          done_criteria: activeRoomGoal.done_criteria || '',
+          status: activeRoomGoal.status,
+          owner_bot_id: activeRoomGoal.owner_bot_id,
+          stalled: Boolean(activeRoomGoal.stalled),
+          revision: activeRoomGoal.revision,
+          progress: activeRoomGoal.progress,
+          steps: activeRoomGoal.steps,
+        },
+      }));
+    }
     const workEngines = this.platform.workEngines?.() || [];
     if (workEngines.length) {
       facts.push(textMessage({
@@ -1931,6 +1953,24 @@ export class BotRuntime {
     return [...byBot.values()].sort((a, b) =>
       String(a.started_at || '').localeCompare(String(b.started_at || '')) || a.bot_id.localeCompare(b.bot_id)
     );
+  }
+
+  roomHasActiveWork(roomId) {
+    if (!roomId) return false;
+    if (this.fastRead?.isActiveRoom?.(roomId)) return true;
+    for (const job of this.active.values()) {
+      if (this.roomIdForConversation(job.conversation) === roomId) return true;
+    }
+    for (const inbox of this.inboxes.values()) {
+      for (const conv of inbox.store.listRecords(R.conversation)) {
+        if (this.roomIdForConversation(conv) !== roomId) continue;
+        if (this.starting.has(conv.id)) return true;
+        for (const run of inbox.runs(conv.id)) {
+          if (['pending', 'running', 'waiting', 'interrupted', 'retry'].includes(run.state)) return true;
+        }
+      }
+    }
+    return false;
   }
 
   botActivityState(bot) {

@@ -532,7 +532,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
-  messages:[], roomActivities:[], optimisticRoomWork:{}, roomWorkEpoch:{}, roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomActivities:[], roomGoal:null, roomDrawerMode:'plan', optimisticRoomWork:{}, roomWorkEpoch:{}, roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', archiveDrawerOpen:false, menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -771,6 +771,13 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
     const message = receipt.message;
     if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId || message.senderId !== 'user') throw new Error('服务器回执不完整');
     entry.message = message; entry.status = 'saved';
+    const currentRoom = roomById(entry.roomId);
+    const activeGoal = (ui.roomGoal && ui.roomGoal.room_id === entry.roomId) ? ui.roomGoal : currentRoom?.goal;
+    if (activeGoal && ['completed', 'stopped'].includes(activeGoal.status)) {
+      if (ui.roomGoal?.room_id === entry.roomId) ui.roomGoal = null;
+      if (currentRoom) currentRoom.goal = null;
+      if (ui.openRoomExecution === entry.roomId && ui.roomDrawerMode !== 'executions') ui.openRoomExecution = null;
+    }
     const targetBotId = preferredWorkingBotId(entry.roomId, receipt.deliveries, message.mentions);
     if (targetBotId) {
       ui.optimisticRoomWork[entry.roomId] = { botId: targetBotId, sentMessageId: message.id, startedAt: Date.now() };
@@ -1291,7 +1298,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, activities = [], suspendedRuns = [], room, cursor } = synced.snapshot;
+  const { messages, activities = [], suspendedRuns = [], goal = null, room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -1301,10 +1308,15 @@ async function loadCurrent() {
   ui.messagesRoomId = id; ui.messages = cached.messages; ui.historyCursor = cached.historyCursor;
   ui.roomActivities = Array.isArray(activities) ? activities : [];
   ui.roomSuspendedRuns = Array.isArray(suspendedRuns) ? suspendedRuns : [];
+  ui.roomGoal = goal ?? null;
   const activeIndex = state.rooms.findIndex(item => item.id === id);
-  if (room && activeIndex >= 0 && room.revision >= state.rooms[activeIndex].revision) state.rooms[activeIndex] = room;
+  if (room && activeIndex >= 0 && room.revision >= state.rooms[activeIndex].revision) {
+    state.rooms[activeIndex] = { ...room, goal: goal ?? null };
+  }
   const archivedIndex = (state.archivedRooms || []).findIndex(item => item.id === id);
-  if (room && archivedIndex >= 0 && room.revision >= state.archivedRooms[archivedIndex].revision) state.archivedRooms[archivedIndex] = room;
+  if (room && archivedIndex >= 0 && room.revision >= state.archivedRooms[archivedIndex].revision) {
+    state.archivedRooms[archivedIndex] = { ...room, goal: goal ?? null };
+  }
   const roomRef = encodeURIComponent(id);
   const roomDetails = [
     readList('/api/executions?room=' + roomRef).then(items => { if (ui.roomId === id && current()) ui.roomExecutions = items; }),
@@ -1359,6 +1371,8 @@ async function restoreRoomMessages(id) {
   if (ui.roomId !== id || generation !== ui.historyGeneration) return;
   ui.messages = cached?.messages || []; ui.historyCursor = cached?.historyCursor; ui.messagesRoomId = cached ? id : null;
   ui.roomActivities = Array.isArray(cached?.snapshot.activities) ? cached.snapshot.activities : [];
+  ui.roomGoal = cached?.snapshot.goal || roomById(id)?.goal || null;
+  ui.roomDrawerMode = 'plan';
   ui.roomExecutions = []; ui.roomWakeups = []; ui.roomFiles = [];
 }
 
@@ -1368,7 +1382,7 @@ async function acceptHistoryEpoch(response, generation) {
   if (epoch === ui.historyEpoch) return true;
   if (generation !== ui.historyGeneration || ui.retiredHistoryEpochs.has(epoch)) { scheduleRefresh(); return false; }
   ui.retiredHistoryEpochs.add(ui.historyEpoch); ui.historyEpoch = epoch; ui.historyGeneration++;
-  ui.messages = []; ui.roomActivities = []; ui.roomSuspendedRuns = []; ui.messagesRoomId = null;
+  ui.messages = []; ui.roomActivities = []; ui.roomGoal = null; ui.roomSuspendedRuns = []; ui.messagesRoomId = null;
   ui.messageCache.clear(); ui.stateSnapshot = null; ui.stateCursor = null;
   await globalThis.SummonCache?.resetHistory(epoch, clientSessionSnapshot());
   return true;
@@ -1604,6 +1618,8 @@ async function submitDraftGroupMessage(rawText) {
     ui.historyCursor = null;
     ui.roomSuspendedRuns = [];
     ui.roomActivities = [];
+    ui.roomGoal = null;
+    ui.roomDrawerMode = 'plan';
     ui.openRoomExecution = null;
     ui.activityTickerIndex = 0;
     location.hash = 'chat';
@@ -1644,7 +1660,7 @@ async function selectRoom(id, nodeId = null) {
       }
       ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
       ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
-      ui.roomSuspendedRuns = []; ui.roomActivities = []; ui.openRoomExecution = null; ui.activityTickerIndex = 0;
+      ui.roomSuspendedRuns = []; ui.roomActivities = []; ui.roomGoal = null; ui.roomDrawerMode = 'plan'; ui.openRoomExecution = null; ui.activityTickerIndex = 0;
       location.hash = 'chat';
       render();
       await refresh(true);
@@ -1653,7 +1669,7 @@ async function selectRoom(id, nodeId = null) {
   }
   ui.navigationSeq++; ui.creatingRoom = false; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
-  ui.roomSuspendedRuns = []; ui.roomActivities = [];
+  ui.roomSuspendedRuns = []; ui.roomActivities = []; ui.roomGoal = roomById(id)?.goal || null; ui.roomDrawerMode = 'plan';
   ui.openRoomExecution = null; ui.activityTickerIndex = 0;
   location.hash = 'chat';
   await restoreRoomMessages(id);
@@ -2622,11 +2638,31 @@ async function act(action, element) {
   if (action === 'toggle-room-executions') {
     if (!ui.roomId) return;
     ui.openRoomExecution = ui.openRoomExecution === ui.roomId ? null : ui.roomId;
+    if (ui.openRoomExecution) ui.roomDrawerMode = 'plan';
     return render();
   }
   if (action === 'close-room-executions') {
     ui.openRoomExecution = null;
     return render();
+  }
+  if (action === 'toggle-drawer-mode') {
+    ui.roomDrawerMode = ui.roomDrawerMode === 'executions' ? 'plan' : 'executions';
+    return render();
+  }
+  if (action === 'resume-room-goal') {
+    if (!ui.roomId) return;
+    await api(roomPath(ui.roomId) + '/goal', 'POST', { action: 'resume' });
+    toast('已继续推进当前计划');
+    return refresh();
+  }
+  if (action === 'clear-room-goal') {
+    if (!ui.roomId) return;
+    await api(roomPath(ui.roomId) + '/goal', 'POST', { action: 'clear' });
+    ui.roomGoal = null;
+    const room = roomById(ui.roomId);
+    if (room) room.goal = null;
+    ui.openRoomExecution = null;
+    return refresh();
   }
   if (action === 'scroll-to-work') {
     const messages = $('.messages');
@@ -4456,8 +4492,40 @@ function summarizeRoomWork(room, items) {
   };
 }
 
+function currentRoomGoal(room) {
+  if (!room?.id) return null;
+  if (ui.roomGoal && ui.roomGoal.room_id === room.id) return ui.roomGoal;
+  return room.goal || null;
+}
+
+function goalStepSnapshot(goal) {
+  if (!goal) return null;
+  const steps = Array.isArray(goal.steps) ? goal.steps : [];
+  const total = steps.length;
+  const done = steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
+  const active = steps.find(s => s.status === 'in_progress')
+    || steps.find(s => s.status === 'awaiting_user')
+    || steps.find(s => s.status === 'blocked')
+    || steps.find(s => s.status === 'pending')
+    || steps.at(-1)
+    || null;
+  const activeIdx = active ? steps.findIndex(s => s.id === active.id) + 1 : total;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  return { steps, total, done, active, activeIdx, pct };
+}
+
+function renderGoalStepMarker(step, index) {
+  if (step.status === 'done') return '<span class="goal-step-marker is-done" aria-label="已完成">✓</span>';
+  if (step.status === 'in_progress') return '<span class="goal-step-marker is-progress" aria-label="进行中"><span class="goal-step-pulse"></span></span>';
+  if (step.status === 'awaiting_user') return '<span class="goal-step-marker is-waiting" aria-label="等待确认">?</span>';
+  if (step.status === 'blocked') return '<span class="goal-step-marker is-blocked" aria-label="受阻">!</span>';
+  if (step.status === 'skipped') return '<span class="goal-step-marker is-skipped" aria-label="已跳过">—</span>';
+  return `<span class="goal-step-marker is-pending" aria-label="待执行">${index + 1}</span>`;
+}
+
 function renderRoomExecutionDrawer(room, liveItems) {
   if (ui.openRoomExecution !== room.id) return '';
+  const goal = currentRoomGoal(room);
   const allExecutions = [...(ui.roomExecutions || [])].sort((a, b) => {
     const aLive = LIVE_EXEC_STATUSES.has(a.status) ? 0 : 1;
     const bLive = LIVE_EXEC_STATUSES.has(b.status) ? 0 : 1;
@@ -4468,6 +4536,69 @@ function renderRoomExecutionDrawer(room, liveItems) {
   const recentFinished = allExecutions.filter(e => !LIVE_EXEC_STATUSES.has(e.status)).slice(0, 3);
   const executions = [...liveExecutions, ...recentFinished];
   const liveBotsInExec = new Set(liveExecutions.map(e => e.execution_actor?.id || e.bot_id));
+  const activeCount = liveExecutions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
+
+  if (goal && ui.roomDrawerMode !== 'executions') {
+    const snap = goalStepSnapshot(goal);
+    const statusMap = {
+      active: goal.stalled ? { text: '已暂停', cls: 'warn' } : { text: '进行中', cls: 'live' },
+      awaiting_user: { text: '等待确认', cls: 'warn' },
+      completed: { text: '已完成', cls: 'done' },
+      stopped: { text: '已停止', cls: '' },
+    };
+    const badge = statusMap[goal.status] || { text: '进行中', cls: 'live' };
+    const canStop = goal.status === 'active' || activeCount > 0;
+    const canResume = Boolean(goal.stalled || goal.status === 'stopped');
+    const canClear = Boolean(goal.status === 'completed' || goal.status === 'stopped' || goal.stalled);
+    const stepRows = snap.steps.map((step, idx) => {
+      const ownerId = step.owner || null;
+      const ownerLabel = ownerId === 'user' ? '宿主' : (ownerId ? nameOf(ownerId) : '');
+      const ownerIsBot = Boolean(ownerId && ownerId !== 'user' && botById(ownerId));
+      const matchedLive = step.status === 'in_progress'
+        ? (liveItems.find(it => it.botId === ownerId) || (snap.active?.id === step.id ? liveItems[0] : null))
+        : null;
+      const liveExec = matchedLive?.ref?.kind === 'session'
+        ? liveExecutions.find(e => e.execution_ref?.id === matchedLive.ref.id)
+        : (step.status === 'in_progress' && ownerId ? liveExecutions.find(e => (e.execution_actor?.id || e.bot_id) === ownerId) : null);
+      const liveRef = liveExec?.execution_ref || matchedLive?.ref || null;
+      const liveLabel = liveExec
+        ? `${executionLabel(liveExec)} · ${liveExec.live_progress || liveExec.work_summary || '执行中'}`
+        : (matchedLive ? matchedLive.text : '');
+      return `<div class="goal-step-item is-${esc(step.status)}">
+        ${renderGoalStepMarker(step, idx)}
+        <div class="goal-step-body">
+          <div class="goal-step-top">
+            <span class="goal-step-title">${esc(step.title)}</span>
+            ${ownerLabel ? `<span class="goal-step-owner">${ownerIsBot ? avatar(ownerId, 16, '') : ''}${esc(ownerLabel)}</span>` : ''}
+          </div>
+          ${step.note ? `<div class="goal-step-note">${esc(step.note)}</div>` : ''}
+          ${liveLabel ? (liveRef
+            ? `<button type="button" class="goal-step-live" data-action="open-execution" data-kind="${esc(liveRef.kind)}" data-id="${esc(liveRef.id)}"><span class="goal-step-live-dot"></span><span>${esc(liveLabel)}</span></button>`
+            : `<div class="goal-step-live"><span class="goal-step-live-dot"></span><span>${esc(liveLabel)}</span></div>`) : ''}
+        </div>
+      </div>`;
+    }).join('');
+    return `<section class="bot-execution-drawer goal-plan-drawer" role="region" aria-label="当前执行计划">
+      <div class="bot-execution-drawer-head">
+        <div class="goal-drawer-heading">
+          <span class="bot-execution-status ${esc(badge.cls)}">${esc(badge.text)}</span>
+          <strong class="goal-drawer-title">${esc(goal.title)}</strong>
+          <span class="goal-drawer-count">${snap.done}/${snap.total} 步</span>
+        </div>
+        <div class="bot-execution-drawer-actions">
+          ${canResume ? '<button type="button" class="drawer-resume-btn" data-action="resume-room-goal">继续推进</button>' : ''}
+          ${canStop ? '<button type="button" class="drawer-stop-btn" data-action="stop-room" title="停止本群在途工作与计划">停止工作</button>' : ''}
+          ${canClear ? '<button type="button" class="text-button" data-action="clear-room-goal">清除</button>' : ''}
+          ${executions.length || activeCount ? `<button type="button" class="text-button" data-action="toggle-drawer-mode">执行明细${activeCount ? ` (${activeCount})` : ''}</button>` : ''}
+          <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起计划">${icon('close', 15)}</button>
+        </div>
+      </div>
+      ${goal.done_criteria ? `<div class="goal-criteria">验收：${esc(goal.done_criteria)}</div>` : ''}
+      ${goal.stalled && goal.stall_reason ? `<div class="goal-stall-banner">${esc(goal.stall_reason)}</div>` : ''}
+      <div class="goal-plan-list">${stepRows}</div>
+    </section>`;
+  }
+
   const syntheticLiveRows = liveItems.filter(item => !liveBotsInExec.has(item.botId)).map(item => `
     <div class="bot-execution-item is-live">
       ${face(botAvatar(item.botId), 24, { key: `drawer-live:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}
@@ -4499,11 +4630,11 @@ function renderRoomExecutionDrawer(room, liveItems) {
       </div>
     </button>`;
   }).join('');
-  const activeCount = liveExecutions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
   return `<section class="bot-execution-drawer" role="region" aria-label="执行过程">
     <div class="bot-execution-drawer-head">
-      <strong>${activeCount ? `进行中（${activeCount}）` : '最近执行'}</strong>
+      <strong>${activeCount ? `执行明细 · 进行中（${activeCount}）` : '最近执行明细'}</strong>
       <div class="bot-execution-drawer-actions">
+        ${goal ? '<button type="button" class="text-button" data-action="toggle-drawer-mode">返回计划</button>' : ''}
         ${activeCount ? '<button type="button" class="drawer-stop-btn" data-action="stop-room" title="停止本群在途工作">停止工作</button>' : ''}
         <button type="button" class="text-button" data-action="open-panel-room" data-room="${esc(room.id)}">全部记录</button>
         <button type="button" class="icon-button" data-action="close-room-executions" aria-label="收起执行过程">${icon('close', 15)}</button>
@@ -4514,6 +4645,68 @@ function renderRoomExecutionDrawer(room, liveItems) {
 }
 
 function renderUnifiedWorkBand(room, items, work, drawerOpen) {
+  const goal = currentRoomGoal(room);
+  if (goal) {
+    const snap = goalStepSnapshot(goal);
+    const active = snap.active;
+    const isRunning = Boolean(work && items.length);
+    const displayItems = work?.items || items || [];
+    const ownerBotId = active?.owner && active.owner !== 'user' && botById(active.owner)
+      ? active.owner
+      : (goal.owner_bot_id && botById(goal.owner_bot_id) ? goal.owner_bot_id : null);
+    const avatarHtml = displayItems.length
+      ? `<div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">${displayItems.slice(0, 2).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}</div>`
+      : ownerBotId
+        ? `<div class="cwb-avatars">${face(botAvatar(ownerBotId), 24, { key: `composer-goal:${room.id}:${ownerBotId}`, identity: `bot:${ownerBotId}`, state: goal.status === 'active' && !goal.stalled ? 'work' : 'idle' })}</div>`
+        : `<span class="goal-band-dot is-${esc(goal.stalled ? 'warn' : goal.status)}"></span>`;
+
+    let labelText = '';
+    let stepHtml = '';
+    if (goal.status === 'completed') {
+      labelText = '已完成';
+      stepHtml = `<span class="cwb-step is-done">${esc(goal.title)}</span>`;
+    } else if (goal.status === 'stopped') {
+      labelText = '计划已停止';
+      stepHtml = `<span class="cwb-step is-muted">${esc(goal.title)}</span>`;
+    } else if (goal.stalled) {
+      labelText = `已暂停 · 第 ${snap.activeIdx}/${snap.total} 步`;
+      stepHtml = `<span class="cwb-quiet">${esc(active?.title || goal.title)}（点击查看或继续）</span>`;
+    } else if (goal.status === 'awaiting_user') {
+      labelText = `等待确认 · 第 ${snap.activeIdx}/${snap.total} 步`;
+      stepHtml = `<span class="cwb-waiting">${esc(active?.title || goal.title)}</span>`;
+    } else {
+      labelText = `第 ${snap.activeIdx}/${snap.total} 步`;
+      const stepTitle = active?.title || goal.title;
+      const liveHint = isRunning && work?.primary?.text && !['正在处理中', '正在查看消息', '正在工作'].includes(work.primary.text)
+        ? ` · ${work.primary.text}`
+        : '';
+      stepHtml = `<span class="shimmer-status cwb-step">${esc(stepTitle + liveHint)}</span>`;
+    }
+
+    const startedMs = work?.startedAt || parseTimestampMs(goal.created_at);
+    const showTimer = goal.status === 'active' && !goal.stalled && startedMs > 0;
+    const elapsedLabel = showTimer ? formatElapsedClock(Date.now() - startedMs) : '';
+    const railDeterminate = goal.status === 'completed' || goal.status === 'stopped' || goal.status === 'awaiting_user' || goal.stalled || snap.done > 0;
+    const railPct = goal.status === 'completed' ? 100 : (snap.total > 0 ? Math.max(snap.done > 0 ? Math.round((snap.done / snap.total) * 100) : 8, 8) : 0);
+
+    return `<button type="button" class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}"
+        data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
+        title="${esc(goal.title)}（点击${drawerOpen ? '收起' : '展开'}当前计划）">
+      <div class="cwb-row">
+        ${avatarHtml}
+        <span class="cwb-name">${esc(labelText)}</span>
+        <span class="cwb-sep">·</span>
+        ${stepHtml}
+        <span class="cwb-batch">${snap.done}/${snap.total} 步</span>
+        ${showTimer ? `<span class="cwb-timer" data-live-timer data-started-at="${startedMs}">${esc(elapsedLabel)}</span>` : ''}
+        <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+      </div>
+      <div class="cwb-rail ${railDeterminate ? 'is-determinate' : ''}" aria-hidden="true">
+        <span class="cwb-rail-fill" ${railDeterminate ? `style="width:${railPct}%"` : ''}></span>
+      </div>
+    </button>`;
+  }
+
   if (!work || !items.length) return '';
   const { primary } = work;
   const displayItems = work.items || items;
@@ -4593,7 +4786,11 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
   const drawer = drawerOpen ? renderRoomExecutionDrawer(room, items) : '';
   const workBand = renderUnifiedWorkBand(room, items, work, drawerOpen);
   const hasWorkShell = Boolean(workBand || drawer);
-  const workStateClass = work?.hasWaitingInput ? 'is-waiting' : work?.isQuiet ? 'is-quiet' : '';
+  const goal = currentRoomGoal(room);
+  const workStateClass = (work?.hasWaitingInput || goal?.status === 'awaiting_user') ? 'is-waiting'
+    : (work?.isQuiet || goal?.stalled) ? 'is-quiet'
+    : goal?.status === 'completed' ? 'is-completed'
+    : '';
 
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"

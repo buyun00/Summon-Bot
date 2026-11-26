@@ -12,7 +12,7 @@ import { observeStoppedNativeWriters } from '../installation/drain.mjs';
 
 const fail = (message, code = 'HISTORY_CLEANUP_REFUSED') => Object.assign(new Error(message), { code });
 const domains = Object.freeze({
-  chatroom: ['messages', 'room-public-history', 'platform-events', 'platform-deliveries', 'platform-calls', 'platform-waits',
+  chatroom: ['messages', 'room-public-history', 'room-goals', 'platform-events', 'platform-deliveries', 'platform-calls', 'platform-waits',
     'platform-client-calls', 'platform-sessions', 'platform-conversations', 'platform-inputs', 'session-operations', 'session-inputs', 'session-service-events'],
   gateway: [],
 });

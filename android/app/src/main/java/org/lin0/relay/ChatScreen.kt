@@ -166,6 +166,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
     val directBot = room?.takeIf { !it.isGroup }?.members?.firstNotNullOfOrNull { store.bot(it) }
     val title = room?.name ?: "聊天"
     val messages = store.messagesForRoom(roomID)
+    val roomGoal = store.goalForRoom(roomID)
     val roomExecutions = store.executionsForRoom(roomID)
     val roomActivities = store.activitiesForRoom(roomID)
     val optimisticWork = store.optimisticWorkForRoom(roomID)
@@ -225,6 +226,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
     var showDetails by remember(roomID) { mutableStateOf(false) }
     var activeExecutionRef by remember(roomID) { mutableStateOf<SummonReference?>(null) }
     var executionsExpanded by remember(roomID) { mutableStateOf(false) }
+    var drawerShowsExecutions by remember(roomID) { mutableStateOf(false) }
     var activityTickerIndex by remember(roomID) { mutableIntStateOf(0) }
     var showReferences by remember(roomID) { mutableStateOf(false) }
     var attachMenu by remember { mutableStateOf(false) }
@@ -505,6 +507,269 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                 val syntheticLive = activeBotItems.filter { it.key !in liveExecBots }
                 val activeCount = liveExecs.size + syntheticLive.size
                 val totalCount = visibleExecs.size + syntheticLive.size
+                if (roomGoal != null && !drawerShowsExecutions) {
+                    val goal = roomGoal
+                    val badgeLabel = when (goal.status) {
+                        "completed" -> "已完成"
+                        "stopped" -> "已停止"
+                        "awaiting_user" -> "等待确认"
+                        else -> if (goal.stalled) "已暂停" else "进行中"
+                    }
+                    val badgeColor = when (goal.status) {
+                        "completed" -> palette.ok
+                        "stopped" -> palette.textSecondary
+                        "awaiting_user" -> palette.warn
+                        else -> if (goal.stalled) palette.warn else palette.ok
+                    }
+                    val canStop = goal.status == "active" || activeCount > 0
+                    val canResume = goal.stalled || goal.status == "stopped"
+                    val canClear = goal.status == "completed" || goal.status == "stopped" || goal.stalled
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = palette.glassPill,
+                        border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                    ) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    badgeLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = badgeColor,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(badgeColor.copy(alpha = 0.14f))
+                                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                                )
+                                Text(
+                                    goal.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${goal.doneCount}/${goal.totalCount} 步",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary,
+                                )
+                                if (visibleExecs.isNotEmpty() || activeCount > 0) {
+                                    Text(
+                                        "明细",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .clickable { drawerShowsExecutions = true }
+                                            .padding(horizontal = 5.dp, vertical = 2.dp),
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { executionsExpanded = false },
+                                    modifier = Modifier.size(24.dp),
+                                ) {
+                                    Icon(Icons.Filled.Close, "收起计划", tint = palette.textSecondary, modifier = Modifier.size(15.dp))
+                                }
+                            }
+                            if (!goal.doneCriteria.isNullOrBlank()) {
+                                Text(
+                                    "验收：${goal.doneCriteria}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (goal.stalled && !goal.stallReason.isNullOrBlank()) {
+                                Text(
+                                    goal.stallReason,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.warn,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(palette.warn.copy(alpha = 0.12f))
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                )
+                            }
+                            Column(
+                                Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                goal.steps.forEachIndexed { idx, step ->
+                                    val ownerId = step.owner
+                                    val ownerLabel = when {
+                                        ownerId.isNullOrBlank() -> ""
+                                        ownerId == "user" -> "宿主"
+                                        else -> store.name(ownerId)
+                                    }
+                                    val ownerBot = ownerId?.takeIf { it != "user" }?.let { store.bot(it) }
+                                    val matchedLive = if (step.status == "in_progress") {
+                                        activeBotItems.firstOrNull { it.key == ownerId }
+                                            ?: if (goal.currentStep?.id == step.id) activeBotItems.firstOrNull() else null
+                                    } else null
+                                    val matchedExec = if (step.status == "in_progress") {
+                                        val refId = matchedLive?.ref?.takeIf { it.kind == "session" }?.id
+                                        if (refId != null) liveExecs.firstOrNull { it["execution_ref"]["id"].string == refId }
+                                        else ownerId?.let { oid -> liveExecs.firstOrNull { (it["execution_actor"]["id"].string ?: it["bot_id"].string) == oid } }
+                                    } else null
+                                    val liveRef = matchedExec?.let { SummonReference.parse(it["execution_ref"]) } ?: matchedLive?.ref
+                                    val liveHint = when {
+                                        matchedExec != null -> {
+                                            val engine = if (matchedExec["kind"].string == "conversation") "内部对话" else matchedExec["engine"].string ?: "执行"
+                                            val progress = matchedExec["live_progress"].string ?: matchedExec["work_summary"].string ?: "执行中"
+                                            "$engine · $progress"
+                                        }
+                                        matchedLive != null -> matchedLive.status
+                                        else -> ""
+                                    }
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.Top,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Box(
+                                            Modifier.padding(top = 1.dp).size(18.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            when (step.status) {
+                                                "done" -> Box(
+                                                    Modifier.size(16.dp).clip(CircleShape).background(palette.ok.copy(alpha = 0.16f)),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Icon(Icons.Filled.Check, null, tint = palette.ok, modifier = Modifier.size(11.dp))
+                                                }
+                                                "in_progress" -> Box(Modifier.size(9.dp).clip(CircleShape).background(palette.ok))
+                                                "awaiting_user", "blocked" -> Box(
+                                                    Modifier.size(16.dp).clip(CircleShape).background(palette.warn.copy(alpha = 0.16f)),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Text(if (step.status == "awaiting_user") "?" else "!", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = palette.warn)
+                                                }
+                                                "skipped" -> Text("—", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                                                else -> Box(
+                                                    Modifier.size(16.dp).clip(CircleShape).background(palette.surface),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Text("${idx + 1}", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                                }
+                                            }
+                                        }
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(
+                                                Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
+                                                Text(
+                                                    step.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = if (step.status == "in_progress") FontWeight.SemiBold else FontWeight.Normal,
+                                                    color = if (step.status == "done" || step.status == "skipped") palette.textSecondary else MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.weight(1f),
+                                                )
+                                                if (ownerLabel.isNotEmpty()) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                                    ) {
+                                                        ownerBot?.let { MemberAvatar(it, 14.dp, motion = "idle") }
+                                                        Text(ownerLabel, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1)
+                                                    }
+                                                }
+                                            }
+                                            if (!step.note.isNullOrBlank()) {
+                                                Text(step.note, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                            }
+                                            if (liveHint.isNotBlank()) {
+                                                Row(
+                                                    modifier = if (liveRef != null) Modifier.clip(RoundedCornerShape(6.dp)).clickable { activeExecutionRef = liveRef }.padding(vertical = 2.dp) else Modifier.padding(vertical = 2.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                                ) {
+                                                    Box(Modifier.size(5.dp).clip(CircleShape).background(palette.ok))
+                                                    Text(
+                                                        liveHint,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = if (liveRef != null) palette.ok else palette.textSecondary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (canResume || canStop || canClear) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    if (canResume) {
+                                        Text(
+                                            "继续推进",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.ok,
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    scope.launch {
+                                                        runCatching { store.resumeRoomGoal(roomID) }
+                                                            .onFailure { localError = it.localizedMessage }
+                                                    }
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                    if (canStop) {
+                                        Text(
+                                            "停止工作",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.warn,
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    scope.launch {
+                                                        runCatching { store.stopRoom(roomID) }
+                                                            .onFailure { localError = it.localizedMessage }
+                                                    }
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                    if (canClear) {
+                                        Text(
+                                            "清除",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.textSecondary,
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .clickable {
+                                                    scope.launch {
+                                                        runCatching {
+                                                            store.clearRoomGoal(roomID)
+                                                            executionsExpanded = false
+                                                        }.onFailure { localError = it.localizedMessage }
+                                                    }
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = palette.glassPill,
@@ -524,6 +789,17 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                                 color = palette.textSecondary,
                                 modifier = Modifier.weight(1f),
                             )
+                            if (roomGoal != null) {
+                                Text(
+                                    "返回计划",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.ok,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable { drawerShowsExecutions = false }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                )
+                            }
                             IconButton(
                                 onClick = { executionsExpanded = false },
                                 modifier = Modifier.size(24.dp),
@@ -596,6 +872,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                         }
                     }
                 }
+                }
             }
             LaunchedEffect(activeBotItems.map { it.key }) {
                 if (activeBotItems.isEmpty()) {
@@ -611,11 +888,103 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                 }
             }
             AnimatedVisibility(
-                visible = activeBotItems.isNotEmpty(),
+                visible = roomGoal != null || activeBotItems.isNotEmpty(),
                 enter = fadeIn() + slideInVertically { it / 2 },
                 exit = fadeOut(),
             ) {
-                if (activeBotItems.isNotEmpty()) {
+                if (roomGoal != null) {
+                    val goal = roomGoal
+                    val active = goal.currentStep
+                    val primaryLive = activeBotItems.firstOrNull()
+                    val ownerBot = primaryLive?.bot
+                        ?: active?.owner?.takeIf { it != "user" }?.let { store.bot(it) }
+                        ?: goal.ownerBotId?.let { store.bot(it) }
+                    val labelText = when (goal.status) {
+                        "completed" -> "已完成"
+                        "stopped" -> "计划已停止"
+                        "awaiting_user" -> "等待确认 · 第 ${goal.currentStepIndex}/${goal.totalCount} 步"
+                        else -> if (goal.stalled) "已暂停 · 第 ${goal.currentStepIndex}/${goal.totalCount} 步" else "第 ${goal.currentStepIndex}/${goal.totalCount} 步"
+                    }
+                    val stepText = when {
+                        goal.status == "completed" || goal.status == "stopped" -> goal.title
+                        goal.stalled -> "${active?.title ?: goal.title}（点击查看或继续）"
+                        else -> {
+                            val base = active?.title ?: goal.title
+                            val hint = primaryLive?.status?.takeIf { goal.status == "active" && it !in setOf("正在处理中", "正在查看消息", "正在工作") }
+                            if (hint != null) "$base · $hint" else base
+                        }
+                    }
+                    val accentColor = when {
+                        goal.status == "awaiting_user" || goal.stalled -> palette.warn
+                        else -> palette.ok
+                    }
+                    val progress = when {
+                        goal.status == "completed" -> 1f
+                        goal.totalCount > 0 -> (goal.doneCount.toFloat() / goal.totalCount.toFloat()).coerceIn(0.08f, 1f)
+                        else -> 0f
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = palette.glassPill,
+                        border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable {
+                                if (!executionsExpanded) drawerShowsExecutions = false
+                                executionsExpanded = !executionsExpanded
+                            },
+                    ) {
+                        Column(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                ownerBot?.let {
+                                    MemberAvatar(it, 20.dp, motion = if (goal.status == "active" && !goal.stalled) "work" else "idle")
+                                }
+                                Text(
+                                    labelText,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (goal.status == "awaiting_user" || goal.stalled) palette.warn else if (goal.status == "completed") palette.ok else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                )
+                                Text("·", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                                Text(
+                                    stepText,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${goal.doneCount}/${goal.totalCount} 步",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary,
+                                )
+                                Icon(
+                                    if (executionsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                    if (executionsExpanded) "收起计划" else "展开计划",
+                                    tint = palette.textSecondary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().height(2.5.dp).clip(CircleShape),
+                                color = accentColor,
+                                trackColor = palette.quotaTrack,
+                            )
+                        }
+                    }
+                } else if (activeBotItems.isNotEmpty()) {
                     val safeIndex = activityTickerIndex % activeBotItems.size
                     val current = activeBotItems[safeIndex]
                     Row(

@@ -16,6 +16,7 @@ struct ChatView: View {
     @State private var showModels = false
     @State private var activeExecutionRef: SummonReference?
     @State private var executionsExpanded = false
+    @State private var drawerShowsExecutions = false
     @State private var activityTickerIndex = 0
     @State private var localError: String?
     @State private var nearBottom = true
@@ -47,6 +48,7 @@ struct ChatView: View {
         room?.members.compactMap { store.bot(id: $0) } ?? []
     }
     private var title: String { room?.name ?? "聊天" }
+    private var roomGoal: SummonRoomGoal? { store.goalForRoom(roomID) }
     private var roomExecutions: [SummonJSONValue] { store.executionsForRoom(roomID) }
     private static let liveExecutionStatuses: Set<String> = ["opening", "running", "submitted", "waiting", "queued", "needs_input", "awaiting_input"]
 
@@ -301,6 +303,333 @@ struct ChatView: View {
         }
     }
 
+    @ViewBuilder
+    private func goalStepMarker(_ step: SummonGoalStep, index: Int) -> some View {
+        switch step.status {
+        case "done":
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SummonTheme.ok)
+                .frame(width: 18, height: 18)
+        case "in_progress":
+            Circle()
+                .fill(SummonTheme.tint)
+                .frame(width: 9, height: 9)
+                .frame(width: 18, height: 18)
+        case "awaiting_user":
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SummonTheme.warn)
+                .frame(width: 18, height: 18)
+        case "blocked":
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SummonTheme.warn)
+                .frame(width: 18, height: 18)
+        case "skipped":
+            Image(systemName: "minus.circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
+        default:
+            Text("\(index + 1)")
+                .summonFont(.caption2, weight: .semibold)
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
+                .background(Circle().stroke(SummonTheme.bubbleStroke, lineWidth: 1))
+        }
+    }
+
+    private func goalBadgeInfo(_ goal: SummonRoomGoal) -> (text: String, color: Color) {
+        switch goal.status {
+        case "completed": return ("已完成", SummonTheme.ok)
+        case "stopped": return ("已停止", .secondary)
+        case "awaiting_user": return ("等待确认", SummonTheme.warn)
+        default: return goal.isStalled ? ("已暂停", SummonTheme.warn) : ("进行中", SummonTheme.ok)
+        }
+    }
+
+    @ViewBuilder
+    private func goalPlanDrawer(_ goal: SummonRoomGoal, liveExecs: [SummonJSONValue], activeCount: Int, hasExecutions: Bool) -> some View {
+        let badge = goalBadgeInfo(goal)
+        let canStop = goal.status == "active" || activeCount > 0
+        let canResume = goal.isStalled || goal.status == "stopped"
+        let canClear = goal.status == "completed" || goal.status == "stopped" || goal.isStalled
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(badge.text)
+                    .summonFont(.caption2, weight: .semibold)
+                    .foregroundStyle(badge.color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(badge.color.opacity(0.14), in: Capsule())
+                Text(goal.title)
+                    .summonFont(.caption, weight: .semibold)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("\(goal.doneCount)/\(goal.totalCount) 步")
+                    .summonFont(.caption2, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer(minLength: 4)
+                if hasExecutions || activeCount > 0 {
+                    Button("明细") {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { drawerShowsExecutions = true }
+                    }
+                    .summonFont(.caption2, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                }
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { executionsExpanded = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("收起计划")
+            }
+            if let criteria = goal.done_criteria, !criteria.isEmpty {
+                Text("验收：\(criteria)")
+                    .summonFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if goal.isStalled, let reason = goal.stall_reason, !reason.isEmpty {
+                Text(reason)
+                    .summonFont(.caption2, weight: .medium)
+                    .foregroundStyle(SummonTheme.warn)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(SummonTheme.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(goal.steps.enumerated()), id: \.element.id) { idx, step in
+                        let ownerID = step.owner
+                        let ownerLabel: String = {
+                            guard let ownerID, !ownerID.isEmpty else { return "" }
+                            return ownerID == "user" ? "宿主" : store.name(for: ownerID)
+                        }()
+                        let ownerBot = ownerID.flatMap { $0 == "user" ? nil : store.bot(id: $0) }
+                        let matchedLive: ActiveBotItem? = step.status == "in_progress"
+                            ? (activeBotItems.first { $0.id == ownerID } ?? (goal.currentStep?.id == step.id ? activeBotItems.first : nil))
+                            : nil
+                        let matchedExec: SummonJSONValue? = {
+                            guard step.status == "in_progress" else { return nil }
+                            if let refID = matchedLive?.ref?.id, matchedLive?.ref?.kind == "session" {
+                                return liveExecs.first { $0["execution_ref"]["id"].string == refID }
+                            }
+                            if let ownerID {
+                                return liveExecs.first { ($0["execution_actor"]["id"].string ?? $0["bot_id"].string) == ownerID }
+                            }
+                            return nil
+                        }()
+                        let liveRef = matchedExec.flatMap { SummonReference($0["execution_ref"]) } ?? matchedLive?.ref
+                        let liveHint: String = {
+                            if let matchedExec {
+                                let engine = matchedExec["kind"].string == "conversation" ? "内部对话" : (matchedExec["engine"].string ?? "执行")
+                                let text = matchedExec["live_progress"].string ?? matchedExec["work_summary"].string ?? "执行中"
+                                return "\(engine) · \(text)"
+                            }
+                            return matchedLive?.status ?? ""
+                        }()
+                        HStack(alignment: .top, spacing: 8) {
+                            goalStepMarker(step, index: idx)
+                                .padding(.top, 1)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(step.title)
+                                        .summonFont(.footnote, weight: step.status == "in_progress" ? .semibold : .regular)
+                                        .foregroundStyle(step.status == "done" || step.status == "skipped" ? .secondary : .primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 4)
+                                    if !ownerLabel.isEmpty {
+                                        HStack(spacing: 3) {
+                                            if let ownerBot { MemberAvatar(bot: ownerBot, size: 14, motion: "idle") }
+                                            Text(ownerLabel)
+                                                .summonFont(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                }
+                                if let note = step.note, !note.isEmpty {
+                                    Text(note)
+                                        .summonFont(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if !liveHint.isEmpty {
+                                    if let liveRef {
+                                        Button { activeExecutionRef = liveRef } label: {
+                                            HStack(spacing: 4) {
+                                                Circle().fill(SummonTheme.ok).frame(width: 5, height: 5)
+                                                Text(liveHint)
+                                                    .summonFont(.caption2, weight: .medium)
+                                                    .foregroundStyle(SummonTheme.tint)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    } else {
+                                        HStack(spacing: 4) {
+                                            Circle().fill(SummonTheme.ok).frame(width: 5, height: 5)
+                                            Text(liveHint)
+                                                .summonFont(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+            if canResume || canStop || canClear {
+                HStack(spacing: 12) {
+                    if canResume {
+                        Button("继续推进") {
+                            Task {
+                                do { try await store.resumeRoomGoal(roomID); localError = nil }
+                                catch { localError = error.localizedDescription }
+                            }
+                        }
+                        .summonFont(.caption, weight: .semibold)
+                        .foregroundStyle(SummonTheme.tint)
+                        .buttonStyle(.plain)
+                    }
+                    if canStop {
+                        Button("停止工作") {
+                            Task {
+                                do { try await store.stopRoom(roomID); localError = nil }
+                                catch { localError = error.localizedDescription }
+                            }
+                        }
+                        .summonFont(.caption, weight: .medium)
+                        .foregroundStyle(SummonTheme.warn)
+                        .buttonStyle(.plain)
+                    }
+                    if canClear {
+                        Button("清除") {
+                            Task {
+                                do {
+                                    try await store.clearRoomGoal(roomID)
+                                    executionsExpanded = false
+                                    localError = nil
+                                } catch { localError = error.localizedDescription }
+                            }
+                        }
+                        .summonFont(.caption, weight: .medium)
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                    }
+                    Spacer()
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+        .padding(.horizontal, 14)
+        .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 8)))
+    }
+
+    @ViewBuilder
+    private func goalSummaryBand(_ goal: SummonRoomGoal) -> some View {
+        let active = goal.currentStep
+        let items = activeBotItems
+        let primaryLive = items.first
+        let ownerBotID: String? = {
+            if let primary = primaryLive?.bot?.id { return primary }
+            if let owner = active?.owner, owner != "user", store.bot(id: owner) != nil { return owner }
+            if let lead = goal.owner_bot_id, store.bot(id: lead) != nil { return lead }
+            return nil
+        }()
+        let ownerBot = ownerBotID.flatMap { store.bot(id: $0) }
+        let labelText: String = {
+            switch goal.status {
+            case "completed": return "已完成"
+            case "stopped": return "计划已停止"
+            case "awaiting_user": return "等待确认 · 第 \(goal.currentStepIndex)/\(goal.totalCount) 步"
+            default: return goal.isStalled ? "已暂停 · 第 \(goal.currentStepIndex)/\(goal.totalCount) 步" : "第 \(goal.currentStepIndex)/\(goal.totalCount) 步"
+            }
+        }()
+        let stepText: String = {
+            if goal.status == "completed" || goal.status == "stopped" { return goal.title }
+            let base = active?.title ?? goal.title
+            if goal.isStalled { return "\(base)（点击查看或继续）" }
+            if goal.status == "active", let hint = primaryLive?.status,
+               !["正在处理中", "正在查看消息", "正在工作"].contains(hint) {
+                return "\(base) · \(hint)"
+            }
+            return base
+        }()
+        let progressRatio: Double = {
+            if goal.status == "completed" { return 1.0 }
+            guard goal.totalCount > 0 else { return 0 }
+            return max(0.08, Double(goal.doneCount) / Double(goal.totalCount))
+        }()
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                if !executionsExpanded { drawerShowsExecutions = false }
+                executionsExpanded.toggle()
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    if let ownerBot {
+                        MemberAvatar(bot: ownerBot, size: 20, motion: (goal.status == "active" && !goal.isStalled) ? "work" : "idle")
+                    }
+                    Text(labelText)
+                        .summonFont(.caption, weight: .semibold)
+                        .foregroundStyle(goal.status == "awaiting_user" || goal.isStalled ? SummonTheme.warn : (goal.status == "completed" ? SummonTheme.ok : .primary))
+                        .lineLimit(1)
+                    Text("·")
+                        .summonFont(.caption)
+                        .foregroundStyle(.tertiary)
+                    Text(stepText)
+                        .summonFont(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text("\(goal.doneCount)/\(goal.totalCount) 步")
+                        .summonFont(.caption2, weight: .medium)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Image(systemName: executionsExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(SummonTheme.bubbleStroke)
+                        Capsule()
+                            .fill(goal.status == "awaiting_user" || goal.isStalled ? SummonTheme.warn : SummonTheme.ok)
+                            .frame(width: max(8, geo.size.width * progressRatio))
+                    }
+                }
+                .frame(height: 2.5)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .overlay { RoundedRectangle(cornerRadius: 14).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
+    }
+
+    @ViewBuilder
     private var executionDrawer: some View {
         let sorted = sortedRoomExecutions
         let liveExecs = sorted.filter { Self.liveExecutionStatuses.contains($0["status"].stringValue) }
@@ -310,12 +639,23 @@ struct ChatView: View {
         let syntheticLive = activeBotItems.filter { !activeExecBotIDs.contains($0.id) }
         let activeCount = liveExecs.count + syntheticLive.count
         let totalCount = visibleExecs.count + syntheticLive.count
-        return VStack(alignment: .leading, spacing: 8) {
+        if let goal = roomGoal, !drawerShowsExecutions {
+            goalPlanDrawer(goal, liveExecs: liveExecs, activeCount: activeCount, hasExecutions: !visibleExecs.isEmpty)
+        } else {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Label(activeCount > 0 ? "进行中（\(activeCount)）" : "最近执行", systemImage: "terminal")
                     .summonFont(.caption, weight: .semibold)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if roomGoal != nil {
+                    Button("返回计划") {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { drawerShowsExecutions = false }
+                    }
+                    .summonFont(.caption2, weight: .medium)
+                    .foregroundStyle(SummonTheme.tint)
+                    .buttonStyle(.plain)
+                }
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { executionsExpanded = false }
                 } label: {
@@ -409,6 +749,7 @@ struct ChatView: View {
         .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
         .padding(.horizontal, 14)
         .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 8)))
+        }
     }
 
     @ViewBuilder
@@ -443,7 +784,9 @@ struct ChatView: View {
             if executionsExpanded {
                 executionDrawer
             }
-            if !activeBotItems.isEmpty {
+            if let goal = roomGoal {
+                goalSummaryBand(goal)
+            } else if !activeBotItems.isEmpty {
                 let items = activeBotItems
                 let safeIndex = items.isEmpty ? 0 : (activityTickerIndex % items.count)
                 let current = items[safeIndex]

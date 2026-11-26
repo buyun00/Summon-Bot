@@ -314,6 +314,7 @@ export class ExecRunner {
       secrets: launch.secrets, protocol: launch.protocol, dir,
       stopping: false, settled: false, nativeOutcome: null, finalResult: null,
       stdoutTail: '', stderrTail: '', pending: [], drainTimer: null,
+      hasReadableProgress: false,
     };
     this.running.set(session.id, live);
 
@@ -323,6 +324,22 @@ export class ExecRunner {
       if (!cleaned) return;
       this.store.save(executionRecords, { id: session.id, live_progress: cleaned, updated_at: new Date().toISOString() });
       this.onProgressChange?.(session.id);
+    };
+    const summarizeToolProgress = ev => {
+      if (ev.phase === 'completed') return null;
+      const toolName = String(ev.tool || '').trim();
+      if (toolName === 'fileChange') {
+        const files = String(ev.command || '').split(',').map(part => part.trim()).filter(Boolean)
+          .map(part => part.split(/[\\/]/).filter(Boolean).at(-1) || part);
+        if (files.length === 1) return `正在修改 ${files[0]}`;
+        if (files.length > 1) return `正在修改 ${files[0]} 等 ${files.length} 个文件`;
+        return '正在修改文件';
+      }
+      if (toolName && !['commandExecution', 'shell', 'bash', 'powershell', 'exec'].includes(toolName)) {
+        return toolName === 'mcpToolCall' ? '正在调用工具' : `正在调用 ${toolName}`;
+      }
+      if (live.hasReadableProgress || session.work_summary) return null;
+      return '正在执行命令';
     };
     const handleEvent = rawLine => {
       if (live.protocol !== 'summon-jsonl' || !rawLine.trimStart().startsWith('{')) return;
@@ -334,9 +351,11 @@ export class ExecRunner {
       if (ev.type === 'session' && typeof ev.sessionId === 'string' && ev.sessionId) {
         this.store.save(operationRecords, { id: opId, native_session_id: this.clean(ev.sessionId, live.secrets).slice(0, 512) });
       } else if (ev.type === 'progress' && typeof ev.text === 'string' && ev.text.trim()) {
+        live.hasReadableProgress = true;
         emitProgress(ev.text);
       } else if (ev.type === 'tool') {
-        if (ev.command || ev.tool) emitProgress(`正在执行 ${ev.command || ev.tool}`);
+        const summary = summarizeToolProgress(ev);
+        if (summary) emitProgress(summary);
         this.onWorkEvent?.(session.id, opId, ['item', ev.itemId || randomUUID(), ev.phase || 'call', ev.status || 'running'], {
           program: launch.programLabel, cwd: launch.cwd, phase: ev.phase, status: ev.status, tool: ev.tool, command: ev.command,
           text: typeof ev.text === 'string' ? ev.text.slice(0, 8000) : undefined,

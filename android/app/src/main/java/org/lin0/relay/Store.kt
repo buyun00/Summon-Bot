@@ -72,6 +72,8 @@ class SummonStore(private val app: Context) {
         private set
     var roomActivities by mutableStateOf<Map<String, List<SummonRoomActivity>>>(emptyMap())
         private set
+    var roomGoals by mutableStateOf<Map<String, SummonRoomGoal>>(emptyMap())
+        private set
     var optimisticRoomWork by mutableStateOf<Map<String, SummonOptimisticWork>>(emptyMap())
         private set
     var roomSuspendedRuns by mutableStateOf<Map<String, List<SummonJson>>>(emptyMap())
@@ -232,7 +234,7 @@ class SummonStore(private val app: Context) {
         client = api.forNode(nodeID)
         historyEpoch = null
         messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap()
-        roomActivities = emptyMap(); optimisticRoomWork = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
+        roomActivities = emptyMap(); roomGoals = emptyMap(); optimisticRoomWork = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         remoteNodeRooms[nodeID]?.let { rooms = it }
         remoteNodeBots[nodeID]?.let { bots = it }
         protocolReady = false
@@ -312,6 +314,7 @@ class SummonStore(private val app: Context) {
             bots = (state["bots"].array ?: throw SummonApiException.invalidResponse).map(SummonBot::parse)
             rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
             archivedRooms = state["archivedRooms"].array.orEmpty().map { SummonRoom.parse(it) }
+            roomGoals = (rooms + archivedRooms).mapNotNull { r -> r.goal?.let { r.id to it } }.toMap()
             if (state["modelSettings"].obj != null) modelSummary = state["modelSettings"]
             val nextRemoteRooms = remoteNodeRooms.toMutableMap()
             val nextRemoteBots = remoteNodeBots.toMutableMap()
@@ -416,6 +419,19 @@ class SummonStore(private val app: Context) {
     fun deliveryFacts(id: String): List<SummonDelivery> = deliveries[id].orEmpty()
     fun summaryFacts(id: String): List<SummonMessageSummary> = messageSummaries[id].orEmpty()
     fun activitiesForRoom(id: String): List<SummonRoomActivity> = roomActivities[id].orEmpty()
+    fun goalForRoom(id: String): SummonRoomGoal? = roomGoals[id] ?: room(id)?.goal
+    suspend fun resumeRoomGoal(roomId: String) {
+        request(roomPath(roomId) + "/goal", "POST", SummonJson.obj("action" to SummonJson.Str("resume")))
+        scheduleActiveRoomRefresh(roomId, 80L)
+        scheduleRefresh()
+    }
+    suspend fun clearRoomGoal(roomId: String) {
+        request(roomPath(roomId) + "/goal", "POST", SummonJson.obj("action" to SummonJson.Str("clear")))
+        roomGoals = roomGoals - roomId
+        rooms = rooms.map { if (it.id == roomId) it.copy(goal = null) else it }
+        scheduleActiveRoomRefresh(roomId, 80L)
+        scheduleRefresh()
+    }
     fun optimisticWorkForRoom(id: String): SummonOptimisticWork? {
         val work = optimisticRoomWork[id] ?: return null
         if (System.currentTimeMillis() - work.startedAtMs > 12_000L) return null
@@ -487,8 +503,11 @@ class SummonStore(private val app: Context) {
             if (!older) {
                 val nextActivities = SummonRoomActivity.list(snapshot["activities"])
                 val nextSuspended = snapshot["suspendedRuns"].array.orEmpty()
+                val nextGoal = SummonRoomGoal.parse(snapshot["goal"])
                 roomActivities = roomActivities + (id to nextActivities)
                 roomSuspendedRuns = roomSuspendedRuns + (id to nextSuspended)
+                roomGoals = if (nextGoal != null) roomGoals + (id to nextGoal) else roomGoals - id
+                rooms = rooms.map { if (it.id == id) it.copy(goal = nextGoal) else it }
                 if (execs != null) roomExecutions = roomExecutions + (id to execs)
                 reconcileOptimisticWork(id, all, nextActivities, nextSuspended)
             }
@@ -792,7 +811,12 @@ class SummonStore(private val app: Context) {
             if (message.clientId != id || message.roomId != item.roomID || !message.isOwn || message.id.isEmpty()) throw SummonApiException.invalidReceipt
             deliveries = deliveries + (message.id to confirmed.deliveries)
             updatePending(id) { it.copy(message = message, status = "sent", error = null) }
-            rooms = rooms.map { if (it.id == item.roomID) it.copy(lastMessage = message) else it }
+            val clearFinishedGoal = goalForRoom(item.roomID)?.status in setOf("completed", "stopped")
+            if (clearFinishedGoal) roomGoals = roomGoals - item.roomID
+            rooms = rooms.map {
+                if (it.id == item.roomID) it.copy(lastMessage = message, goal = if (clearFinishedGoal) null else it.goal)
+                else it
+            }
             preferredWorkingBotId(item.roomID, confirmed.deliveries, message.mentions)?.let { targetBotId ->
                 optimisticRoomWork = optimisticRoomWork + (item.roomID to SummonOptimisticWork(targetBotId, message.id, System.currentTimeMillis()))
             }
@@ -1023,7 +1047,7 @@ class SummonStore(private val app: Context) {
 
     private fun clearServerState() {
         bots = emptyList(); rooms = emptyList(); archivedRooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
-        roomActivities = emptyMap(); optimisticRoomWork = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
+        roomActivities = emptyMap(); roomGoals = emptyMap(); optimisticRoomWork = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
         modelSummary = SummonJson.Null

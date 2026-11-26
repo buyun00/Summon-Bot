@@ -1060,6 +1060,151 @@ button.bot-execution-item:hover { background: var(--hover); border-color: var(--
 .bot-execution-empty {
   margin: 4px 2px; font-size: calc(12px * var(--ui-font-scale, 1)); color: var(--muted);
 }
+
+/* Goal & step-plan view inside unified composer work dock */
+.cwb-step.is-done { color: var(--ok); font-weight: 500; }
+.cwb-step.is-muted { color: var(--muted); }
+.goal-band-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none; margin: 0 4px;
+  background: var(--ok);
+}
+.goal-band-dot.is-awaiting_user,
+.goal-band-dot.is-warn { background: var(--warn); }
+.goal-band-dot.is-stopped { background: var(--faint); }
+.goal-band-dot.is-completed { background: var(--ok); }
+.composer-shell.is-completed .cwb-rail-fill { background: var(--ok); animation: none; }
+
+.goal-drawer-heading {
+  display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto;
+}
+.goal-drawer-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: calc(13px * var(--ui-font-scale, 1)); color: var(--ink);
+}
+.goal-drawer-count {
+  flex: none; font-size: calc(11.5px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.bot-execution-status.done {
+  background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok);
+}
+.drawer-resume-btn {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 9px; border-radius: 999px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.drawer-resume-btn:hover {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 42%, transparent);
+}
+.goal-criteria {
+  margin: -2px 2px 8px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); line-height: 1.45;
+  color: var(--muted);
+}
+.goal-stall-banner {
+  margin: 0 0 8px; padding: 7px 10px; border-radius: 10px;
+  font-size: calc(12px * var(--ui-font-scale, 1)); line-height: 1.45;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
+}
+.goal-plan-list {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 260px; overflow-y: auto;
+}
+.goal-step-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 7px 9px; border-radius: 11px;
+  border: 1px solid transparent;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.goal-step-item.is-in_progress {
+  background: color-mix(in srgb, var(--ok) 7%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 18%, transparent);
+}
+.goal-step-item.is-awaiting_user {
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.goal-step-item.is-blocked {
+  background: color-mix(in srgb, var(--red) 7%, transparent);
+  border-color: color-mix(in srgb, var(--red) 20%, transparent);
+}
+.goal-step-item.is-done .goal-step-title,
+.goal-step-item.is-skipped .goal-step-title {
+  color: var(--muted);
+}
+.goal-step-marker {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.goal-step-marker.is-done {
+  background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok);
+}
+.goal-step-marker.is-progress {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+}
+.goal-step-pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
+  animation: goalStepPulse 1.6s ease-in-out infinite;
+}
+@keyframes goalStepPulse {
+  0%, 100% { transform: scale(0.88); opacity: 0.72; }
+  50% { transform: scale(1.18); opacity: 1; }
+}
+.goal-step-marker.is-waiting {
+  background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
+}
+.goal-step-marker.is-blocked {
+  background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red);
+}
+.goal-step-marker.is-pending,
+.goal-step-marker.is-skipped {
+  border: 1.5px solid var(--line); color: var(--muted);
+}
+.goal-step-body {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+}
+.goal-step-top {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.goal-step-title {
+  flex: 1 1 auto; min-width: 0;
+  font-size: calc(12.5px * var(--ui-font-scale, 1)); font-weight: 500;
+  color: var(--ink); line-height: 1.4;
+}
+.goal-step-owner {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  font-size: calc(11px * var(--ui-font-scale, 1)); color: var(--muted);
+  padding: 1px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--hover) 90%, transparent);
+  white-space: nowrap;
+}
+.goal-step-owner .avatar,
+.goal-step-owner .summon-bot-face { width: 14px !important; height: 14px !important; }
+.goal-step-note {
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); color: var(--muted); line-height: 1.4;
+}
+.goal-step-live {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  margin-top: 2px; padding: 2px 8px; border-radius: 8px;
+  font-size: calc(11.5px * var(--ui-font-scale, 1)); color: var(--ink-2);
+  background: color-mix(in srgb, var(--hover) 95%, transparent);
+  border: 1px solid var(--line);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.goal-step-live { cursor: pointer; }
+button.goal-step-live:hover { background: var(--active); }
+.goal-step-live-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ok);
+}
 .shimmer-status {
   font-size: calc(13px * var(--ui-font-scale, 1)); font-weight: 500;
   color: var(--shimmer-base);

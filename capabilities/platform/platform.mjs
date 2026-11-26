@@ -14,6 +14,7 @@ import { assertRevision, idOf, identity, keyOf, page, readTools, reject, sameIde
 import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
+import { GoalManager } from './goals.mjs';
 import { RoomWork } from './room-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
 
@@ -64,6 +65,7 @@ export class SummonPlatform {
       } });
     this.executions = new Executions({ store, platform: this, calls: this.calls, resources: this.resources });
     this.roomWork = new RoomWork(this);
+    this.goals = new GoalManager(this);
     this.workspaces = workspaces;
   }
 
@@ -1126,6 +1128,12 @@ export class SummonPlatform {
             });
           }
         }
+        const execRoomId = result?.origin_room?.id
+          || (context.conversation?.space?.kind === 'room' ? context.conversation.space.id : null)
+          || (args.work_room ? (typeof args.work_room === 'string' ? args.work_room : args.work_room.id) : null);
+        if (execRoomId && (name === 'open_session' || name === 'send_input')) {
+          this.goals.onRoomActivity(execRoomId, 'session');
+        }
         this.emit('execution', { call_id: record.id });
         return { result, call_id: record.id };
       }
@@ -1309,6 +1317,11 @@ export class SummonPlatform {
           });
         }
       }
+      if (sendResult?.message) {
+        if (actor.kind === 'user') this.goals.onUserMessage(id);
+        else if (args.prompt || args.awaiting_reply === true) this.goals.onAwaitingUser(id);
+        else this.goals.onRoomActivity(id, 'bot_message');
+      }
       return sendResult;
     }
     if (name === 'save_file') {
@@ -1335,6 +1348,12 @@ export class SummonPlatform {
     }
     if (name === 'configure_session') {
       return this.executions.configure(args, context, call);
+    }
+    if (name === 'update_goal') {
+      const value = this.goals.update(args, context);
+      const roomId = idOf(args.room, 'room');
+      this.calls.bind(call.id, { target: { kind: 'room', id: roomId } });
+      return value;
     }
     if (name === 'configure_workspace') {
       const value = this.configureWorkspace(args);
@@ -1701,6 +1720,7 @@ export class SummonPlatform {
         this.calls.fail(record.id, error);
       }
     }
+    this.goals.stop(room.id, actor);
     this.emit('execution');
     return {
       room_id: room.id,
@@ -2008,6 +2028,7 @@ export class SummonPlatform {
     if (!this.draining && observations) {
       this.deliveries.tickTime();
       this.checkUnansweredFallbacks();
+      this.goals.tick();
     }
     if (deliveries) await this.deliveries.flush(this.runtime);
   }

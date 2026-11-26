@@ -11,7 +11,7 @@
   };
   const valuePaths = {
     state: ['historyEpoch', 'modelSettings', 'limits', 'protocolVersion', 'onboarding', 'roles'],
-    room: ['historyEpoch', 'room', 'cursor', 'activities', 'suspendedRuns'],
+    room: ['historyEpoch', 'room', 'cursor', 'activities', 'suspendedRuns', 'goal'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -42,7 +42,7 @@
       if (path === 'historyEpoch' || path === 'cursor') return value === null || validId(value);
       if (path === 'protocolVersion') return value === 3;
       if (path === 'activities' || path === 'suspendedRuns' || path === 'roles') return Array.isArray(value);
-      if (path === 'onboarding') return value === null || object(value);
+      if (path === 'onboarding' || path === 'goal') return value === null || object(value);
       return object(value);
     }) && collectionPaths[kind].every(path => {
       const value = getPath(snapshot, path);

@@ -32,6 +32,7 @@ final class SummonStore {
     private(set) var modelSummary: SummonJSONValue = .null
     private(set) var roomExecutions: [String: [SummonJSONValue]] = [:]
     private(set) var roomActivities: [String: [SummonRoomActivity]] = [:]
+    private(set) var roomGoals: [String: SummonRoomGoal] = [:]
     private(set) var optimisticRoomWork: [String: SummonOptimisticWork] = [:]
     private(set) var roomSuspendedRuns: [String: [SummonJSONValue]] = [:]
     private(set) var roomMessageStates: [String: [String: SummonJSONValue]] = [:]
@@ -226,6 +227,7 @@ final class SummonStore {
         deliveries = [:]
         messageSummaries = [:]
         roomActivities = [:]
+        roomGoals = [:]
         optimisticRoomWork = [:]
         cursors = [:]
         roomSuspendedRuns = [:]
@@ -348,6 +350,7 @@ final class SummonStore {
             bots = state.bots
             rooms = state.rooms
             archivedRooms = state.archivedRooms ?? []
+            roomGoals = Dictionary(uniqueKeysWithValues: (rooms + archivedRooms).compactMap { r in r.goal.map { (r.id, $0) } })
             if let model = state.modelSettings { modelSummary = model }
             if let aid = activeNodeID {
                 remoteNodeRooms[aid] = state.rooms
@@ -454,6 +457,19 @@ final class SummonStore {
     func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
     func summaryFacts(_ id: String) -> [SummonMessageSummary] { messageSummaries[id] ?? [] }
     func activitiesForRoom(_ id: String) -> [SummonRoomActivity] { roomActivities[id] ?? [] }
+    func goalForRoom(_ id: String) -> SummonRoomGoal? { roomGoals[id] ?? room(id: id)?.goal }
+    func resumeRoomGoal(_ roomID: String) async throws {
+        _ = try await request(path: Self.roomPath(roomID) + "/goal", method: "POST", body: .object(["action": .string("resume")]))
+        scheduleActiveRoomRefresh(roomID, delayMs: 80)
+        scheduleRefresh()
+    }
+    func clearRoomGoal(_ roomID: String) async throws {
+        _ = try await request(path: Self.roomPath(roomID) + "/goal", method: "POST", body: .object(["action": .string("clear")]))
+        roomGoals.removeValue(forKey: roomID)
+        if let index = rooms.firstIndex(where: { $0.id == roomID }) { rooms[index].goal = nil }
+        scheduleActiveRoomRefresh(roomID, delayMs: 80)
+        scheduleRefresh()
+    }
     func optimisticWorkForRoom(_ id: String) -> SummonOptimisticWork? {
         guard let work = optimisticRoomWork[id] else { return nil }
         if Date().timeIntervalSince(work.startedAt) > 12 { return nil }
@@ -545,6 +561,14 @@ final class SummonStore {
                 let nextSuspended = snapshot.suspendedRuns ?? []
                 roomActivities[id] = nextActivities
                 roomSuspendedRuns[id] = nextSuspended
+                if let nextGoal = snapshot.goal {
+                    roomGoals[id] = nextGoal
+                } else {
+                    roomGoals.removeValue(forKey: id)
+                }
+                if let index = rooms.firstIndex(where: { $0.id == id }) {
+                    rooms[index].goal = snapshot.goal
+                }
                 if let execs { roomExecutions[id] = execs }
                 reconcileOptimisticWork(roomID: id, messages: sortedMessages, activities: nextActivities, suspendedRuns: nextSuspended)
             }
@@ -860,7 +884,13 @@ final class SummonStore {
                   receipt.message.isOwn, !receipt.message.id.isEmpty else { throw SummonAPIError.invalidReceipt }
             deliveries[receipt.message.id] = receipt.deliveries
             updatePending(id) { $0.message = receipt.message; $0.status = "sent"; $0.error = nil }
-            if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = receipt.message }
+            if let index = rooms.firstIndex(where: { $0.id == item.roomID }) {
+                rooms[index].lastMessage = receipt.message
+                if let currentGoal = goalForRoom(item.roomID), ["completed", "stopped"].contains(currentGoal.status) {
+                    roomGoals.removeValue(forKey: item.roomID)
+                    rooms[index].goal = nil
+                }
+            }
             if let targetBotID = preferredWorkingBotID(in: item.roomID, deliveries: receipt.deliveries, mentions: receipt.message.mentions) {
                 optimisticRoomWork[item.roomID] = SummonOptimisticWork(botID: targetBotID, sentMessageID: receipt.message.id, startedAt: Date())
             }
@@ -1079,7 +1109,7 @@ final class SummonStore {
 
     private func clearServerState() {
         bots = []; rooms = []; archivedRooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
-        roomActivities = [:]; optimisticRoomWork = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
+        roomActivities = [:]; roomGoals = [:]; optimisticRoomWork = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }

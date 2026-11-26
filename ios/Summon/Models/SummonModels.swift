@@ -206,6 +206,47 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct SummonGoalStep: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var owner: String?
+    var status: String
+    var note: String?
+    var updated_at: String?
+}
+
+struct SummonRoomGoal: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var room_id: String
+    var title: String
+    var done_criteria: String?
+    var status: String
+    var owner_bot_id: String?
+    var steps: [SummonGoalStep]
+    var stalled: Bool?
+    var stall_reason: String?
+    var revision: Int?
+    var created_at: String?
+    var updated_at: String?
+
+    var isStalled: Bool { stalled == true }
+    var doneCount: Int { steps.filter { $0.status == "done" || $0.status == "skipped" }.count }
+    var totalCount: Int { steps.count }
+    var currentStep: SummonGoalStep? {
+        steps.first { $0.status == "in_progress" }
+            ?? steps.first { $0.status == "awaiting_user" }
+            ?? steps.first { $0.status == "blocked" }
+            ?? steps.first { $0.status == "pending" }
+            ?? steps.last
+    }
+    var currentStepIndex: Int {
+        guard let active = currentStep, let idx = steps.firstIndex(where: { $0.id == active.id }) else {
+            return totalCount
+        }
+        return idx + 1
+    }
+}
+
 struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var deletable: Bool?
     var archivable: Bool?
@@ -219,6 +260,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var pins: [SummonReference]?
     var revision: Int?
     var lastMessage: SummonMessage?
+    var goal: SummonRoomGoal? = nil
     var createdAt: String?
     var updatedAt: String?
 
@@ -283,6 +325,7 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var summaries: [String: [SummonMessageSummary]]?
     var activities: [SummonRoomActivity]?
     var suspendedRuns: [SummonJSONValue]?
+    var goal: SummonRoomGoal?
     var messageStates: [String: SummonJSONValue]?
     var cursor: String?
 }
