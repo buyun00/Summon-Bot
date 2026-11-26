@@ -1,6 +1,6 @@
 {
   "name": "summon-desktop-tauri",
-  "version": "0.5.32",
+  "version": "0.6.0",
   "private": true,
   "description": "Summon Bot Tauri desktop client",
   "author": "Summon Bot",

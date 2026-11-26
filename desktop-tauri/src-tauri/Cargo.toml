@@ -1,6 +1,6 @@
 [package]
 name = "summon-bot-tauri"
-version = "0.5.32"
+version = "0.6.0"
 description = "Summon Bot Tauri desktop client"
 authors = ["Summon Bot"]
 edition = "2021"
