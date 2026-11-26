@@ -15,10 +15,12 @@
     { id: 'openai-compatible', kind: 'api', name: '自定义 API', subtitle: 'Token Plan / 本机', provider: 'openai-compatible', api: 'openai-completions', baseUrl: '', defaultModel: '' },
   ];
 
+  const ENGINE_ORDER = ['codex', 'claude-code', 'grok-build'];
+
   const ob = {
     open: false,
     preview: false,
-    stage: 'model', // 'model' | 'bot'
+    stage: 'model', // 'model' | 'engine' | 'bot'
     morphing: false,
     selectedProvider: 'codex',
     userPickedProvider: false,
@@ -26,6 +28,7 @@
     localLoaded: false,
     localLoading: false,
     catalog: null,
+    activeModelLabel: '',
     draft: { name: 'Codex 订阅', baseUrl: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses', model: 'gpt-6.1-terra', apiKey: '', allowNoKey: false },
     busy: false,
     phase: 'idle',
@@ -33,7 +36,14 @@
     oauthConnId: null,
     oauthState: null,
     oauthTimer: null,
-    // Stage 2: single-step work engine self-check state (handled by Summon maintenance lead)
+    // Stage 2: work engine selection state
+    engines: [],
+    enginesLoaded: false,
+    enginesLoading: false,
+    suggestedEngineId: null,
+    selectedEngineId: 'none',
+    userPickedEngine: false,
+    // Stage 3: single-step work engine self-check state (handled by Summon maintenance lead)
     botId: null,
     botName: '',
     engineId: null,
@@ -52,8 +62,11 @@
     callbacks: null,
   };
 
-  if (navigator.platform?.toLowerCase().includes('win')) {
+  const platformName = (navigator.platform || navigator.userAgent || '').toLowerCase();
+  if (platformName.includes('win')) {
     document.documentElement.classList.add('is-win');
+  } else if (platformName.includes('mac')) {
+    document.documentElement.classList.add('is-mac');
   }
 
   function providerDef(id) {
@@ -120,6 +133,91 @@
     return window.SummonModelIcons?.svg
       ? window.SummonModelIcons.svg({ kind: item.kind, provider: item.provider, model: item.defaultModel }, 17)
       : '';
+  }
+
+  function renderEngineIcon(engine) {
+    if (!window.SummonModelIcons?.svg) return '';
+    const provider = engine.id === 'grok-build' ? 'grok' : engine.id;
+    return window.SummonModelIcons.svg({ role: 'executor', id: engine.id, provider }, 17);
+  }
+
+  function sortEngines(items, suggestedId = null) {
+    const rankOf = id => {
+      const idx = ENGINE_ORDER.indexOf(id);
+      return idx >= 0 ? idx : ENGINE_ORDER.length;
+    };
+    return [...(items || [])].sort((a, b) => {
+      if (suggestedId && a.id === suggestedId && b.id !== suggestedId) return -1;
+      if (suggestedId && b.id === suggestedId && a.id !== suggestedId) return 1;
+      if (Boolean(a.installed) !== Boolean(b.installed)) return a.installed ? -1 : 1;
+      const ra = rankOf(a.id);
+      const rb = rankOf(b.id);
+      if (ra !== rb) return ra - rb;
+      return String(a.id).localeCompare(String(b.id));
+    });
+  }
+
+  function defaultSelectedEngine(engines, suggestedId) {
+    if (suggestedId) {
+      const matched = engines.find(item => item.id === suggestedId);
+      if (matched && (suggestedId === 'codex' || suggestedId === 'grok-build' || matched.installed)) {
+        return matched.id;
+      }
+    }
+    return 'none';
+  }
+
+  function selectEngine(id) {
+    ob.userPickedEngine = true;
+    ob.selectedEngineId = id || 'none';
+    ob.phase = 'idle';
+    ob.statusText = '';
+    render();
+  }
+
+  async function loadEngines({ force = false } = {}) {
+    const api = ob.callbacks?.api;
+    if (ob.enginesLoading) return;
+    if (ob.enginesLoaded && !force) return;
+    ob.enginesLoading = true;
+    if (force && ob.open && ob.stage === 'engine') render();
+    try {
+      const tasks = api
+        ? [
+            api('/api/engines'),
+            !ob.activeModelLabel ? api('/api/model-settings') : Promise.resolve(null),
+          ]
+        : [];
+      const [enginesRes, catalogRes] = tasks.length
+        ? await Promise.allSettled(tasks)
+        : [{ status: 'rejected' }, { status: 'rejected' }];
+
+      let items = [];
+      if (enginesRes.status === 'fulfilled' && Array.isArray(enginesRes.value?.items)) {
+        items = enginesRes.value.items;
+      } else if (ob.preview) {
+        items = [
+          { id: 'codex', name: 'Codex', summary: 'OpenAI Codex CLI：多文件编码、工程重构与构建排障', command: 'codex', installed: false },
+          { id: 'claude-code', name: 'Claude Code', summary: 'Anthropic Claude Code CLI：多文件代码实现、架构重构与深度排障', command: 'claude', installed: false },
+          { id: 'grok-build', name: 'Grok Build', summary: 'xAI Grok Build CLI：代码开发、工程调研与自动化脚本任务', command: 'grok', installed: false },
+        ];
+      }
+      if (catalogRes.status === 'fulfilled' && catalogRes.value) {
+        ob.catalog = catalogRes.value;
+        const active = catalogRes.value.connections?.find(c => c.id === catalogRes.value.activeId && c.configured);
+        if (active && !ob.activeModelLabel) {
+          ob.activeModelLabel = active.model ? `${active.name}（${active.model}）` : active.name;
+        }
+      }
+      ob.engines = sortEngines(items, ob.suggestedEngineId);
+      ob.enginesLoaded = true;
+      if (!ob.userPickedEngine) {
+        ob.selectedEngineId = defaultSelectedEngine(ob.engines, ob.suggestedEngineId);
+      }
+    } finally {
+      ob.enginesLoading = false;
+      if (ob.open && ob.stage === 'engine') render();
+    }
   }
 
   function selectProvider(id, { userInitiated = true } = {}) {
@@ -246,7 +344,7 @@
         formBody = `<div class="ob-oauth-box is-detected">
           <div class="ob-oauth-detected-head">
             <strong>检测到本机已有 ${subLabel} 订阅</strong>
-            <small>直接复用本机登录态，并自动衔接对接专职 Bot</small>
+            <small>直接复用本机登录态，下一步可按需选择工作引擎</small>
           </div>
           <div class="ob-oauth-actions">
             <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="${esc(def.kind)}" ${ob.busy ? 'disabled' : ''}>
@@ -316,7 +414,7 @@
 
     return `
       <div class="ob-window-bar">
-        <span class="ob-window-brand">Summon Bot <span class="ob-step-dots"><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span></span></span>
+        <span class="ob-window-brand">Summon Bot <span class="ob-step-dots"><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span><span class="ob-step-dot"></span></span></span>
         <div class="ob-window-controls">${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}</div>
       </div>
       <div class="ob-model-scroll">
@@ -329,6 +427,77 @@
         ${providerGrid}
         ${formBody}
         ${statusBar}
+      </div>
+    `;
+  }
+
+  function renderEngineStage() {
+    const faceState = ob.busy ? 'work' : 'idle';
+    const selectedEngine = ob.engines.find(item => item.id === ob.selectedEngineId) || null;
+    const modelHint = ob.activeModelLabel ? `已接通 ${ob.activeModelLabel}。` : '';
+    const statusBar = ob.statusText
+      ? `<div class="ob-status ${ob.phase === 'error' ? 'is-error' : 'is-info'}" role="status">
+          ${ob.busy ? '<span class="ob-spinner"></span>' : ''}
+          <span>${esc(ob.statusText)}</span>
+        </div>`
+      : '';
+
+    const engineCards = !ob.enginesLoaded
+      ? `<div class="ob-oauth-box"><small class="ob-detecting"><span class="ob-spinner"></span>正在探测本机工作引擎…</small></div>`
+      : `<div class="ob-engine-list" role="radiogroup" aria-label="选择工作引擎">
+          ${ob.engines.map(engine => {
+            const selected = ob.selectedEngineId === engine.id;
+            const isMatched = Boolean(ob.suggestedEngineId && ob.suggestedEngineId === engine.id);
+            return `<button type="button" role="radio" aria-checked="${selected}" class="ob-engine-card ${selected ? 'is-selected' : ''}" data-ob-action="pick-engine" data-engine="${esc(engine.id)}" ${ob.busy ? 'disabled' : ''}>
+              <span class="ob-engine-radio" aria-hidden="true"></span>
+              <span class="ob-engine-body">
+                <span class="ob-engine-head">
+                  <span class="ob-engine-title">${renderEngineIcon(engine)}<strong>${esc(engine.name)}</strong></span>
+                  <span class="ob-engine-tags">
+                    ${isMatched ? '<span class="ob-engine-tag is-match">与当前模型匹配</span>' : ''}
+                    <span class="ob-engine-tag ${engine.installed ? 'is-detected' : ''}">${engine.installed ? '本机已检测到' : '未检测到 CLI'}</span>
+                  </span>
+                </span>
+                ${engine.summary ? `<p class="ob-engine-summary">${esc(engine.summary)}</p>` : ''}
+                ${engine.command ? `<span class="ob-engine-cmd">命令：<code>${esc(engine.command)}</code>${engine.detected_path ? ` · ${esc(engine.detected_path)}` : ''}</span>` : ''}
+              </span>
+            </button>`;
+          }).join('')}
+          <button type="button" role="radio" aria-checked="${ob.selectedEngineId === 'none'}" class="ob-engine-card is-skip ${ob.selectedEngineId === 'none' ? 'is-selected' : ''}" data-ob-action="pick-engine" data-engine="none" ${ob.busy ? 'disabled' : ''}>
+            <span class="ob-engine-radio" aria-hidden="true"></span>
+            <span class="ob-engine-body">
+              <span class="ob-engine-head">
+                <span class="ob-engine-title"><strong>暂不接入工作引擎</strong></span>
+                <span class="ob-engine-tags"><span class="ob-engine-tag">仅使用对话模型</span></span>
+              </span>
+              <p class="ob-engine-summary">跳过 CLI 工作引擎自检，直接进入工作台建群；后续随时可在「设置 → 工作引擎」中启用与自检。</p>
+            </span>
+          </button>
+        </div>`;
+
+    const ctaLabel = ob.busy
+      ? `<span class="ob-spinner"></span>${selectedEngine ? '正在启动自检…' : '正在进入…'}`
+      : selectedEngine
+        ? `对接并自检 ${esc(selectedEngine.name)} →`
+        : '直接进入工作台 →';
+
+    return `
+      <div class="ob-window-bar">
+        <span class="ob-window-brand">Summon Bot · 选择工作引擎 <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span></span></span>
+        <div class="ob-window-controls">${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}</div>
+      </div>
+      <div class="ob-model-scroll">
+        <header class="ob-hero">
+          <div class="ob-hero-face">${avatarSvg('bot-default-eggbot-local', 56, faceState)}</div>
+          <h1>选择要对接的工作引擎</h1>
+          <p>${esc(modelHint)}可按需挑选一个本机 CLI 工作引擎做环境自检，或暂不接入直接开工。</p>
+        </header>
+        ${engineCards}
+        ${statusBar}
+        <div class="ob-actions">
+          <button type="button" class="ob-secondary-btn" data-ob-action="redetect-engines" ${ob.busy || ob.enginesLoading ? 'disabled' : ''}>重新检测</button>
+          <button type="button" class="ob-primary-btn" data-ob-action="confirm-engine" ${ob.busy || !ob.enginesLoaded ? 'disabled' : ''}>${ctaLabel}</button>
+        </div>
       </div>
     `;
   }
@@ -618,9 +787,10 @@
     stage.dataset.mountedStage = 'bot';
     stage.innerHTML = `
       <div class="ob-window-bar">
-        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(engineLabel)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
+        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 接入 ${esc(engineLabel)}</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span></span></span>
         <div class="ob-window-controls">
-          ${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}
+          <button type="button" class="ob-ghost-pill" data-ob-action="switch-engine">切换引擎</button>
+          <button type="button" class="ob-ghost-pill" data-ob-action="${ob.preview ? 'close-preview' : 'finish-to-main'}">${ob.preview ? '退出预览' : '跳过进入'}</button>
         </div>
       </div>
       <div class="ob-bot-shell">
@@ -640,7 +810,7 @@
         <div class="ob-bot-feed" id="ob-bot-feed"></div>
         <div class="ob-bot-live-bar" data-ob-live-bar>
           <span class="ob-bot-live-left">
-            <span class="ob-spinner" style="color:var(--accent,#7d824b)"></span>
+            <span class="ob-spinner" style="color:var(--ob-accent)"></span>
             <span class="ob-bot-live-text" data-ob-live-text>正在唤醒 Summon 自检工作引擎…</span>
           </span>
           <span class="ob-bot-timer" data-ob-live-timer>00:00</span>
@@ -764,6 +934,12 @@
       patchBotStage(stage);
       return;
     }
+    if (ob.stage === 'engine') {
+      stage.dataset.mountedStage = 'engine';
+      stage.innerHTML = renderEngineStage();
+      window.SummonAvatars?.hydrate?.(stage);
+      return;
+    }
     stage.dataset.mountedStage = 'model';
     stage.innerHTML = renderModelStage();
     window.SummonAvatars?.hydrate?.(stage);
@@ -813,6 +989,104 @@
     }, 1000);
   }
 
+  async function morphToEngineStage({ suggestedEngineId = null, preview = false } = {}) {
+    stopOAuthPoll();
+    stopBotWatchers();
+    ob.stage = 'engine';
+    ob.busy = false;
+    ob.phase = 'idle';
+    ob.statusText = '';
+    ob.suggestedEngineId = suggestedEngineId || null;
+    ob.userPickedEngine = false;
+    ob.enginesLoaded = false;
+    const stageEl = document.querySelector('#ob-stage');
+    if (stageEl) delete stageEl.dataset.mountedStage;
+    if (window.SummonDesktop && !preview) {
+      try { history.replaceState(null, '', '/?onboarding_window=engine'); } catch {}
+    }
+    render();
+    void window.SummonDesktop?.morphWindow?.('model', { duration: 360 });
+    await loadEngines({ force: true });
+  }
+
+  async function handleConfirmEngine() {
+    if (ob.busy || !ob.enginesLoaded) return;
+    const chosenId = ob.selectedEngineId && ob.selectedEngineId !== 'none' ? ob.selectedEngineId : null;
+    if (!chosenId) {
+      if (ob.preview) {
+        await transitionToMainNewGroup({ preview: true });
+        return;
+      }
+      const api = ob.callbacks?.api;
+      if (!api) return;
+      ob.busy = true;
+      ob.phase = 'saving';
+      ob.statusText = '正在进入工作台…';
+      render();
+      try {
+        await api('/api/onboarding/start', 'POST', { skipEngine: true });
+        await transitionToMainNewGroup({ preview: false, skipFinish: true });
+      } catch (error) {
+        ob.busy = false;
+        ob.phase = 'error';
+        ob.statusText = error.message || '无法进入工作台，请重试。';
+        render();
+      }
+      return;
+    }
+
+    const chosen = ob.engines.find(item => item.id === chosenId);
+    const engineName = chosen?.name || chosenId;
+    if (ob.preview) {
+      await morphToBotStage({
+        botId: 'bot-lead-room-default-bot-maintenance',
+        botName: 'Summon',
+        engineId: chosenId,
+        engineName,
+        preview: true,
+      });
+      return;
+    }
+    const api = ob.callbacks?.api;
+    if (!api) return;
+    ob.busy = true;
+    ob.phase = 'saving';
+    ob.statusText = `正在启动 ${engineName} 环境自检…`;
+    render();
+    try {
+      const started = await api('/api/onboarding/start', 'POST', { checkEngine: chosenId });
+      if (started?.status === 'configuring_bot' && started.botId) {
+        await morphToBotStage({
+          botId: started.botId,
+          botName: started.botName || 'Summon',
+          engineId: started.engineId || chosenId,
+          engineName: started.engineName || started.engine?.name || engineName,
+          roomId: started.roomId || SUMMON_ROOM_ID,
+          wakeMessageId: started.wakeMessageId || null,
+        });
+      } else {
+        await transitionToMainNewGroup({ preview: false, skipFinish: true });
+      }
+    } catch (error) {
+      ob.busy = false;
+      ob.phase = 'error';
+      ob.statusText = error.message || `无法启动 ${engineName} 自检，请重试。`;
+      render();
+    }
+  }
+
+  async function handleSwitchEngine() {
+    if (ob.busy || ob.morphing) return;
+    stopBotWatchers();
+    if (ob.preview) {
+      await morphToEngineStage({ suggestedEngineId: ob.suggestedEngineId, preview: true });
+      return;
+    }
+    const api = ob.callbacks?.api;
+    const started = api ? await api('/api/onboarding/start', 'POST', { chooseEngine: true }).catch(() => null) : null;
+    await morphToEngineStage({ suggestedEngineId: started?.suggestedEngineId ?? ob.suggestedEngineId, preview: false });
+  }
+
   async function morphToBotStage({ botId, botName, engineId, engineName, roomId, wakeMessageId, preview = false }) {
     ob.stage = 'bot';
     ob.busy = false;
@@ -846,13 +1120,13 @@
     if (!preview) startBotWatchers();
   }
 
-  async function transitionToMainNewGroup({ preview = false } = {}) {
+  async function transitionToMainNewGroup({ preview = false, skipFinish = false } = {}) {
     if (ob.morphing) return;
     ob.morphing = true;
     stopOAuthPoll();
     stopBotWatchers();
     const api = ob.callbacks?.api;
-    if (!preview && api) {
+    if (!preview && !skipFinish && api) {
       await api('/api/onboarding/finish', 'POST', {}).catch(() => {});
     }
     // Prepare the New Group Draft screen underneath BEFORE fading out overlay so reveal is instant & 0-flash!
@@ -875,10 +1149,12 @@
     ob.stage = 'model';
     ob.busy = false;
     ob.morphing = false;
+    ob.enginesLoaded = false;
+    ob.userPickedEngine = false;
     setTimeout(() => document.body.classList.remove('ob-revealing-main'), 480);
   }
 
-  async function verifyAndContinue(connId, label, { checkEngine = null } = {}) {
+  async function verifyAndContinue(connId, label, { suggestedEngine = null } = {}) {
     const api = ob.callbacks?.api;
     if (!api) return;
     ob.busy = true;
@@ -888,34 +1164,23 @@
     try {
       const test = await api(`/api/model-settings/connections/${encodeURIComponent(connId)}/test`, 'POST', {});
       ob.phase = 'success';
+      ob.activeModelLabel = test?.model ? `${label || '模型'}（${test.model}）` : (label || '');
       ob.statusText = `连接成功 · ${test.model}（${test.latencyMs}ms）`;
       render();
       if (ob.preview) {
         await new Promise(r => setTimeout(r, 320));
-        if (checkEngine) {
-          await morphToBotStage({ botId: 'bot-lead-room-default-bot-maintenance', botName: 'Summon', engineId: checkEngine, preview: true });
-        } else {
-          await transitionToMainNewGroup({ preview: true });
-        }
+        await morphToEngineStage({ suggestedEngineId: suggestedEngine, preview: true });
         return;
       }
-      // Atomically activate model + start onboarding in a single request so SSE never transiently sees status='completed'.
+      // Atomically activate model + enter engine selection so SSE never transiently sees status='completed'.
       const started = await api('/api/onboarding/start', 'POST', {
         connectionId: connId,
-        ...(checkEngine ? { checkEngine } : {}),
+        chooseEngine: true,
       });
-      if (started?.status === 'configuring_bot' && started.botId) {
-        await morphToBotStage({
-          botId: started.botId,
-          botName: started.botName || 'Summon',
-          engineId: started.engineId || checkEngine,
-          engineName: started.engineName || started.engine?.name,
-          roomId: started.roomId || SUMMON_ROOM_ID,
-          wakeMessageId: started.wakeMessageId || null,
-        });
-      } else {
-        await transitionToMainNewGroup({ preview: false });
-      }
+      await morphToEngineStage({
+        suggestedEngineId: started?.suggestedEngineId ?? suggestedEngine,
+        preview: false,
+      });
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
@@ -935,8 +1200,8 @@
     try {
       const res = await api('/api/model-settings/local/import', 'POST', { kind, activate: false });
       const connId = res.importedId || `${kind}-local`;
-      const checkEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
-      await verifyAndContinue(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { checkEngine });
+      const suggestedEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+      await verifyAndContinue(connId, `本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 订阅`, { suggestedEngine });
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
@@ -989,8 +1254,8 @@
         return;
       }
       if (status.status === 'completed') {
-        const checkEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
-        await verifyAndContinue(connId, `${subLabel} 订阅`, { checkEngine });
+        const suggestedEngine = kind === 'codex' ? 'codex' : kind === 'grok' ? 'grok-build' : null;
+        await verifyAndContinue(connId, `${subLabel} 订阅`, { suggestedEngine });
         return;
       }
       ob.phase = status.status === 'failed' ? 'error' : 'idle';
@@ -1041,7 +1306,8 @@
       });
       const connId = saved.savedId || saved.activeId || saved.connections?.at(-1)?.id;
       if (!connId) throw new Error('未能保存模型配置');
-      await verifyAndContinue(connId, def.name);
+      const suggestedEngine = def.provider === 'anthropic' ? 'claude-code' : null;
+      await verifyAndContinue(connId, def.name, { suggestedEngine });
     } catch (error) {
       ob.busy = false;
       ob.phase = 'error';
@@ -1087,6 +1353,13 @@
       document.documentElement.classList.add('desktop-onboarding-window');
     }
     ensureOverlayElement();
+    if (stage === 'engine') {
+      await morphToEngineStage({
+        suggestedEngineId: onboarding?.suggestedEngineId ?? ob.suggestedEngineId,
+        preview,
+      });
+      return;
+    }
     if (stage === 'bot') {
       await morphToBotStage({
         botId: onboarding?.botId || ob.botId,
@@ -1128,6 +1401,14 @@
       }
       return;
     }
+    if (onboarding.status === 'choosing_engine') {
+      if (!ob.open || ob.stage !== 'engine') {
+        void openOverlay({ stage: 'engine', preview: false, onboarding });
+      } else if (!ob.enginesLoaded && !ob.enginesLoading) {
+        void loadEngines();
+      }
+      return;
+    }
     if (onboarding.status === 'configuring_bot') {
       if (!ob.open || ob.stage !== 'bot') {
         void openOverlay({ stage: 'bot', preview: false, onboarding });
@@ -1162,12 +1443,16 @@
     if (!btn) return;
     const action = btn.dataset.obAction;
     if (action === 'pick-provider') return selectProvider(btn.dataset.provider);
+    if (action === 'pick-engine') return selectEngine(btn.dataset.engine);
+    if (action === 'redetect-engines') { ob.enginesLoaded = false; return void loadEngines({ force: true }); }
+    if (action === 'confirm-engine') return void handleConfirmEngine();
+    if (action === 'switch-engine') return void handleSwitchEngine();
     if (action === 'import-local') return void handleImportLocal(btn.dataset.kind);
     if (action === 'redetect-local') { ob.localLoaded = false; return void loadCatalogAndLocal({ force: true }); }
     if (action === 'start-sub-oauth' || action === 'start-codex-oauth') return void handleStartSubOAuth(btn.dataset.kind || 'codex');
     if (action === 'cancel-oauth') return void handleCancelOAuth();
     if (action === 'close-preview') return void closePreview();
-    if (action === 'preview-next') return void morphToBotStage({ botId: 'bot-lead-room-default-bot-maintenance', botName: 'Summon', engineId: 'codex', engineName: 'Codex', preview: true });
+    if (action === 'preview-next') return void morphToEngineStage({ suggestedEngineId: null, preview: true });
     if (action === 'finish-to-main') return void transitionToMainNewGroup({ preview: ob.preview });
     if (action === 'retry-bot-check') {
       const botLabel = ob.botName || 'Summon';
@@ -1233,7 +1518,7 @@
 
   window.SummonOnboarding = Object.freeze({
     bind(callbacks) { ob.callbacks = callbacks; },
-    preopen(stage = 'model') { void openOverlay({ stage: stage === 'bot' ? 'bot' : 'model', preview: false }); },
+    preopen(stage = 'model') { void openOverlay({ stage: ['model', 'engine', 'bot'].includes(stage) ? stage : 'model', preview: false }); },
     syncState,
     notifyUpdate,
     startPreview() { void openOverlay({ stage: 'model', preview: true }); },

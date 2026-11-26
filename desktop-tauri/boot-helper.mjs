@@ -132,11 +132,14 @@ async function main() {
 
   const needsIntro = Boolean(onboarding && (
     onboarding.status === 'configuring_bot' ||
+    onboarding.status === 'choosing_engine' ||
     (onboarding.status === 'awaiting_model' && !onboarding.hasActiveModel)
   ));
   const onboardingStage = onboarding?.status === 'configuring_bot'
     ? 'bot'
-    : (needsIntro ? 'model' : 'main');
+    : onboarding?.status === 'choosing_engine'
+      ? 'engine'
+      : (needsIntro ? 'model' : 'main');
 
   emit({
     event: 'ready',

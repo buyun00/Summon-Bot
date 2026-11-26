@@ -14,6 +14,9 @@
       if (new URLSearchParams(location.search).has('onboarding_window')) {
         document.documentElement.classList.add('desktop-onboarding-window');
       }
+      const p = (navigator.platform || navigator.userAgent || '').toLowerCase();
+      if (p.includes('win')) document.documentElement.classList.add('is-win');
+      else if (p.includes('mac')) document.documentElement.classList.add('is-mac');
     } catch {}
   </script>
   <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="/icons/apple-touch-icon.png?v=summon-paper-20261103">

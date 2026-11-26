@@ -348,7 +348,11 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         platform.initializeDefaults();
         platform.runtime.resumeRecoveredRuns({ kind: 'model', id: args.connectionId });
       }
-      return platform.startOnboarding({ checkEngine: args.checkEngine || args.check_engine || args.activateBundled || args.activate_bundled || null });
+      return platform.startOnboarding({
+        checkEngine: args.checkEngine || args.check_engine || null,
+        skipEngine: args.skipEngine === true || args.skip_engine === true,
+        chooseEngine: args.chooseEngine === true || args.choose_engine === true,
+      });
     }
     if (path === '/api/onboarding/finish' && method === 'POST') {
       return platform.finishOnboarding();

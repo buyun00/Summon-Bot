@@ -176,13 +176,17 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
       buildEnv.APPLE_PASSWORD = buildEnv.APPLE_APP_SPECIFIC_PASSWORD;
     }
 
-    await runCommand(process.execPath, [
-      tauriCliJs,
+    const tauriArgs = [
       'build',
       '--bundles', bundleType,
       '--target', targetTriple,
       '--config', buildConfigOverridePath,
-    ], { cwd: tauriDir, env: buildEnv });
+    ];
+    if (existsSync(tauriCliJs)) {
+      await runCommand(process.execPath, [tauriCliJs, ...tauriArgs], { cwd: tauriDir, env: buildEnv });
+    } else {
+      await runCommand('cargo', ['tauri', ...tauriArgs], { cwd: tauriDir, env: buildEnv });
+    }
 
     // 5. Locate and copy the produced installer to output directory
     const ext = platform === 'macos' ? '.dmg' : '.exe';

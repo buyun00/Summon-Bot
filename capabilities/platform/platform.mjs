@@ -155,22 +155,56 @@ export class SummonPlatform {
     };
   }
 
-  startOnboarding({ checkEngine = null } = {}) {
+  startOnboarding({ checkEngine = null, skipEngine = false, chooseEngine = false } = {}) {
     this.initializeDefaults();
     const catalog = this.models.catalog();
     const activeConn = catalog.connections.find(item => item.id === catalog.activeId);
     const hasActiveModel = Boolean(activeConn && this.models.isConfigured(activeConn));
-    const preferredEngineId = checkEngine
-      || (activeConn?.kind === 'codex' ? 'codex' : activeConn?.kind === 'grok' ? 'grok-build' : null)
-      || this.engines.available({ fresh: true })[0]?.id
-      || null;
+    if (!hasActiveModel) return this.onboardingState();
+
     const nowIso = new Date().toISOString();
-    let checked = null;
-    if (preferredEngineId && hasActiveModel) {
-      try {
-        checked = this.checkWorkEngine(preferredEngineId, { roomId: botMaintenanceRoomId, wake: true });
-      } catch {}
+    if (skipEngine) {
+      const next = {
+        id: 'onboarding',
+        status: 'completed',
+        roomId: botMaintenanceRoomId,
+        startedAt: nowIso,
+        completedAt: nowIso,
+      };
+      this.store.save('platform-settings', next);
+      this.emit('onboarding', next);
+      return { ...next, hasActiveModel, engine: null };
     }
+
+    if (chooseEngine || !checkEngine) {
+      const suggestedEngineId = activeConn?.kind === 'codex'
+        ? 'codex'
+        : activeConn?.kind === 'grok'
+          ? 'grok-build'
+          : activeConn?.provider === 'anthropic'
+            ? 'claude-code'
+            : null;
+      const next = {
+        id: 'onboarding',
+        status: 'choosing_engine',
+        roomId: botMaintenanceRoomId,
+        suggestedEngineId,
+        startedAt: nowIso,
+      };
+      this.store.save('platform-settings', next);
+      this.emit('onboarding', next);
+      return { ...next, hasActiveModel, engine: null };
+    }
+
+    let checked = null;
+    try {
+      const targetEngine = this.engines.get(checkEngine, { fresh: true });
+      if (targetEngine.enabled_override === false) {
+        this.engines.setEnabled(checkEngine, true);
+        this.emit('engine');
+      }
+      checked = this.checkWorkEngine(checkEngine, { roomId: botMaintenanceRoomId, wake: true });
+    } catch {}
     const configuringEngine = Boolean(checked?.engine && checked.wake_message_id);
     const next = {
       id: 'onboarding',

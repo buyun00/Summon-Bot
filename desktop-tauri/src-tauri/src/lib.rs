@@ -1902,7 +1902,7 @@ async fn morph_window(
 ) -> Result<bool, String> {
     verify_sender(&window, &state, false, true)?;
     let target = match stage.as_str() {
-        "model" | "bot" | "main" => stage.as_str(),
+        "model" | "engine" | "bot" | "main" => stage.as_str(),
         _ => "main",
     };
     Ok(animate_window_to_stage(&app, &window, target, duration).await)
