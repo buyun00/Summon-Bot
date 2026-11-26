@@ -81,9 +81,9 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
 
     // 2. Stage desktop setup assets & helper from commit or workspace
     const helperFiles = [
-      'desktop/setup.html',
-      'desktop/setup.css',
-      'desktop/setup.js',
+      'desktop-tauri/setup/setup.html',
+      'desktop-tauri/setup/setup.css',
+      'desktop-tauri/setup/setup.js',
       'desktop-tauri/boot-helper.mjs',
       ...(platform === 'macos' ? ['desktop-tauri/summon'] : ['desktop-tauri/summon.cmd']),
     ];
@@ -97,9 +97,9 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
       await exportCommittedPaths(root, stage, bundled.sourceCommit, helperFiles);
     }
 
-    await copyFile(join(stage, 'desktop/setup.html'), join(setupDistDir, 'index.html'));
-    await copyFile(join(stage, 'desktop/setup.css'), join(setupDistDir, 'setup.css'));
-    await copyFile(join(stage, 'desktop/setup.js'), join(setupDistDir, 'setup.js'));
+    await copyFile(join(stage, 'desktop-tauri/setup/setup.html'), join(setupDistDir, 'index.html'));
+    await copyFile(join(stage, 'desktop-tauri/setup/setup.css'), join(setupDistDir, 'setup.css'));
+    await copyFile(join(stage, 'desktop-tauri/setup/setup.js'), join(setupDistDir, 'setup.js'));
     await copyFile(join(runtime, 'web/frontend/icons/icon-192.png'), join(setupDistDir, 'icon.png'));
     await copyFile(join(stage, 'desktop-tauri/boot-helper.mjs'), join(runtime, 'tauri-boot-helper.mjs'));
 

@@ -1,10 +1,9 @@
 import { createWriteStream, existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, rename, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // GitHub's release-download frontend can fail while its documented asset API
@@ -86,40 +85,6 @@ async function download(repository, tag, name, destination) {
   });
 }
 
-async function desktop() {
-  if (!['win32', 'darwin'].includes(process.platform) || process.arch !== (process.platform === 'darwin' ? 'arm64' : 'x64')) {
-    throw new Error('CI desktop dependencies require Windows x64 or Apple Silicon');
-  }
-  const require = createRequire(join(root, 'desktop/package.json'));
-  const { getCacheDirectory } = require('app-builder-lib/out/util/electronGet');
-  const { Cache } = await import(new URL('./Cache.js', pathToFileURL(require.resolve('@electron/get'))));
-  const cache = new Cache();
-  const pkg = JSON.parse(await readFile(join(root, 'desktop/package.json'), 'utf8'));
-  const version = pkg.devDependencies.electron;
-  const electronFile = `electron-v${version}-${process.platform}-${process.arch}.zip`;
-  const electronUrl = `https://github.com/electron/electron/releases/download/v${version}/${electronFile}`;
-  // getCachePath keys the URL only. The ordinary builder download still performs
-  // its existing Electron validation; preparation adds no file hashing.
-  const warm = (repository, tag, file, path) => download(repository, tag, file, path)
-    .catch(error => console.warn(`Dependency cache unavailable for ${file}: ${error.message}`));
-  await warm('electron/electron', `v${version}`, electronFile, cache.getCachePath(electronUrl, electronFile));
-
-  // Toolset versions used by the pinned electron-builder 26.18.1.
-  const tools = [
-    ['icons@1.2.3', 'icons-bundle.tar.gz'],
-    ['7zip@1.0.0', `7zip-${process.platform === 'darwin' ? 'darwin-arm64' : 'win-x64'}.tar.gz`],
-    ...(process.platform === 'darwin' ? [
-      ['dmg-builder@1.2.5', 'dmgbuild-bundle-arm64-75c8a6c.tar.gz'],
-    ] : [
-      ['winCodeSign-2.6.0', 'winCodeSign-2.6.0.7z'],
-      ['nsis-3.0.4.1', 'nsis-3.0.4.1.7z'],
-      ['nsis-resources-3.4.1', 'nsis-resources-3.4.1.7z'],
-    ]),
-  ];
-  const builderCache = getCacheDirectory({ allowEnvVarOverride: true });
-  await Promise.all(tools.map(([tag, file]) => warm('electron-userland/electron-builder-binaries', tag, file, join(builderCache, tag, file))));
-}
-
 async function android() {
   const propertiesPath = join(root, 'android/gradle/wrapper/gradle-wrapper.properties');
   const properties = await readFile(propertiesPath, 'utf8');
@@ -133,9 +98,8 @@ async function android() {
 
 try {
   if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Dependency preparation is for GitHub Actions only');
-  if (process.argv[2] === 'desktop') await desktop();
-  else if (process.argv[2] === 'android') await android();
-  else throw new Error('Use desktop or android');
+  if (process.argv[2] === 'android') await android();
+  else throw new Error('Use android');
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

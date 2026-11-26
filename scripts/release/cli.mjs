@@ -57,7 +57,7 @@ async function publish(input, release) {
   }
   if (inside(buildRoot, input)) await removeInside(buildRoot, input).catch(error => console.warn(`Published package; build cleanup pending: ${error.message}`));
 }
-async function buildDesktopTauri() {
+async function buildDesktopTauri(expected = null) {
   if (!['win32', 'darwin'].includes(process.platform)) throw new Error('Tauri desktop builds run on Windows or macOS');
   const platform = process.platform === 'win32' ? 'windows' : 'macos';
   const baseArch = (options.arch || (platform === 'macos' ? 'arm64' : process.arch)).replace(/-tauri$/, '');
@@ -66,31 +66,13 @@ async function buildDesktopTauri() {
   const candidate = flag('candidate');
   if (candidate && (flag('github') || flag('publish') || command === 'all')) throw new Error('Candidate builds cannot publish');
   if (!candidate && !buildSourceCommit) throw new Error('Select a Git commit to build a Tauri desktop release');
+  if (expected && platform === 'windows' && await localWindowsRelease(repositoryRoot, expected)) return;
   const output = await outputDirectory(`${platform}-${arch}`);
   const { buildTauriDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop-tauri/build.mjs')));
   const built = await buildTauriDesktop({ platform, arch, output, candidate, commit: buildSourceCommit });
   await describeBuild(output, platform, arch, { ...built, candidate });
   if (!candidate && (platform === 'windows' || flag('publish') || flag('github'))) await publish(output, built.release);
   else await reportCandidate(platform, arch, output);
-}
-
-async function buildDesktop(expected) {
-  if (options.engine === 'tauri') return buildDesktopTauri();
-  if (!['win32', 'darwin'].includes(process.platform)) throw new Error('Desktop builds run on Windows or macOS');
-  const platform = process.platform === 'win32' ? 'windows' : 'macos';
-  const arch = options.arch || (platform === 'macos' ? 'arm64' : process.arch);
-  if (arch !== (platform === 'macos' ? 'arm64' : 'x64')) throw new Error('Unsupported desktop architecture');
-  const candidate = flag('candidate');
-  if (candidate && (flag('github') || flag('publish') || command === 'all')) throw new Error('Candidate builds cannot publish');
-  if (!candidate && !buildSourceCommit) throw new Error('Select a Git commit to build a desktop release');
-  if (expected && platform === 'windows' && await localWindowsRelease(repositoryRoot, expected)) return;
-  const output = await outputDirectory(`${platform}-${arch}`);
-  const { buildDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop/build.mjs')));
-  const built = await buildDesktop({ platform, arch, output, candidate, commit: buildSourceCommit });
-  await describeBuild(output, platform, arch, { ...built, candidate });
-  if (!candidate && (platform === 'windows' || flag('publish') || flag('github'))) await publish(output, built.release);
-  else await reportCandidate(platform, arch, output);
-  if (options.engine === 'both') await buildDesktopTauri();
 }
 
 async function androidEnvironment() {
@@ -194,12 +176,12 @@ async function setVersion() {
   const release = { ...current, version: options.version || nextVersion.join('.'), buildNumber: Number(options['build-number'] || current.buildNumber + 1) };
   if (!/^\d+\.\d+\.\d+$/.test(release.version) || !Number.isSafeInteger(release.buildNumber) || release.buildNumber < 1) throw new Error('Use a numeric x.y.z version and a positive build number');
   await writeJson(join(sourceRoot, 'release.json'), release);
-  for (const directory of ['', 'bot', 'web', 'capabilities', 'desktop', 'desktop-tauri']) {
+  for (const directory of ['', 'bot', 'web', 'capabilities', 'desktop-tauri']) {
     const path = join(sourceRoot, directory, 'package.json');
     if (!existsSync(path)) continue;
     const value = await readJson(path); await writeJson(path, { ...value, version: release.version });
   }
-  for (const directory of ['', 'desktop', 'desktop-tauri']) {
+  for (const directory of ['', 'desktop-tauri']) {
     const path = join(sourceRoot, directory, 'package-lock.json');
     if (!existsSync(path)) continue;
     const value = await readJson(path); value.version = release.version;
@@ -225,18 +207,17 @@ async function main() {
   if (flag('github') && process.env.GITHUB_ACTIONS !== 'true') throw new Error('GitHub packages must build and publish in GitHub Actions; local Windows builds stay in the local release directory');
   if (command === 'version') return setVersion();
   if (command === 'web') return deployWeb(await prepareWeb({ committedOnly: flag('committed-only') }));
-  if (command === 'desktop') return buildDesktop();
-  if (command === 'desktop-tauri') return buildDesktopTauri();
+  if (command === 'desktop' || command === 'desktop-tauri') return buildDesktopTauri();
   if (command === 'android') return buildAndroid();
   if (command === 'ios') return buildIos();
   if (command === 'publish') { if (!options.input) throw new Error('Provide --input with the completed build directory'); return publish(resolve(options.input)); }
   if (command === 'all') {
     if (process.platform === 'win32') {
       const next = await prepareWeb({ committedOnly: true, reuse: true });
-      if (next.protocolChanged) { await buildDesktopTauri(); }
+      if (next.protocolChanged) { await buildDesktopTauri(next.expected); }
       await deployWeb(next);
       if (!next.protocolChanged && (!next.resuming || next.expected?.sourceCommit === buildSourceCommit && next.expected.sourceMode === 'git-archive')) {
-        await buildDesktopTauri();
+        await buildDesktopTauri(next.expected);
       }
     }
     else if (process.platform === 'darwin') { await buildDesktopTauri(); }
