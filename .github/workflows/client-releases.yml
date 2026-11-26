@@ -294,11 +294,11 @@ jobs:
         env:
           CANDIDATE: ${{ inputs.candidate }}
           GH_TOKEN: ${{ github.token }}
-          APPLE_CERTIFICATE: ${{ secrets.SUMMON_MACOS_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.SUMMON_MACOS_P12_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.SUMMON_ASC_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
-          APPLE_API_KEY_PATH: ${{ runner.temp }}/summon-macos-tauri-signing/AuthKey.p8
+          APPLE_CERTIFICATE: ${{ !inputs.candidate && secrets.SUMMON_MACOS_P12_BASE64 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ !inputs.candidate && secrets.SUMMON_MACOS_P12_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ !inputs.candidate && secrets.SUMMON_ASC_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ !inputs.candidate && secrets.SUMMON_ASC_ISSUER_ID || '' }}
+          APPLE_API_KEY_PATH: ${{ !inputs.candidate && format('{0}/summon-macos-tauri-signing/AuthKey.p8', runner.temp) || '' }}
       - uses: actions/upload-artifact@v4
         if: inputs.candidate
         with:

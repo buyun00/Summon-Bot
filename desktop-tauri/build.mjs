@@ -139,6 +139,9 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
       version: release.version,
       bundle: {
         resources: resourcesMap,
+        ...(platform === 'macos'
+          ? { macOS: { bundleVersion: String(release.buildNumber) } }
+          : {}),
       },
     });
 
@@ -146,12 +149,26 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
     const tauriCliJs = join(tauriDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
     const bundleType = platform === 'macos' ? 'dmg' : 'nsis';
     const targetTriple = platform === 'macos' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc';
-    const buildEnv = {
-      ...process.env,
-      ...(platform === 'macos' && signing && process.env.APPLE_APP_SPECIFIC_PASSWORD && !process.env.APPLE_PASSWORD
-        ? { APPLE_PASSWORD: process.env.APPLE_APP_SPECIFIC_PASSWORD }
-        : {}),
-    };
+    const buildEnv = { ...process.env };
+    if (platform === 'macos' && !signing) {
+      for (const key of [
+        'APPLE_CERTIFICATE',
+        'APPLE_CERTIFICATE_PASSWORD',
+        'APPLE_SIGNING_IDENTITY',
+        'APPLE_API_KEY',
+        'APPLE_API_ISSUER',
+        'APPLE_API_KEY_PATH',
+        'APPLE_ID',
+        'APPLE_PASSWORD',
+        'APPLE_APP_SPECIFIC_PASSWORD',
+        'APPLE_TEAM_ID',
+        'APPLE_PROVIDER_SHORT_NAME',
+      ]) {
+        delete buildEnv[key];
+      }
+    } else if (platform === 'macos' && signing && buildEnv.APPLE_APP_SPECIFIC_PASSWORD && !buildEnv.APPLE_PASSWORD) {
+      buildEnv.APPLE_PASSWORD = buildEnv.APPLE_APP_SPECIFIC_PASSWORD;
+    }
 
     await runCommand(process.execPath, [
       tauriCliJs,
