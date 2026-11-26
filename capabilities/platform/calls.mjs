@@ -112,7 +112,13 @@ export class Calls {
           prior.origin?.conversation_id !== context.origin?.conversation_id || prior.origin?.run_id !== context.origin?.run_id) {
           reject('call_conflict', 'This request identity belongs to another invocation', 409);
         }
-        return { record: prior, existing: true };
+        const retryableClientFailure = Boolean(
+          context.clientId && !context.call_id && !prior.external && (
+            prior.status === 'not_submitted' ||
+            (prior.status === 'failed' && (!prior.result?.status || prior.result.status >= 500))
+          ),
+        );
+        if (!retryableClientFailure) return { record: prior, existing: true };
       }
       const id = context.call_id || randomUUID();
       const record = this.store.save(callRecords, { id, tool: name, submitted_by: context.actor, execution_actor: context.actor,
