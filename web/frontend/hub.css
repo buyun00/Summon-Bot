@@ -24,7 +24,7 @@
 .hub-strip-link {
   border: 0;
   background: transparent;
-  color: var(--accent, #2f6feb);
+  color: var(--ok, #2f6feb);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -32,7 +32,7 @@
   border-radius: 6px;
 }
 .hub-strip-link:hover {
-  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+  background: var(--hover, rgba(0, 0, 0, 0.05));
 }
 
 .hub-node-pill {
@@ -40,9 +40,9 @@
   align-items: center;
   gap: 5px;
   flex: 0 0 auto;
-  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.09));
-  background: var(--surface-card, rgba(255, 255, 255, 0.65));
-  color: var(--text-primary, #1f1d1a);
+  border: 1px solid var(--pill-border, rgba(0, 0, 0, 0.09));
+  background: var(--pill-bg, rgba(255, 255, 255, 0.65));
+  color: var(--ink, #1f1d1a);
   border-radius: 999px;
   padding: 3px 10px;
   font-size: 12px;
@@ -52,8 +52,8 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .hub-node-pill.active {
-  background: var(--text-primary, #1f1d1a);
-  color: var(--surface-base, #f8f6f1);
+  background: var(--ink, #1f1d1a);
+  color: var(--bg, #f8f6f1);
   border-color: transparent;
 }
 .hub-node-pill.is-offline {

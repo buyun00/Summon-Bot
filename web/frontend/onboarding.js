@@ -414,7 +414,7 @@
 
     return `
       <div class="ob-window-bar">
-        <span class="ob-window-brand">Summon Bot <span class="ob-step-dots"><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span><span class="ob-step-dot"></span></span></span>
+        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot</span> <span class="ob-step-dots"><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span><span class="ob-step-dot"></span></span></span>
         <div class="ob-window-controls">${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}</div>
       </div>
       <div class="ob-model-scroll">
@@ -483,7 +483,7 @@
 
     return `
       <div class="ob-window-bar">
-        <span class="ob-window-brand">Summon Bot · 选择工作引擎 <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span></span></span>
+        <span class="ob-window-brand"><span data-ob-brand-text>Summon Bot · 选择工作引擎</span> <span class="ob-step-dots"><span class="ob-step-dot is-done"></span><span class="ob-step-dot is-active"></span><span class="ob-step-dot"></span></span></span>
         <div class="ob-window-controls">${ob.preview ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>' : ''}</div>
       </div>
       <div class="ob-model-scroll">
@@ -858,17 +858,21 @@
     const badgeEl = stage.querySelector('[data-ob-badge]');
     const badgeDot = stage.querySelector('[data-ob-live-dot]');
     const badgeTextEl = stage.querySelector('[data-ob-badge-text]');
+    const needsAction = Boolean(!snap.isReady && !snap.hasError && (snap.pendingExec || snap.pendingPromptMsg));
     const nextBadgeText = snap.hasError
       ? '自检异常'
       : snap.isReady
         ? '已就绪 ✓'
-        : snap.pendingExec || snap.pendingPromptMsg
+        : needsAction
           ? '需要你确认'
           : `对接中 ${elapsed}`;
     if (badgeEl) {
       badgeEl.classList.toggle('is-err', snap.hasError);
       badgeEl.classList.toggle('is-done', snap.isReady && !snap.hasError);
-      badgeEl.classList.toggle('is-live', !snap.isReady);
+      badgeEl.classList.toggle('is-warn', needsAction);
+      badgeEl.classList.toggle('is-live', !snap.isReady && !needsAction);
+      if (needsAction) badgeEl.dataset.obAction = 'focus-pending';
+      else delete badgeEl.dataset.obAction;
     }
     if (badgeDot) badgeDot.hidden = snap.isReady;
     if (badgeTextEl && badgeTextEl.textContent !== nextBadgeText) badgeTextEl.textContent = nextBadgeText;
@@ -1453,6 +1457,13 @@
     if (action === 'cancel-oauth') return void handleCancelOAuth();
     if (action === 'close-preview') return void closePreview();
     if (action === 'preview-next') return void morphToEngineStage({ suggestedEngineId: null, preview: true });
+    if (action === 'focus-pending') {
+      const feed = document.getElementById('ob-bot-feed');
+      const target = feed?.querySelector('.ob-prompt-card, .ob-step-prompt');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      else if (feed) feed.scrollTo({ top: feed.scrollHeight, behavior: 'smooth' });
+      return;
+    }
     if (action === 'finish-to-main') return void transitionToMainNewGroup({ preview: ob.preview });
     if (action === 'retry-bot-check') {
       const botLabel = ob.botName || 'Summon';

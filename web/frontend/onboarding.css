@@ -1,27 +1,57 @@
 /* 4-Stage Single-Window Morphing Onboarding (Model -> Work Engine -> Self-Check -> Main Workspace) */
 :root {
   --ob-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --ob-accent: #7d824b;
+  --ob-accent: #68723d;
+  --ob-accent-soft: #ebeede;
   --ob-card-bg: #fbf9f4;
   --ob-card-border: #e5e0d5;
   --ob-card-shadow: 0 20px 44px -10px rgba(31, 29, 24, 0.16), 0 4px 14px rgba(31, 29, 24, 0.06);
   --ob-tile-bg: #f1eee6;
   --ob-tile-hover: #e8e4da;
+  --ob-ink: #1f1e1b;
+  --ob-ink-2: #4b4840;
+  --ob-muted: #787267;
+  --ob-btn-primary-bg: #1f1e1b;
+  --ob-btn-primary-ink: #fbf9f4;
+  --ob-btn-secondary-bg: #ffffff;
+  --ob-btn-secondary-hover: #f1eee6;
+  --ob-btn-secondary-border: #dcd6c9;
+  --ob-btn-secondary-ink: #1f1e1b;
+  --ob-ghost-bg: transparent;
+  --ob-ghost-border: #dcd6c9;
+  --ob-ghost-ink: #4b4840;
   --ob-ok: #266b43;
   --ob-ok-soft: #e6f4ec;
+  --ob-warn: #a65d08;
+  --ob-warn-soft: #fdf2dc;
   --ob-err: #b8372c;
   --ob-err-soft: #fbeae8;
 }
 
 html.dark {
-  --ob-accent: #b5c176;
+  --ob-accent: #c4d37c;
+  --ob-accent-soft: rgba(196, 211, 124, 0.16);
   --ob-card-bg: #151822;
   --ob-card-border: #2a3040;
   --ob-card-shadow: 0 24px 52px -10px rgba(0, 0, 0, 0.54), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   --ob-tile-bg: #1e2331;
   --ob-tile-hover: #262c3d;
+  --ob-ink: #f3f4f8;
+  --ob-ink-2: #c5cad6;
+  --ob-muted: #8b93a6;
+  --ob-btn-primary-bg: #f3f4f8;
+  --ob-btn-primary-ink: #10131b;
+  --ob-btn-secondary-bg: #232938;
+  --ob-btn-secondary-hover: #2d3448;
+  --ob-btn-secondary-border: #3a4258;
+  --ob-btn-secondary-ink: #f3f4f8;
+  --ob-ghost-bg: rgba(255, 255, 255, 0.05);
+  --ob-ghost-border: rgba(255, 255, 255, 0.14);
+  --ob-ghost-ink: #d8dde8;
   --ob-ok: #5cd38c;
   --ob-ok-soft: #162e22;
+  --ob-warn: #f6be58;
+  --ob-warn-soft: rgba(246, 190, 88, 0.16);
   --ob-err: #ff8077;
   --ob-err-soft: #311a1b;
 }
@@ -121,42 +151,57 @@ html.desktop-onboarding-window .ob-root.is-stage-bot .ob-stage {
   box-shadow: none;
 }
 
-/* Top draggable window bar */
+/* Top draggable window bar: centered title + step dots on macOS, Windows & Web */
 .ob-window-bar {
+  --ob-bar-side: 0px;
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(var(--ob-bar-side), 1fr) minmax(0, auto) minmax(var(--ob-bar-side), 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   min-height: 44px;
-  padding: 10px 18px 6px 20px;
+  padding: 10px 18px 6px 18px;
   -webkit-app-region: drag;
 }
 
-/* Reserve right space for Windows custom/overlay min/max/close controls */
+/* Reserve symmetric space for Windows custom/overlay min/max/close controls;
+   place action pills on the left so the title stays dead-center */
 html.desktop-onboarding-window.is-win .ob-window-bar,
 html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="win32"] .ob-window-bar {
-  padding-right: max(calc(146px / var(--ui-zoom, 1)), calc(var(--window-controls-right-inset, 0px) + 8px));
+  --ob-bar-side: max(calc(138px / var(--ui-zoom, 1)), var(--window-controls-right-inset, 0px));
+  min-height: calc(44px / var(--ui-zoom, 1));
+  padding: calc(6px / var(--ui-zoom, 1)) 14px;
 }
 
-/* Reserve left space for macOS native Overlay traffic lights (positioned at 16,16) */
+html.desktop-onboarding-window.is-win .ob-window-controls,
+html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="win32"] .ob-window-controls {
+  grid-column: 1;
+  justify-self: start;
+}
+
+/* Reserve symmetric space for macOS native Overlay traffic lights (positioned at 16,16) */
 html.desktop-onboarding-window.is-mac .ob-window-bar,
 html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .ob-window-bar {
+  --ob-bar-side: max(calc(76px / var(--ui-zoom, 1)), var(--window-controls-left-inset, 0px));
   min-height: calc(40px / var(--ui-zoom, 1));
-  padding: calc(4px / var(--ui-zoom, 1)) 18px calc(6px / var(--ui-zoom, 1)) max(calc(86px / var(--ui-zoom, 1)), calc(var(--window-controls-left-inset, 0px) + 8px));
+  padding: calc(6px / var(--ui-zoom, 1)) 16px;
 }
 
 .ob-window-brand {
+  grid-column: 2;
+  justify-self: center;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
   font-weight: 640;
-  color: var(--muted);
+  color: var(--ob-ink-2);
   letter-spacing: -0.01em;
 }
 
@@ -191,30 +236,32 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
 }
 
 .ob-window-controls {
+  grid-column: 3;
+  justify-self: end;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   -webkit-app-region: no-drag;
 }
 
 .ob-ghost-pill {
   appearance: none;
-  border: 1px solid var(--ob-card-border);
-  background: transparent;
-  color: var(--ink-2, var(--muted));
+  border: 1px solid var(--ob-ghost-border);
+  background: var(--ob-ghost-bg);
+  color: var(--ob-ghost-ink);
   border-radius: 999px;
   padding: 4px 11px;
   font: inherit;
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 160ms ease, color 160ms ease;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 
 .ob-ghost-pill:hover {
   background: var(--ob-tile-hover);
-  color: var(--ink);
+  color: var(--ob-ink);
 }
 
 /* Stage 1 body */
@@ -657,12 +704,20 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
   font-weight: 600;
   background: var(--ob-card-bg);
   border: 1px solid var(--ob-card-border);
-  color: var(--ink-2, var(--muted));
+  color: var(--ob-ink-2);
 }
 
 .ob-bot-badge.is-live {
+  background: var(--ob-accent-soft);
   color: var(--ob-accent);
-  border-color: color-mix(in srgb, var(--ob-accent) 40%, var(--ob-card-border));
+  border-color: color-mix(in srgb, var(--ob-accent) 42%, transparent);
+}
+
+.ob-bot-badge.is-warn {
+  background: var(--ob-warn-soft);
+  color: var(--ob-warn);
+  border-color: color-mix(in srgb, var(--ob-warn) 45%, transparent);
+  cursor: pointer;
 }
 
 .ob-bot-badge.is-done {
@@ -852,6 +907,7 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
 }
 
 .ob-step-pill.is-live {
+  background: var(--ob-accent-soft);
   color: var(--ob-accent);
 }
 
@@ -861,8 +917,8 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
 }
 
 .ob-step-pill.is-warn {
-  background: color-mix(in srgb, #d97706 14%, transparent);
-  color: #b45309;
+  background: var(--ob-warn-soft);
+  color: var(--ob-warn);
 }
 
 .ob-step-pill.is-err {
@@ -1018,8 +1074,8 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
   padding: 14px 22px;
   border-radius: 14px;
   border: 0;
-  background: var(--ink);
-  color: var(--paper, #ffffff);
+  background: var(--ob-btn-primary-bg);
+  color: var(--ob-btn-primary-ink);
   font: inherit;
   font-size: 15px;
   font-weight: 660;
@@ -1139,8 +1195,8 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
   border: 0;
   border-radius: 999px;
   padding: 10px 20px;
-  background: var(--ink, #1f1e1b);
-  color: var(--bg, #f8f6f1);
+  background: var(--ob-btn-primary-bg);
+  color: var(--ob-btn-primary-ink);
   font: inherit;
   font-size: 14px;
   font-weight: 620;
@@ -1165,20 +1221,21 @@ html.desktop-onboarding-window.desktop-overlay[data-desktop-platform="darwin"] .
 
 .ob-secondary-btn {
   appearance: none;
-  border: 1px solid var(--ob-card-border);
+  border: 1px solid var(--ob-btn-secondary-border);
   border-radius: 999px;
   padding: 8px 15px;
-  background: var(--ob-card-bg);
-  color: var(--ink);
+  background: var(--ob-btn-secondary-bg);
+  color: var(--ob-btn-secondary-ink);
   font: inherit;
   font-size: 13px;
+  font-weight: 540;
   cursor: pointer;
   text-decoration: none;
-  transition: background 160ms ease;
+  transition: background 160ms ease, border-color 160ms ease;
 }
 
 .ob-secondary-btn:hover:not(:disabled) {
-  background: var(--ob-tile-hover);
+  background: var(--ob-btn-secondary-hover);
 }
 
 .ob-preview-existing {

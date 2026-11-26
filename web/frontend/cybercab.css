@@ -1536,12 +1536,6 @@ html.dark .usage-periods button.active, html.dark .usage-dimensions button.activ
 .usage-footnote, .usage-billing-note { color: var(--muted); }
 
 /* ==================== BUTTONS, INPUTS & UNIFIED MODALS ==================== */
-.primary-button {
-  background: var(--ink); color: var(--bg); border: 1px solid var(--ink);
-  border-radius: 999px; font-weight: 550;
-  transition: transform 160ms var(--spring-pop), opacity 150ms ease;
-}
-.primary-button:hover:not(:disabled) { background: var(--ink); opacity: 0.9; transform: scale(1.015); }
 .secondary-button, .small-button {
   background: var(--pill-bg); color: var(--ink-2);
   border: 1px solid var(--pill-border); box-shadow: var(--pill-specular);
@@ -1549,6 +1543,23 @@ html.dark .usage-periods button.active, html.dark .usage-dimensions button.activ
   transition: background 150ms ease, color 150ms ease;
 }
 .secondary-button:hover:not(:disabled), .small-button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.primary-button {
+  background: var(--ink); color: var(--bg); border: 1px solid var(--ink);
+  box-shadow: none;
+  border-radius: 999px; font-weight: 550;
+  transition: transform 160ms var(--spring-pop), opacity 150ms ease;
+}
+.primary-button:hover:not(:disabled) { background: var(--ink); color: var(--bg); opacity: 0.9; transform: scale(1.015); }
+.primary-button:disabled, .primary-button:disabled:hover { background: var(--ink); color: var(--bg); opacity: 0.45; }
+.danger-button {
+  background: var(--red-soft); color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 32%, transparent);
+  box-shadow: none;
+  border-radius: 999px;
+  transition: background 150ms ease, color 150ms ease;
+}
+.danger-button:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+html.dark .create-bot-form .primary-button:disabled { background: var(--hover); color: var(--faint); border-color: var(--line); opacity: 1; }
 .text-button { color: var(--muted); }
 .text-button:hover { color: var(--ink); }
 .icon-button { color: var(--muted); }
