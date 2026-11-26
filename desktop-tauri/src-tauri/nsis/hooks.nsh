@@ -7,5 +7,5 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   IfSilent 0 +2
-    Exec '"$INSTDIR\${MAINBINARYNAME}.exe"'
+    nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 !macroend

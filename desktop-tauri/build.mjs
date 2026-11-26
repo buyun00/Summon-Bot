@@ -22,18 +22,22 @@ async function runCommand(executable, args, { cwd = tauriDir, env = process.env 
   });
 }
 
-async function findArtifact(dir, ext) {
+async function findArtifact(dir, ext, version = null) {
   if (!existsSync(dir)) return null;
   const entries = await readdir(dir, { withFileTypes: true });
+  let fallback = null;
   for (const entry of entries) {
     const full = join(dir, entry.name);
-    if (entry.isFile() && entry.name.toLowerCase().endsWith(ext)) return full;
+    if (entry.isFile() && entry.name.toLowerCase().endsWith(ext)) {
+      if (version && entry.name.includes(`_${version}_`)) return full;
+      if (!fallback) fallback = full;
+    }
     if (entry.isDirectory()) {
-      const nested = await findArtifact(full, ext);
+      const nested = await findArtifact(full, ext, version);
       if (nested) return nested;
     }
   }
-  return null;
+  return fallback;
 }
 
 export async function buildTauriDesktop({ platform, arch, output, candidate, commit }) {
@@ -145,10 +149,12 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
       },
     });
 
-    // 4. Invoke Tauri CLI build directly through Node (avoids Windows cmd shell warning)
+    // 4. Clean stale bundle outputs before invoking Tauri CLI build
     const tauriCliJs = join(tauriDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
     const bundleType = platform === 'macos' ? 'dmg' : 'nsis';
     const targetTriple = platform === 'macos' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc';
+    const bundleDir = join(srcTauriDir, 'target', targetTriple, 'release', 'bundle', bundleType);
+    await rm(bundleDir, { recursive: true, force: true });
     const buildEnv = { ...process.env };
     if (platform === 'macos' && !signing) {
       for (const key of [
@@ -179,9 +185,8 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
     ], { cwd: tauriDir, env: buildEnv });
 
     // 5. Locate and copy the produced installer to output directory
-    const bundleDir = join(srcTauriDir, 'target', targetTriple, 'release', 'bundle', bundleType);
     const ext = platform === 'macos' ? '.dmg' : '.exe';
-    const produced = await findArtifact(bundleDir, ext);
+    const produced = await findArtifact(bundleDir, ext, release.version);
     if (!produced) {
       throw new Error(`Tauri build did not produce a ${ext} artifact in ${bundleDir}`);
     }
