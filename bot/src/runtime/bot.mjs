@@ -1353,7 +1353,7 @@ export class BotRuntime {
           can_continue: Boolean(session.can_continue),
         } : {}),
         ...(isRoomMainReceipt ? {
-          desk_review_gate: '工位审卷（群里不可见）：先对照宿主真实诉求、host_profile 与已知家底核查 steps_taken 及未查盲区——若漏查关联端或方案撞宿主红线，群里保持静默（勿调 send），直接用 send_input/open_session 打回补查；仅在需跨岗位 @同事 交接、请宿主拍真实取舍、纠偏群内错误前提或已彻底验实时才调 send。',
+          desk_review_gate: '工位审卷（群里不可见）：先对照宿主真实诉求、host_profile 与已知家底核查 steps_taken 及未查盲区——若交回的只是源码/文档纸面推演、漏查本机或远端真实运行态与网络连通、或方案撞宿主红线，群里保持静默（勿调 send），直接用 send_input/open_session 打回补查；准备调 send 前必对照群内刚发过的消息严格去重，同伴刚说过的结论绝不复读，只发新增硬事实、反驳点、跨岗位 @交接或关键追问。',
         } : {}),
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,

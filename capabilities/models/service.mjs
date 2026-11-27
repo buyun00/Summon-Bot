@@ -42,7 +42,7 @@ export class ModelConnections {
     } else {
       try {
         const raw = JSON.parse(await readFile(this.path, 'utf8'));
-        if (Array.isArray(raw?.connections) && (Object.hasOwn(raw, 'fastId') || raw.schemaVersion !== 2 || !raw.purposeDefaults || !raw.externalEngines?.codex?.recommended)) {
+        if (Array.isArray(raw?.connections) && (Object.hasOwn(raw, 'fastId') || raw.schemaVersion !== 2 || !raw.purposeDefaults || !raw.externalEngines?.codex?.recommended || !raw.externalEngines?.agy?.recommended)) {
           await saveModelJson(this.path, normalizeModelCatalog(raw));
         }
       } catch {}
@@ -340,18 +340,20 @@ export class ModelConnections {
           else delete catalog.connectionPurposes[connId];
         }
       }
-      if (input.externalEngines?.codex?.recommended !== undefined) {
-        const list = input.externalEngines.codex.recommended;
-        if (!Array.isArray(list) || !list.length) reject('invalid_model_purposes', '外部 Codex 推荐组合至少需要保留一项');
-        const cleaned = list.map((item, idx) => {
-          const modelId = typeof item?.model === 'string' ? item.model.trim() : '';
-          if (!validModelId(modelId)) reject('invalid_model_id', `外部 Codex 第 ${idx + 1} 项的模型 ID 无效`);
-          const rawEfforts = Array.isArray(item.efforts) ? item.efforts : String(item.efforts ?? '').split(/[,，\s]+/);
-          const efforts = [...new Set(rawEfforts.map(v => String(v).trim()).filter(Boolean))];
-          if (!efforts.length || efforts.some(e => !validThinkingLevel(e))) reject('invalid_thinking_level', `外部 Codex 模型 ${modelId} 需要至少一个有效的思考档`);
-          return { model: modelId, efforts };
-        });
-        catalog.externalEngines.codex = { recommended: cleaned };
+      for (const [engineKey, label] of [['codex', 'Codex'], ['agy', 'AGY']]) {
+        if (input.externalEngines?.[engineKey]?.recommended !== undefined) {
+          const list = input.externalEngines[engineKey].recommended;
+          if (!Array.isArray(list) || !list.length) reject('invalid_model_purposes', `外部 ${label} 推荐组合至少需要保留一项`);
+          const cleaned = list.map((item, idx) => {
+            const modelId = typeof item?.model === 'string' ? item.model.trim() : '';
+            if (!validModelId(modelId)) reject('invalid_model_id', `外部 ${label} 第 ${idx + 1} 项的模型 ID 无效`);
+            const rawEfforts = Array.isArray(item.efforts) ? item.efforts : String(item.efforts ?? '').split(/[,，\s]+/);
+            const efforts = [...new Set(rawEfforts.map(v => String(v).trim()).filter(Boolean))];
+            if (!efforts.length || efforts.some(e => !validThinkingLevel(e))) reject('invalid_thinking_level', `外部 ${label} 模型 ${modelId} 需要至少一个有效的思考档`);
+            return { model: modelId, efforts };
+          });
+          catalog.externalEngines[engineKey] = { recommended: cleaned };
+        }
       }
     });
     return this.snapshot();

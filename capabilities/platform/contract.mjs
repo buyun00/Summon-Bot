@@ -151,7 +151,7 @@ const model = { anyOf: [
   { type: 'null' },
 ] };
 
-const sessionEngine = { type: 'string', description: 'Execution engine: "pi" (lightweight AI session for research/reading/fallback), "exec" (direct shell or own Bot script), or an enabled work engine id listed in work_engines (e.g. "codex", "claude-code", "grok-build").' };
+const sessionEngine = { type: 'string', description: 'Execution engine: "pi" (lightweight AI session for research/reading/fallback), "exec" (direct shell or own Bot script), or an enabled work engine id listed in work_engines (e.g. "agy", "codex", "claude-code", "grok-build").' };
 const sessionWorkspace = { ...text, description: 'A workspace id from find(kind=workspace) or any absolute host directory path (e.g. D:\\Worktrees\\project).' };
 const openSessionInput = object({
   engine: sessionEngine,
@@ -255,7 +255,7 @@ const definitions = [
     }, ['members'])],
   ['configure_room', 'Update the title, membership, pins, or project workspace in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal), pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
-  ['open_session', 'Open an async background work Session on your private desk. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn without filler chat; once the receipt returns to your desk, critically verify evidence, blind spots, and host constraints first—use send_input/open_session silently to probe missing ends or fix flaws, and call send to the Room ONLY for cross-role handoffs, genuine host trade-offs, or verified conclusions.',
+  ['open_session', 'Open an async background work Session on your private desk. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "agy", "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn without filler chat; once the receipt returns to your desk, critically verify live environment evidence, blind spots, and host constraints first—use send_input/open_session silently to probe missing ends or fix flaws, and call send to the Room ONLY for non-redundant increments, cross-role handoffs, genuine host trade-offs, or verified conclusions.',
     openSessionInput],
   ['configure_session', 'Update work_summary on a Session.',
     configureSessionInput],

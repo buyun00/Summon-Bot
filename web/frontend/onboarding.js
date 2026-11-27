@@ -15,7 +15,7 @@
     { id: 'openai-compatible', kind: 'api', name: '自定义 API', subtitle: 'Token Plan / 本机', provider: 'openai-compatible', api: 'openai-completions', baseUrl: '', defaultModel: '' },
   ];
 
-  const ENGINE_ORDER = ['codex', 'claude-code', 'grok-build'];
+  const ENGINE_ORDER = ['agy', 'codex', 'claude-code', 'grok-build'];
 
   const ob = {
     open: false,
@@ -197,6 +197,7 @@
         items = enginesRes.value.items;
       } else if (ob.preview) {
         items = [
+          { id: 'agy', name: 'Antigravity (AGY)', summary: 'Google Antigravity CLI（agy）：支持 Gemini 4 Neon (XHigh) / Gemini 4 Hydrogen (High) 多步工程开发与排障', command: 'agy', installed: false },
           { id: 'codex', name: 'Codex', summary: 'OpenAI Codex CLI：多文件编码、工程重构与构建排障', command: 'codex', installed: false },
           { id: 'claude-code', name: 'Claude Code', summary: 'Anthropic Claude Code CLI：多文件代码实现、架构重构与深度排障', command: 'claude', installed: false },
           { id: 'grok-build', name: 'Grok Build', summary: 'xAI Grok Build CLI：代码开发、工程调研与自动化脚本任务', command: 'grok', installed: false },
@@ -776,6 +777,7 @@
 
   function engineDisplayName() {
     if (ob.engineName) return ob.engineName;
+    if (ob.engineId === 'agy') return 'Antigravity (AGY)';
     if (ob.engineId === 'grok-build') return 'Grok Build';
     if (ob.engineId === 'claude-code') return 'Claude Code';
     return 'Codex';
@@ -1099,7 +1101,7 @@
     ob.botId = botId || 'bot-lead-room-default-bot-maintenance';
     ob.botName = botName || 'Summon';
     ob.engineId = engineId || 'codex';
-    ob.engineName = engineName || (ob.engineId === 'grok-build' ? 'Grok Build' : ob.engineId === 'claude-code' ? 'Claude Code' : 'Codex');
+    ob.engineName = engineName || (ob.engineId === 'agy' ? 'Antigravity (AGY)' : ob.engineId === 'grok-build' ? 'Grok Build' : ob.engineId === 'claude-code' ? 'Claude Code' : 'Codex');
     ob.roomId = roomId || SUMMON_ROOM_ID;
     ob.wakeMessageId = wakeMessageId || null;
     ob.botStartedAt = Date.now();

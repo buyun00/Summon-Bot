@@ -14,7 +14,7 @@ globalThis.SummonModelIcons = (() => {
   const aliases = {
     deepseek: 'deepseek', ds: 'deepseek', openai: 'openai', 'openai-codex': 'openai', codex: 'openai', chatgpt: 'openai',
     anthropic: 'claude', claude: 'claude', 'claude-code': 'claudecode', claudecode: 'claudecode', xai: 'grok', 'x-ai': 'grok', grok: 'grok',
-    google: 'gemini', gemini: 'gemini', 'google-vertex': 'gemini', vertex: 'gemini', gemma: 'gemma',
+    google: 'gemini', gemini: 'gemini', agy: 'gemini', antigravity: 'gemini', 'google-vertex': 'gemini', vertex: 'gemini', gemma: 'gemma',
     qwen: 'qwen', alibaba: 'qwen', dashscope: 'qwen', qianwen: 'qwen', bailian: 'qwen',
     moonshot: 'kimi', moonshotai: 'kimi', kimi: 'kimi', 'kimi-coding': 'kimi', minimax: 'minimax',
     zai: 'zai', 'z.ai': 'zai', zhipu: 'zai', bigmodel: 'zai', glm: 'zai', chatglm: 'chatglm',
@@ -54,6 +54,7 @@ globalThis.SummonModelIcons = (() => {
   ];
   function brand(item = {}) {
     if (item.role === 'executor') {
+      if (/agy|antigravity/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'gemini';
       if (/codex/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'codex';
       if (/claude/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'claudecode';
     }

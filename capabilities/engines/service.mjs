@@ -14,6 +14,7 @@ export function extraToolDirs() {
   const dirs = windows
     ? [
         join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'npm'),
+        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'agy', 'bin'),
         join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Microsoft', 'WinGet', 'Links'),
         join(home, '.grok', 'bin'), join(home, '.local', 'bin'),
         join(home, '.cargo', 'bin'), join(home, '.bun', 'bin'), join(home, 'scoop', 'shims'),
@@ -139,7 +140,7 @@ export class EngineManager {
       return;
     }
     const text = String(error || '').trim();
-    if (/not signed in|failed to authenticate|oauth session expired|please log in|authentication failed|unauthorized|invalid api key|missing .*api.?key|login --device-code/i.test(text)) {
+    if (/not signed in|failed to authenticate|authentication required|oauth session expired|please log in|authentication failed|unauthorized|invalid api key|missing .*api.?key|login --device-code/i.test(text)) {
       this.runtimeFaults.set(id, { message: text.slice(0, 240), at: Date.now() });
     }
   }

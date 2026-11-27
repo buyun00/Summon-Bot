@@ -1,6 +1,6 @@
 'use strict';
 globalThis.SummonModels = (() => {
-  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, refreshingUsage: false, login: null, loadedAt: 0, quotaId: null, codexDraft: null };
+  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, refreshingUsage: false, login: null, loadedAt: 0, quotaId: null, codexDraft: null, agyDraft: null };
   let bindings, loginTimer, usageTimer, loading, invalidateSidebar;
   const kinds = { codex: 'Codex 订阅', grok: 'Grok 订阅', api: '通用 API' };
   const purposeCategories = [['deepseek', 'DeepSeek API'], ['openai', 'OpenAI API'], ['codex', 'Codex 订阅']];
@@ -115,8 +115,10 @@ globalThis.SummonModels = (() => {
     return entry ? { ...entry, apiKey: '' } : null;
   }
   function syncCodexDraft(data) {
-    const list = data?.externalEngines?.codex?.recommended || [];
-    view.codexDraft = list.map(item => ({ model: item.model || '', efforts: Array.isArray(item.efforts) ? item.efforts.join(', ') : String(item.efforts || '') }));
+    const codexList = data?.externalEngines?.codex?.recommended || [];
+    view.codexDraft = codexList.map(item => ({ model: item.model || '', efforts: Array.isArray(item.efforts) ? item.efforts.join(', ') : String(item.efforts || '') }));
+    const agyList = data?.externalEngines?.agy?.recommended || [];
+    view.agyDraft = agyList.map(item => ({ model: item.model || '', efforts: Array.isArray(item.efforts) ? item.efforts.join(', ') : String(item.efforts || '') }));
   }
   function modelChoices(data, editor) {
     if (editor?.kind === 'codex') {
@@ -191,6 +193,7 @@ globalThis.SummonModels = (() => {
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' || selected?.configured ? '保存配置' : '保存并授权'}</button>${defaultAction}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     const purposeDefaults = data.purposeDefaults || {};
     const codexRows = view.codexDraft || [];
+    const agyRows = view.agyDraft || [];
     const purposeSection = `<section class="models-purpose-card"><div class="models-section-heading"><div><p class="models-eyebrow">PURPOSE TABLE</p><h2>用途模型与思考深度默认表</h2></div></div><p class="models-purpose-subtitle">按连接类别配置 ① 快读、② 群主对话与 ③ 独立 Pi 的默认模型与思考档。跟随默认表的 Bot 在下一轮对话或新开 Pi 会话时自动生效；保存时会按目标模型校验思考档。</p>
       <form id="model-purposes-form"><div class="models-purpose-scroll"><table class="models-purpose-table"><thead><tr><th>连接类别</th>${purposeLabels.map(([, title]) => `<th>${esc(title)}（模型 / 思考档）</th>`).join('')}</tr></thead><tbody>
       ${purposeCategories.map(([category, title]) => `<tr><th>${esc(title)}</th>${purposeLabels.map(([purpose]) => {
@@ -205,13 +208,16 @@ globalThis.SummonModels = (() => {
     const codexSection = `<section class="models-purpose-card"><div class="models-section-heading"><div><p class="models-eyebrow">WORK ENGINES</p><h2>③ Codex 工作引擎推荐模型组合（软推荐）</h2></div><button type="button" class="secondary-button" data-action="models-codex-add-row" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}添加组合</button></div><p class="models-purpose-subtitle">保存在 <code>model-connections.json</code> 中，通过缓存断点后的 <code>work_engines</code> 运行时事实动态提供给各群 Bot 按任务难度自主选择；修改后即时生效且不破坏对话前缀缓存。</p>
       <form id="model-codex-rec-form"><div class="models-codex-list">${codexRows.map((row, idx) => `<div class="models-codex-row"><input data-codex-idx="${idx}" data-codex-field="model" list="models-choices-codex" value="${esc(row.model)}" placeholder="例如 gpt-6.2-sol" required><input data-codex-idx="${idx}" data-codex-field="efforts" value="${esc(row.efforts)}" placeholder="思考档（逗号分隔，如 xhigh, max）" required><button type="button" class="text-button models-remove" data-action="models-codex-remove-row" data-idx="${idx}" ${codexRows.length <= 1 || view.busy ? 'disabled' : ''}>删除</button></div>`).join('')}</div>
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : '保存 Codex 推荐组合'}</button></div></form></section>`;
+    const agySection = `<section class="models-purpose-card"><div class="models-section-heading"><div><p class="models-eyebrow">WORK ENGINES</p><h2>④ Antigravity (AGY) 工作引擎推荐模型组合（软推荐）</h2></div><button type="button" class="secondary-button" data-action="models-agy-add-row" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}添加组合</button></div><p class="models-purpose-subtitle">本机 <code>agy</code> CLI 推荐模型列表（默认 <code>gemini-4-neon-xhigh</code> 与 <code>gemini-4-hydrogen-high</code>），动态注入 <code>work_engines</code> 供各群 Bot 选用。</p>
+      <form id="model-agy-rec-form"><div class="models-codex-list">${agyRows.map((row, idx) => `<div class="models-codex-row"><input data-agy-idx="${idx}" data-agy-field="model" value="${esc(row.model)}" placeholder="例如 gemini-4-neon-xhigh" required><input data-agy-idx="${idx}" data-agy-field="efforts" value="${esc(row.efforts)}" placeholder="思考档（如 xhigh 或 high）" required><button type="button" class="text-button models-remove" data-action="models-agy-remove-row" data-idx="${idx}" ${agyRows.length <= 1 || view.busy ? 'disabled' : ''}>删除</button></div>`).join('')}</div>
+      <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : '保存 AGY 推荐组合'}</button></div></form></section>`;
     const work = summary.work;
     const workCard = work ? `<section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>${esc(work.roleLabel || '工作引擎')}</h2><span>${esc(kinds[work.kind] || work.kind || '引擎')}</span></div><strong>${esc(work.name || '工作引擎')}</strong><p>${esc([work.model, work.identity].filter(Boolean).join(' · '))}</p>${work.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(work.usage, esc)}</section>` : '';
     return `<div class="${embedded ? 'models-embedded' : 'page models-page'}">${embedded ? `<div class="settings-inline-toolbar"><p class="subtle">配置默认聊天模型、订阅授权与用途默认表</p><button type="button" class="secondary-button small-button" data-action="models-refresh-usage" ${view.busy || view.refreshingUsage ? 'disabled' : ''}>${icon('refresh', 14)}${view.refreshingUsage ? '刷新中…' : '刷新额度'}</button></div>` : `${globalThis.SummonPageNav?.('models') || ''}<header class="models-header"><div><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型连接</h1><p>查看和配置 Pi 使用的模型连接与用途默认表。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy || view.refreshingUsage ? 'disabled' : ''}>${icon('refresh', 15)}${view.refreshingUsage ? '正在刷新…' : '刷新额度'}</button></header>`}
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
       <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>默认模型</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${active?.effectivePurposes ? `<div class="models-effective-summary">${purposeLabels.map(([k, t]) => `<span class="models-effective-pill">${esc(t)}：${esc(active.effectivePurposes[k]?.id || '—')} · ${esc(active.effectivePurposes[k]?.thinking_level ?? '默认')}</span>`).join('')}</div>` : ''}${active?.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(summary.chat?.usage, esc)}</section>${workCard}</div>
       <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.configured === false ? '<small class="models-unconfigured">待连接</small>' : ''}${item.active ? '<i class="models-selected-dot" role="img" aria-label="当前默认" title="当前默认"></i>' : ''}</button>`).join('')}</div><p class="models-list-note">新建 Bot 默认跟随全局默认连接及下方用途表。</p></section>${form}</div>
-      ${purposeSection}${codexSection}</div>`;
+      ${purposeSection}${codexSection}${agySection}</div>`;
   }
   async function updateUsage(force) {
     if (!bindings) return;
@@ -305,6 +311,13 @@ globalThis.SummonModels = (() => {
     }));
     await savePurposesPayload({ externalEngines: { codex: { recommended } } }, 'Codex 推荐组合已保存');
   }
+  async function submitAgyRecommendations() {
+    const recommended = (view.agyDraft || []).map(row => ({
+      model: String(row.model || '').trim(),
+      efforts: String(row.efforts || '').split(/[,，\s]+/).map(item => item.trim()).filter(Boolean),
+    }));
+    await savePurposesPayload({ externalEngines: { agy: { recommended } } }, 'AGY 推荐组合已保存');
+  }
   async function saveConnectionOverride(connId, clear = false) {
     if (clear) return savePurposesPayload({ connectionPurposes: { [connId]: null } }, '已清除单连接用途覆写');
     const panel = document.querySelector(`#model-connection-override[data-conn-id="${CSS.escape(connId)}"]`);
@@ -334,6 +347,12 @@ globalThis.SummonModels = (() => {
     if (action === 'models-codex-remove-row') {
       const idx = Number(element.dataset.idx);
       if (Array.isArray(view.codexDraft) && view.codexDraft.length > 1) view.codexDraft = view.codexDraft.filter((_, i) => i !== idx);
+      return provided.render();
+    }
+    if (action === 'models-agy-add-row') { view.agyDraft = [...(view.agyDraft || []), { model: '', efforts: 'high' }]; return provided.render(); }
+    if (action === 'models-agy-remove-row') {
+      const idx = Number(element.dataset.idx);
+      if (Array.isArray(view.agyDraft) && view.agyDraft.length > 1) view.agyDraft = view.agyDraft.filter((_, i) => i !== idx);
       return provided.render();
     }
     if (action === 'models-save-override') return saveConnectionOverride(element.dataset.id, false);
@@ -374,11 +393,17 @@ globalThis.SummonModels = (() => {
     if (event.target.id === 'model-connection-form') { event.preventDefault(); void submit(event.target); }
     if (event.target.id === 'model-purposes-form') { event.preventDefault(); void submitPurposes(event.target); }
     if (event.target.id === 'model-codex-rec-form') { event.preventDefault(); void submitCodexRecommendations(); }
+    if (event.target.id === 'model-agy-rec-form') { event.preventDefault(); void submitAgyRecommendations(); }
   });
   document.addEventListener('input', event => {
     if (event.target.closest('#model-codex-rec-form') && event.target.dataset.codexIdx !== undefined) {
       const idx = Number(event.target.dataset.codexIdx);
       if (view.codexDraft?.[idx]) view.codexDraft[idx][event.target.dataset.codexField] = event.target.value;
+      return;
+    }
+    if (event.target.closest('#model-agy-rec-form') && event.target.dataset.agyIdx !== undefined) {
+      const idx = Number(event.target.dataset.agyIdx);
+      if (view.agyDraft?.[idx]) view.agyDraft[idx][event.target.dataset.agyField] = event.target.value;
       return;
     }
     if (!event.target.closest('#model-connection-form') || !view.editor || !event.target.name || event.target.name === 'preset') return;

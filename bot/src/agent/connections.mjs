@@ -105,6 +105,12 @@ export function defaultCodexRecommendations() {
     { model: 'gpt-6.2-astra', efforts: ['high', 'xhigh', 'max'] },
   ];
 }
+export function defaultAgyRecommendations() {
+  return [
+    { model: 'gemini-4-neon-xhigh', efforts: ['xhigh'] },
+    { model: 'gemini-4-hydrogen-high', efforts: ['high'] },
+  ];
+}
 export function purposeCategory(connection) {
   if (!connection) return null;
   if (connection.kind === 'codex') return 'codex';
@@ -138,11 +144,15 @@ export function normalizeModelCatalog(catalog) {
   }
   const connectionPurposes = catalog?.connectionPurposes && typeof catalog.connectionPurposes === 'object' && !Array.isArray(catalog.connectionPurposes)
     ? structuredClone(catalog.connectionPurposes) : {};
-  const savedCodex = catalog?.externalEngines?.codex?.recommended;
-  const recommended = Array.isArray(savedCodex) && savedCodex.length
-    ? savedCodex.filter(item => typeof item?.model === 'string' && item.model.trim() && Array.isArray(item.efforts) && item.efforts.length)
-      .map(item => ({ model: item.model.trim(), efforts: [...new Set(item.efforts.map(e => String(e).trim()).filter(Boolean))] }))
-    : defaultCodexRecommendations();
+  const normalizeRecommended = (rawList, fallbackFn) => {
+    const cleaned = Array.isArray(rawList) && rawList.length
+      ? rawList.filter(item => typeof item?.model === 'string' && item.model.trim() && Array.isArray(item.efforts) && item.efforts.length)
+        .map(item => ({ model: item.model.trim(), efforts: [...new Set(item.efforts.map(e => String(e).trim()).filter(Boolean))] }))
+      : [];
+    return cleaned.length ? cleaned : fallbackFn();
+  };
+  const codexRecommended = normalizeRecommended(catalog?.externalEngines?.codex?.recommended, defaultCodexRecommendations);
+  const agyRecommended = normalizeRecommended(catalog?.externalEngines?.agy?.recommended, defaultAgyRecommendations);
   const { fastId, ...rest } = catalog;
   return {
     ...rest,
@@ -151,7 +161,8 @@ export function normalizeModelCatalog(catalog) {
     purposeDefaults,
     connectionPurposes,
     externalEngines: { ...(catalog?.externalEngines && typeof catalog.externalEngines === 'object' ? catalog.externalEngines : {}),
-      codex: { recommended: recommended.length ? recommended : defaultCodexRecommendations() } },
+      codex: { recommended: codexRecommended },
+      agy: { recommended: agyRecommended } },
   };
 }
 export function readConnectionCatalog(path) {

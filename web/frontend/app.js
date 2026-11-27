@@ -4948,7 +4948,7 @@ function renderDetailPanel(room, bot) {
 
 const inputActions = { reply:'回答', steer:'追加输入', next:'继续输入' };
 const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', unsupported:'不支持取消' };
-const ENGINE_DISPLAY_NAMES = { pi: 'Pi 会话', exec: '本机命令', codex: 'Codex', 'claude-code': 'Claude Code', 'grok-build': 'Grok Build' };
+const ENGINE_DISPLAY_NAMES = { pi: 'Pi 会话', exec: '本机命令', agy: 'Antigravity (AGY)', codex: 'Codex', 'claude-code': 'Claude Code', 'grok-build': 'Grok Build' };
 const executionLabel = item => item.kind === 'conversation'
   ? '内部对话'
   : (ENGINE_DISPLAY_NAMES[item.engine] || (state.engines || []).find(e => e.id === item.engine)?.name || item.engine || '执行会话');

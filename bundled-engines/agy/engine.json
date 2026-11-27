@@ -1,0 +1,8 @@
+{
+  "id": "agy",
+  "name": "Antigravity (AGY)",
+  "summary": "Google Antigravity CLI（agy）：支持 Gemini 4 Neon (XHigh) / Gemini 4 Hydrogen (High) 多步工程开发、实机排障与调研",
+  "command": "agy",
+  "script": "bridge.mjs",
+  "env_slots": []
+}
