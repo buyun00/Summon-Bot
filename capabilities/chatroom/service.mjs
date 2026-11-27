@@ -260,10 +260,10 @@ const roomActivity = "(kind='messages' OR (kind='platform-events' AND json_extra
 function rowMessage(row) {
   if (!row) return null;
   const message = JSON.parse(row.data);
-  const { id, roomId, senderId, content, createdAt, clientId, replyTo, replyAuthorId, callId,
+  const { id, roomId, senderId, senderName, content, createdAt, clientId, replyTo, replyAuthorId, callId,
     forSessionId, originMessageId, awaitingReply, prompt, promptResponse, promptAnswer } = message;
   const author = message.author ?? message.source ?? identity(senderId);
-  return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, content, createdAt, sequence: row.sequence,
+  return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, ...(senderName ? { senderName } : {}), content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
     ...(forSessionId ? { forSessionId } : {}),
     ...(originMessageId ? { originMessageId } : {}),
@@ -614,11 +614,11 @@ export class ChatroomService {
     }
   }
 
-  createRoom({ title, members, mode, workspace, lead_name, lead_duty, skip_welcome, auto_title, origin_room, opening_message }, actor, { id = randomUUID() } = {}) {
+  createRoom({ title, members, mode, workspace, lead_name, lead_duty, lead_persona, skip_welcome, auto_title, origin_room, opening_message }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const explicitMembers = [...new Set(list(members, '成员').map(member => identity(member).id))];
     const hasGroupSignals = Boolean(
-      lead_name || lead_duty || auto_title === true || origin_room || opening_message || workspace != null || id === botMaintenanceRoomId,
+      lead_name || lead_duty || lead_persona || auto_title === true || origin_room || opening_message || workspace != null || id === botMaintenanceRoomId,
     );
     let createdLead = null;
     let openingMessage = null;
@@ -691,6 +691,7 @@ export class ChatroomService {
             roomName,
             leadName: lead_name,
             leadDuty: lead_duty,
+            leadPersona: lead_persona,
             pendingAutoName: autoNameGroup && !lead_name,
           });
           createdLead = leadBot;

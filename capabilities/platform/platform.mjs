@@ -8,6 +8,7 @@ import { botMaintenanceLeadId, botMaintenanceRoomId, eggbotRole, groupLeadRole, 
 import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, readHostProfile, validateBotRelPath, writeBotFolderFile, writeHostProfile } from '../bot-management/folders.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { EngineManager } from '../engines/service.mjs';
+import { CapabilityManager } from '../skills/service.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
@@ -35,6 +36,7 @@ export class SummonPlatform {
     this.resources = new HostResources(store);
     this.manager = new BotManager({ store, dataRoot, releaseRoot, models, canUseModel: (actor, id) => this.canUseModel(actor, id) });
     this.engines = new EngineManager({ store, dataRoot, releaseRoot });
+    this.capabilities = new CapabilityManager({ dataRoot, releaseRoot });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit, chatroom: () => this.room,
       onEnqueue: () => this.scheduleFlush(),
       canReadEvent: (botId, event) => this.canReadEvent(event, { actor: { kind: 'bot', id: botId } }),
@@ -99,6 +101,7 @@ export class SummonPlatform {
   initializeDefaults() {
     const defaultWs = this.ensureDefaultWorkspace();
     this.engines.ensureDefaults();
+    this.capabilities.ensureDefaults();
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
     this.room.ensureMaintenanceRoom({ defaultWorkspaceId: defaultWs?.id || null });
     this.store.transaction(() => {
@@ -402,6 +405,17 @@ export class SummonPlatform {
     return actor?.kind === 'user' || (actor?.kind === 'bot' && actor.id === botMaintenanceLeadId);
   }
 
+  canConfigureCapability(actor, capabilityId) {
+    if (this.canConfigureEngine(actor)) return true;
+    if (this.capabilities.isBundled(capabilityId)) return false;
+    if (actor?.kind !== 'bot') return false;
+    const caller = this.store.get(botRecords, actor.id);
+    if (caller?.built_in_role?.id === eggbotRole) return true;
+    const existing = this.capabilities.readEntry(capabilityId, { lookupBot: id => this.store.get(botRecords, id) });
+    if (!existing) return true;
+    return !existing.owner_bot || existing.owner_bot === actor.id || existing.owner_alive === false;
+  }
+
   applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty, leadPersona } = {}) {
     let updatedRoom = null;
     let updatedBot = null;
@@ -604,6 +618,7 @@ export class SummonPlatform {
       }
       case 'workspace': return this.workspaceAvailable(ref.id, actor, context);
       case 'engine': return this.engines.list().some(item => item.id === ref.id);
+      case 'capability': return Boolean(this.capabilities.readEntry(ref.id));
       case 'wakeup': return this.deliveries.list(context).some(item => item.id === ref.id);
       default: return false;
     }
@@ -1203,7 +1218,7 @@ export class SummonPlatform {
           this.calls.bind(record.id, { target: args.space });
           return this.calls.finish(record.id, 'completed', { kind: 'host_profile', path: 'host-profile.md', ...written });
         });
-        return result;
+        return { result, call_id: record.id };
       }
       if (name === 'save_file' && args.space.kind === 'engine') {
         if (!this.canConfigureEngine(context.actor)) {
@@ -1216,6 +1231,20 @@ export class SummonPlatform {
         const result = this.store.transaction(() => {
           this.calls.bind(record.id, { target: args.space });
           return this.calls.finish(record.id, 'completed', { kind: 'engine_file', engine_id: args.space.id, ...written });
+        });
+        return { result, call_id: record.id };
+      }
+      if (name === 'save_file' && args.space.kind === 'capability') {
+        if (!this.canConfigureCapability(context.actor, args.space.id)) {
+          reject('configuration_forbidden', 'Cannot modify this platform capability folder', 403);
+        }
+        const content = typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
+        if (typeof content !== 'string') reject('invalid_content', 'Provide text content when saving into a capability folder');
+        const written = this.capabilities.writeFile(args.space.id, args.path, content);
+        this.emit('capability');
+        const result = this.store.transaction(() => {
+          this.calls.bind(record.id, { target: args.space });
+          return this.calls.finish(record.id, 'completed', { kind: 'capability_file', capability_id: args.space.id, ...written });
         });
         return { result, call_id: record.id };
       }
@@ -1464,6 +1493,11 @@ export class SummonPlatform {
         return [item.id, item.name, item.lastMessage?.content];
       case 'call':
         return [item.id, item.tool, item.status, item.target?.id];
+      case 'capability':
+        return [
+          item.id, item.name, item.description, item.owner_bot, item.owner_name, item.room_id,
+          ...(Array.isArray(item.env_slots) ? item.env_slots : []),
+        ];
       default:
         return [item.id, item.name, item.path, item.content, item.text, item.public_duty, item.role_id, item.summary, item.work_summary];
     }
@@ -1476,6 +1510,10 @@ export class SummonPlatform {
     switch (kind) {
       case 'engine': {
         items = this.engines.list({ fresh: actor.kind === 'user' });
+        break;
+      }
+      case 'capability': {
+        items = this.capabilities.list({ lookupBot: id => this.store.get(botRecords, id) });
         break;
       }
       case 'bot': {
@@ -1610,6 +1648,12 @@ export class SummonPlatform {
           return { ref, ...this.engines.readFile(ref.id, args.path) };
         }
         return this.engines.get(ref.id, { fresh: context.actor.kind === 'user' });
+      }
+      case 'capability': {
+        if (args.path !== undefined) {
+          return { ref, ...this.capabilities.readFile(ref.id, args.path) };
+        }
+        return this.capabilities.get(ref.id, { lookupBot: id => this.store.get(botRecords, id) });
       }
       case 'room': return this.room.read(args, context.actor.id);
       case 'event': {
@@ -2121,6 +2165,7 @@ export class SummonPlatform {
     for (const bot of this.manager.list()) {
       if (bot.control.state === 'paused' && bot.control.stop_status === 'pending') this.manager.settleStop(bot.id, bot.control.stop_id, 'stopped');
     }
+    this.exec?.recoverInterrupted?.();
     this.deliveries.purgePausedDeliveries();
   }
 }

@@ -9,6 +9,7 @@ import { createPathAccess, pathWithin } from '../../bot/src/capabilities/file-po
 import { attachWindowsJob, cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { botRootDir, protectedRuntimeDirs, validateBotRelPath } from '../bot-management/folders.mjs';
 import { engineRootDir, extraToolDirs, validateEngineRelPath } from '../engines/service.mjs';
+import { capabilitiesDataRoot } from '../skills/service.mjs';
 import { keyOf, reject } from '../platform/contract.mjs';
 import { pipeNativeText } from './windows-native-text.mjs';
 
@@ -21,10 +22,13 @@ const envNameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const validText = (v, max = 32_768) => typeof v === 'string' && v.length > 0 && v.length <= max && !v.includes('\0');
 const settled = s => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(s);
 
-function buildSafeEnv(rawEnv, optionalEnv = null) {
+function buildSafeEnv(rawEnv, optionalEnv = null, dataRoot = null) {
   const env = cleanEnvironment();
   for (const key of ['CODEX_HOME', 'GROK_HOME', 'GROK_AUTH_PATH', 'CLAUDE_CONFIG_DIR']) {
     if (process.env[key]) env[key] = process.env[key];
+  }
+  if (dataRoot) {
+    env.SUMMON_CAPABILITIES_DIR = capabilitiesDataRoot(dataRoot);
   }
   const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') || 'PATH';
   const existing = (env[pathKey] || '').split(delimiter).filter(Boolean);
@@ -174,7 +178,7 @@ export class ExecRunner {
         reject('engine_script_not_found', `Engine script not found: ${engineId}/${relScript}`, 404);
       }
       const optionalSlots = Array.isArray(meta.env_slots) ? meta.env_slots : [];
-      const { env, secrets } = buildSafeEnv(data.env, optionalSlots);
+      const { env, secrets } = buildSafeEnv(data.env, optionalSlots, this.dataRoot);
       const rejectInlineSecrets = values => {
         if (secrets.length && values.some(v => typeof v === 'string' && secrets.some(s => v.includes(s)))) {
           reject('inline_credential_forbidden', 'Pass secret env var names via env instead of inline values');
@@ -203,7 +207,7 @@ export class ExecRunner {
       };
     }
 
-    const { env, secrets } = buildSafeEnv(data.env);
+    const { env, secrets } = buildSafeEnv(data.env, null, this.dataRoot);
     const rejectInlineSecrets = values => {
       if (secrets.length && values.some(v => typeof v === 'string' && secrets.some(s => v.includes(s)))) {
         reject('inline_credential_forbidden', 'Pass secret env var names via env instead of inline values');
@@ -253,7 +257,9 @@ export class ExecRunner {
       file: windows
         ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
         : '/bin/sh',
-      args: windows ? ['-NoProfile', '-NonInteractive', '-Command', shellText] : ['-c', shellText],
+      args: windows
+        ? ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(shellText, 'utf16le').toString('base64')]
+        : ['-c', shellText],
       cwd, env, secrets,
       protocol: 'stdin',
       keepInput: data.keep_input === true,
@@ -349,7 +355,9 @@ export class ExecRunner {
       writeLog('events.jsonl', JSON.stringify(this.clean({ at: new Date().toISOString(), ...ev }, live.secrets)) + '\n');
 
       if (ev.type === 'session' && typeof ev.sessionId === 'string' && ev.sessionId) {
-        this.store.save(operationRecords, { id: opId, native_session_id: this.clean(ev.sessionId, live.secrets).slice(0, 512) });
+        const cleanSid = this.clean(ev.sessionId, live.secrets).slice(0, 512);
+        this.store.save(operationRecords, { id: opId, native_session_id: cleanSid });
+        this.syncSessionNative(session.id, { session_id: cleanSid });
       } else if (ev.type === 'progress' && typeof ev.text === 'string' && ev.text.trim()) {
         live.hasReadableProgress = true;
         emitProgress(ev.text);
@@ -419,6 +427,7 @@ export class ExecRunner {
     child.once('spawn', () => {
       live.childJob = attachWindowsJob(child.pid);
       this.store.save(operationRecords, { id: opId, child_pid: child.pid });
+      this.syncSessionNative(session.id, { pid: child.pid });
       if (launch.initialInput) child.stdin.write(launch.initialInput);
       if (!launch.keepInput) child.stdin.end();
     });
@@ -428,15 +437,24 @@ export class ExecRunner {
       live.settled = true;
       clearTimeout(live.drainTimer);
       if (stdoutBuf.trim()) handleEvent(stdoutBuf);
-      if (live.stopping) live.childJob?.kill();
+      if (live.stopping || live.interruptedByRestart) live.childJob?.kill();
       else live.childJob?.release();
       if (this.running.get(session.id) === live) this.running.delete(session.id);
 
-      const status = live.nativeOutcome?.status
-        || (spawnError ? 'failed' : live.stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed');
-      const error = live.nativeOutcome?.error
-        || (spawnError ? this.clean(spawnError.message, live.secrets) : null)
-        || (status === 'failed' ? (live.stderrTail.trim() || `Exited with ${exitSignal || `code ${exitCode}`}`) : null);
+      const restarted = Boolean(live.interruptedByRestart);
+      const status = restarted
+        ? 'failed'
+        : (live.nativeOutcome?.status
+          || (spawnError ? 'failed' : live.stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed'));
+      const canContinueAfterRestart = restarted && Boolean(launch.resumable && launch.originExecInput && this.store.get(operationRecords, opId)?.native_session_id);
+      const restartError = canContinueAfterRestart
+        ? '后台服务更新或重启中断了本次执行；已保留会话上下文，可直接用 send_input(kind:"next") 接着完成。'
+        : '后台服务更新或重启中断了本次执行；如需结果可重新发起。';
+      const error = restarted
+        ? restartError
+        : (live.nativeOutcome?.error
+          || (spawnError ? this.clean(spawnError.message, live.secrets) : null)
+          || (status === 'failed' ? (live.stderrTail.trim() || `Exited with ${exitSignal || `code ${exitCode}`}`) : null));
 
       let result = live.finalResult;
       if (!result && live.protocol === 'stdin') {
@@ -448,10 +466,11 @@ export class ExecRunner {
         id: opId, status, pending: [],
         exit_code: Number.isInteger(exitCode) ? exitCode : null,
         exit_signal: exitSignal || null,
+        ...(restarted ? { interrupted_by_restart: true } : {}),
         error, result,
         finished_at: new Date().toISOString(),
       });
-      void this.publishReceipt(saved, `terminal:${status}`);
+      void this.publishReceipt(saved, restarted ? 'terminal:interrupted_by_restart' : `terminal:${status}`);
       if (session.group_work) {
         this.onWorkEvent?.(session.id, opId, ['status', status], {
           program: launch.programLabel, cwd: launch.cwd, phase: 'execution', status, text: error?.slice(0, 8000), exit_code: exitCode,
@@ -475,11 +494,12 @@ export class ExecRunner {
     const isLive = Boolean(live && live.opId === op.id && !live.settled);
     return this.clean({
       status: op.status,
+      ...(op.interrupted_by_restart ? { code: 'interrupted_by_restart' } : {}),
       input_revision: op.input_revision,
       safe_to_disconnect: !isLive,
       can_steer: isLive && Boolean(live.child?.stdin?.writable),
       can_continue: !isLive && op.resumable && Boolean(op.origin_exec_input && op.native_session_id) && ['completed', 'failed', 'stopped'].includes(op.status),
-      native: { protocol: op.protocol, pid: op.child_pid || null, session_id: op.native_session_id || null },
+      native: { protocol: op.protocol, pid: isLive ? (op.child_pid || null) : null, session_id: op.native_session_id || null },
       ...(Number.isInteger(op.exit_code) ? { exit_code: op.exit_code } : {}),
       ...(op.exit_signal ? { exit_signal: op.exit_signal } : {}),
       ...(op.result ? { output: op.result } : {}),
@@ -488,25 +508,47 @@ export class ExecRunner {
     });
   }
 
-  async inspect(session, { cursor, limit = 65_536, stream = 'stdout' } = {}) {
+  async inspect(session, { cursor, limit, stream, modelPage = false } = {}) {
     const ops = this.operations(session.id);
     const latest = ops.at(-1);
     if (!latest) return {};
-    let offset = 0, selected = latest;
+    const explicitStream = typeof stream === 'string' && stream.length > 0;
+    const resolvedStream = explicitStream ? stream : (latest.protocol === 'summon-jsonl' && modelPage ? 'events' : 'stdout');
+    if (modelPage && !cursor && !explicitStream && limit === undefined) {
+      const facts = this.factsFor(latest);
+      if (facts.output || facts.error || settled(latest.status)) {
+        return {
+          ...facts,
+          output_call_id: latest.id,
+          next_cursor: keyOf(latest.id, 0, resolvedStream),
+        };
+      }
+      const file = join(this.dataRoot, 'capabilities', 'exec-logs', latest.id, resolvedStream === 'events' ? 'events.jsonl' : `${resolvedStream}.log`);
+      const out = await readLogPage(file, 0, 2048);
+      return {
+        ...facts,
+        output_page: this.clean(out),
+        output_call_id: latest.id,
+        next_cursor: out.more ? keyOf(latest.id, out.next_offset, resolvedStream) : null,
+      };
+    }
+    let offset = 0, selected = latest, targetStream = resolvedStream;
     if (cursor) {
       let parsed;
       try { parsed = JSON.parse(cursor); } catch { reject('invalid_cursor', 'Invalid output cursor'); }
       selected = ops.find(item => item.id === parsed?.[0]) || latest;
       offset = Number.isSafeInteger(parsed?.[1]) && parsed[1] >= 0 ? parsed[1] : 0;
-      stream = ['stdout', 'stderr', 'events'].includes(parsed?.[2]) ? parsed[2] : stream;
+      targetStream = ['stdout', 'stderr', 'events'].includes(parsed?.[2]) ? parsed[2] : targetStream;
     }
-    const file = join(this.dataRoot, 'capabilities', 'exec-logs', selected.id, stream === 'events' ? 'events.jsonl' : `${stream}.log`);
-    const out = await readLogPage(file, offset, Math.max(1024, Math.min(limit, 262_144)));
+    const defaultLimit = modelPage ? 12_288 : 65_536;
+    const effectiveLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : defaultLimit;
+    const file = join(this.dataRoot, 'capabilities', 'exec-logs', selected.id, targetStream === 'events' ? 'events.jsonl' : `${targetStream}.log`);
+    const out = await readLogPage(file, offset, Math.max(1024, Math.min(effectiveLimit, modelPage ? 32_768 : 262_144)));
     return {
       ...this.factsFor(latest),
       output_page: this.clean(out),
       output_call_id: selected.id,
-      next_cursor: out.more ? keyOf(selected.id, out.next_offset, stream) : null,
+      next_cursor: out.more ? keyOf(selected.id, out.next_offset, targetStream) : null,
     };
   }
 
@@ -571,6 +613,103 @@ export class ExecRunner {
     return { status: 'stopped' };
   }
 
+  syncSessionNative(sessionId, patch) {
+    const current = this.store.get(executionRecords, sessionId);
+    if (!current) return;
+    this.store.save(executionRecords, {
+      id: sessionId,
+      native: { ...(current.native || {}), ...patch },
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  recoverInterrupted() {
+    const activeStatuses = new Set(['opening', 'running', 'submitted', 'needs_input', 'awaiting_input']);
+    const nowIso = new Date().toISOString();
+    const recoveredSessions = new Set();
+    for (const session of this.store.list(executionRecords)) {
+      if (session.engine === 'pi' || !activeStatuses.has(session.status) || this.running.has(session.id)) continue;
+      recoveredSessions.add(session.id);
+      const op = this.operations(session.id).at(-1) || (session.latest_call_id ? this.store.get(operationRecords, session.latest_call_id) : null);
+      const sessionIdNative = op?.native_session_id || session.native?.session_id || null;
+      const canContinue = Boolean(op?.resumable && op?.origin_exec_input && sessionIdNative);
+      const reason = op?.interrupted_by_restart
+        ? '后台服务更新或重启中断了本次执行'
+        : '后台执行进程在服务重启或异常退出时已终止';
+      const errorText = canContinue
+        ? `${reason}；已保留会话上下文，可直接用 send_input(kind:"next") 接着完成。`
+        : `${reason}；如需结果可重新发起。`;
+      if (op && !settled(op.status)) {
+        this.store.save(operationRecords, {
+          id: op.id,
+          status: 'failed',
+          pending: [],
+          error: errorText,
+          finished_at: nowIso,
+        });
+      }
+      const callId = op?.id || session.latest_call_id;
+      const facts = {
+        status: 'failed',
+        code: 'interrupted_by_restart',
+        safe_to_disconnect: true,
+        can_steer: false,
+        can_continue: canContinue,
+        input_revision: op?.input_revision ?? session.input_revision ?? 1,
+        native: {
+          protocol: op?.protocol || session.native?.protocol || 'stdin',
+          pid: null,
+          session_id: sessionIdNative,
+        },
+        error: errorText,
+        position: keyOf('exec', callId || session.id, 'recovered:interrupted_by_restart'),
+      };
+      let delivered = false;
+      if (callId && this.onEvent) {
+        try {
+          this.onEvent(session.id, callId, facts);
+          delivered = true;
+        } catch {}
+      }
+      const latestSession = this.store.get(executionRecords, session.id);
+      if (!delivered || (latestSession && activeStatuses.has(latestSession.status))) {
+        this.store.save(executionRecords, {
+          id: session.id,
+          status: 'failed',
+          pending_input: [],
+          live_progress: null,
+          can_steer: false,
+          can_continue: canContinue,
+          safe_to_disconnect: true,
+          native: facts.native,
+          last_error: { code: 'interrupted_by_restart', message: errorText },
+          updated_at: nowIso,
+        });
+      }
+      if (session.group_work && callId) {
+        try {
+          this.onWorkEvent?.(session.id, callId, ['status', 'failed'], {
+            program: op?.program_label || session.engine || 'exec',
+            cwd: op?.cwd || session.workspace?.path || this.workspace,
+            phase: 'execution',
+            status: 'failed',
+            text: errorText,
+          });
+        } catch {}
+      }
+    }
+    for (const op of this.store.list(operationRecords)) {
+      if (settled(op.status) || this.running.has(op.session_id) || recoveredSessions.has(op.session_id)) continue;
+      this.store.save(operationRecords, {
+        id: op.id,
+        status: 'failed',
+        pending: [],
+        error: op.interrupted_by_restart ? '后台服务更新或重启中断了本次执行' : '后台执行进程在服务重启时已终止',
+        finished_at: nowIso,
+      });
+    }
+  }
+
   drainStatus() {
     const active = [...this.running.values()]
       .filter(live => !live.settled)
@@ -581,7 +720,13 @@ export class ExecRunner {
   async close() {
     this.closing = true;
     await Promise.allSettled([...this.running.values()].map(async live => {
-      live.stopping = true;
+      live.interruptedByRestart = true;
+      try {
+        const current = this.store.get(operationRecords, live.opId);
+        if (current && !settled(current.status)) {
+          this.store.save(operationRecords, { id: live.opId, interrupted_by_restart: true });
+        }
+      } catch {}
       live.childJob?.kill();
       await terminateTree(live.child).catch(() => {});
     }));

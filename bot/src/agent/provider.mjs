@@ -263,13 +263,39 @@ export class ModelProvider {
         if (totalWaitMs) totalTimer = setTimeout(() => {
           record.timeoutPhase = 'total-budget'; deadline.abort(timeoutError('total-budget'));
         }, totalWaitMs);
+        let beforeFetchDone = false;
+        const recordSentWire = wire => {
+          if (!wire) return;
+          if (typeof wire.model === 'string' && wire.model !== model.id)
+            throw new Error(`The provider serialized a different model for ${model.id}`);
+          const efforts = validateReasoning(wire);
+          if (context.messages?.some(msg => msg.role === 'toolResult' && msg.content?.some(part => part.type === 'image')))
+            record.sentImageCount = countWireImages(wire.input ?? wire.messages);
+          if (cacheSessionId || responsesProtocol) {
+            record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
+            record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>
+              Array.isArray(item?.content) && item.content.some(part => part?.prompt_cache_breakpoint?.mode === 'explicit'));
+          }
+          if (typeof wire.model === 'string') record.sentModel = wire.model;
+          if (Array.isArray(wire.tools)) {
+            record.toolNames = wire.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean);
+            record.toolCount = record.toolNames.length;
+          }
+          const limit = wire.max_tokens ?? wire.max_completion_tokens ?? wire.max_output_tokens;
+          record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;
+          record.sentReasoningEffort = wireReasoningEffort(efforts.effort);
+          record.sentReasoningEffortSource = record.sentReasoningEffort === null ? null : efforts.source;
+          record.sentTopLevelReasoningEffort = wireReasoningEffort(efforts.topLevel);
+          persist();
+        };
         const stream = runtime.models.streamSimple(wireModel, context, { ...streamOptions, reasoning, maxTokens, signal: requestSignal,
           // The SDK uses this for its HTTP header wait. Stream lifetime is
           // governed separately by meaningful deltas and the caller's stop.
           timeoutMs: connectionWaitMs + 1000,
           sessionId: cacheSessionId || usageContext?.sessionId || options.sessionId, maxRetries: 0,
-          ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
+          ...(connection.kind === 'codex' ? { transport: 'auto' } : {}),
           onProviderStreamEvent: async (event, model) => {
+            if (event?.type === 'response.created') waitFor('first-progress', idleWaitMs);
             if (event?.type === 'response.output_item.added' && event.item?.type && !['message', 'reasoning'].includes(event.item.type))
               outputStarted = true;
             if (codex && event?.response && (event.type === 'response.created' || codexTerminalEvents.has(event.type))) {
@@ -291,11 +317,11 @@ export class ModelProvider {
             const cached = cacheRoomHistory ? roomCacheRequest(withReasoning, roomCache) : null;
             const sent = cached?.payload ?? withReasoning;
             roomCacheThroughMessageId = cached?.throughMessageId;
-            record.toolNames = Array.isArray(sent?.tools) ? sent.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean) : [];
-            record.toolCount = record.toolNames.length;
-            const limit = sent?.max_tokens ?? sent?.max_completion_tokens ?? sent?.max_output_tokens;
-            record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;
-            validateReasoning(sent);
+            if (codex && !beforeFetchDone) {
+              await beforeFetch?.();
+              beforeFetchDone = true;
+            }
+            recordSentWire(sent);
             return sent !== original ? sent : replacement;
           },
           fetch: async (input, init) => {
@@ -303,26 +329,11 @@ export class ModelProvider {
             const bearer = headers.get('authorization'); if (bearer) secrets.add(bearer.replace(/^Bearer\s+/i, ''));
             if (headers.get('x-api-key')) secrets.add(headers.get('x-api-key'));
             const wire = readWirePayload(init?.body, headers);
-            if (typeof wire?.model === 'string' && wire.model !== model.id)
-              throw new Error(`The provider serialized a different model for ${model.id}`);
-            const efforts = wire ? validateReasoning(wire) : serializedReasoning();
-            await beforeFetch?.();
-            if (wire && context.messages?.some(msg => msg.role === 'toolResult' && msg.content?.some(part => part.type === 'image')))
-              record.sentImageCount = countWireImages(wire.input ?? wire.messages);
-            if ((cacheSessionId || responsesProtocol) && wire) {
-              record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
-              record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>
-                Array.isArray(item?.content) && item.content.some(part => part?.prompt_cache_breakpoint?.mode === 'explicit'));
+            if (!beforeFetchDone) {
+              await beforeFetch?.();
+              beforeFetchDone = true;
             }
-            if (typeof wire?.model === 'string') record.sentModel = wire.model;
-            if (Array.isArray(wire?.tools)) {
-              record.toolNames = wire.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean);
-              record.toolCount = record.toolNames.length;
-            }
-            record.sentReasoningEffort = wireReasoningEffort(efforts.effort);
-            record.sentReasoningEffortSource = record.sentReasoningEffort === null ? null : efforts.source;
-            record.sentTopLevelReasoningEffort = wireReasoningEffort(efforts.topLevel);
-            persist();
+            recordSentWire(wire);
             let response;
             try { response = await fetch(input, { ...init, redirect: 'error' }); }
             catch (error) {

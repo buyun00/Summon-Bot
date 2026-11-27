@@ -133,6 +133,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (kind === 'file') return args.query ? `正在搜索资料 ${compactActivityText(args.query, 18)}` : '正在查找资料';
       if (kind === 'bot') return '正在查看成员列表';
       if (kind === 'engine') return '正在查看工作引擎';
+      if (kind === 'capability') return '正在查看平台能力';
       if (kind === 'execution') return '正在查看执行状态';
       if (kind === 'event') return '正在检索群记录';
       if (kind === 'wakeup') return '正在查看提醒规则';
@@ -150,6 +151,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (refKind === 'event') return '正在查看消息详情';
       if (refKind === 'bot') return args.path ? `正在读取 ${shortPathLabel(args.path)}` : '正在查看成员配置';
       if (refKind === 'engine') return args.path ? `正在读取工作引擎 ${shortPathLabel(args.path)}` : '正在查看工作引擎';
+      if (refKind === 'capability') return args.path ? `正在读取能力文件 ${shortPathLabel(args.path)}` : '正在读取能力说明';
       if (refKind === 'room') return '正在读取群信息';
       return '正在读取内容';
     }
@@ -1194,13 +1196,11 @@ export class BotRuntime {
         .sort((left, right) =>
           (Date.parse(right.lastMessage?.createdAt || right.updatedAt || right.createdAt || 0) || 0) -
           (Date.parse(left.lastMessage?.createdAt || left.updatedAt || left.createdAt || 0) || 0))
-        .slice(0, 20)
+        .slice(0, 10)
         .map(item => ({
           id: item.id,
           name: item.name,
-          mode: item.mode,
           role: item.lead_bot_id === context.actor.id ? 'lead' : 'member',
-          updated_at: item.lastMessage?.createdAt || item.updatedAt || item.createdAt,
         }));
       if (otherRooms.length) {
         facts.push(textMessage({
@@ -1241,11 +1241,10 @@ export class BotRuntime {
     if (workEngines.length) {
       facts.push(textMessage({
         type: 'work_engines',
-        engines: workEngines.map(({ id, name, summary, recommended_models }) => ({
+        engines: workEngines.map(({ id, name, recommended_models }) => ({
           id,
           name,
-          summary,
-          ...(recommended_models?.length ? { recommended_models } : {}),
+          ...(recommended_models?.length ? { models: recommended_models.map(m => typeof m === 'string' ? m : m?.model).filter(Boolean).slice(0, 3) } : {}),
         })),
       }));
     }
@@ -1365,15 +1364,18 @@ export class BotRuntime {
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
       if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
-        const recent = new Map();
-        for (const work of owned.slice().reverse()) {
-          if (!sameRef(work.origin_room, conversation.space) || !work.origin_message_id || recent.has(work.origin_message_id)) continue;
-          const question = this.platform.store.get('messages', work.origin_message_id);
-          if (question?.roomId === conversation.space.id)
-            recent.set(question.id, { origin_message_id: question.id, original_question: question.content.slice(0, 1200) });
-          if (recent.size === 5) break;
+        const hasActiveOwned = owned.some(w => sameRef(w.origin_room, conversation.space) && !['completed', 'failed', 'stopped'].includes(w.status));
+        if (hasActiveOwned || publicRoom?.summary) {
+          const recent = new Map();
+          for (const work of owned.slice().reverse()) {
+            if (!sameRef(work.origin_room, conversation.space) || !work.origin_message_id || recent.has(work.origin_message_id)) continue;
+            const question = this.platform.store.get('messages', work.origin_message_id);
+            if (question?.roomId === conversation.space.id)
+              recent.set(question.id, { origin_message_id: question.id, original_question: question.content.slice(0, 160) });
+            if (recent.size === 3) break;
+          }
+          if (recent.size) facts.push(textMessage({ type: 'recent_delegated_questions', questions: [...recent.values()] }));
         }
-        if (recent.size) facts.push(textMessage({ type: 'recent_delegated_questions', questions: [...recent.values()] }));
       }
       for (const work of owned) {
         if (work.owner_run_id === runId || requestIds.has(work.origin_message_id)) relevantGroups.add(workGroup(work));
@@ -1387,7 +1389,7 @@ export class BotRuntime {
             this.platform.canReadReference({ kind: 'event', id: work.origin_message_id }, context) &&
             this.platform.store.get('messages', work.origin_message_id);
           groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
-            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 2000) }),
+            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 200) }),
             sessions: [] });
         }
         const descendants = this.platform.executions.descendantSessions(work.id);
@@ -1408,7 +1410,7 @@ export class BotRuntime {
     const storedConv = inbox.conversation(conversation.id);
     const lastInputTokens = storedConv?.last_input_tokens ?? 0;
     const contextWindow = job.binding?.model?.context_window ?? 0;
-    if (lastInputTokens > 0 && contextWindow > 0) {
+    if (lastInputTokens > 0 && contextWindow > 0 && lastInputTokens / contextWindow >= 0.5) {
       facts.push(textMessage({
         type: 'context_status',
         used_tokens: lastInputTokens,
@@ -1659,7 +1661,9 @@ export class BotRuntime {
     return { ...summary, can_steer: Boolean(active?.accepting), can_continue: canContinue, input_revision: revision };
   }
 
-  inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false, modelPage = false } = {}) {
+  inspectLocal(inbox, conversation, { cursor, limit, sessionInput = false, modelPage = false } = {}) {
+    const explicitLimit = Number.isSafeInteger(limit) && limit > 0;
+    const effectiveLimit = explicitLimit ? limit : 25;
     const runs = inbox.runs(conversation.id);
     const last = this.inputRun(inbox, conversation, runs);
     const state = this.localInputState(inbox, conversation, sessionInput, last);
@@ -1670,12 +1674,37 @@ export class BotRuntime {
       const current = (record?.messages || []).map((message, index) => ({ id: recordKey(run.id, index), run_id: run.id, message }));
       return [...previous, ...current];
     });
+    // When a parent Bot reads a Pi work Session without a pagination cursor,
+    // return the concise final output (or last few entries while running)
+    // instead of flooding the clean chat context with 64KB of raw tool JSON.
+    if (modelPage && sessionInput && !cursor && !explicitLimit) {
+      const finalText = typeof last?.result?.text === 'string' && last.result.text.trim()
+        ? last.result.text.slice(0, 64_000)
+        : undefined;
+      if (finalText) {
+        return {
+          ...state,
+          output: finalText,
+          transcript_entries: output.length,
+          next_cursor: output.length ? 'start' : null,
+          note: '已返回该子会话的最终总结输出；仅在确需核查中间工具日志时再传 cursor:"start" 分页读取。',
+        };
+      }
+      const recentEntries = output.slice(-3);
+      return {
+        ...state,
+        transcript_page: true,
+        transcript_entries: output.length,
+        ...transcriptPage(recentEntries, null, 3, output.length > 3 ? 'start' : null),
+      };
+    }
+    const normalizedCursor = cursor === 'start' ? null : cursor;
     if (modelPage || typeof cursor === 'string' && cursor.startsWith('fragment:')) return { ...state, transcript_page: true,
       output: !cursor && typeof last?.result?.text === 'string' ? last.result.text.slice(0, 128_000) : undefined,
-      ...transcriptPage(output, cursor, limit) };
-    const after = cursor == null ? 0 : output.findIndex(entry => entry.id === cursor) + 1;
-    if (cursor && !after) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
-    const slice = output.slice(after, after + limit);
+      ...transcriptPage(output, normalizedCursor, effectiveLimit) };
+    const after = normalizedCursor == null ? 0 : output.findIndex(entry => entry.id === normalizedCursor) + 1;
+    if (normalizedCursor && !after) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
+    const slice = output.slice(after, after + effectiveLimit);
     const rawOutput = last?.result?.text;
     const text = cursor || typeof rawOutput !== 'string' ? undefined : rawOutput.slice(0, 256_000);
     return { ...state, messages: slice, output: text,

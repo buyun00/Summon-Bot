@@ -103,13 +103,14 @@ export class BotManager {
     });
   }
 
-  createGroupLead({ roomId, roomName, leadName, leadDuty, pendingAutoName = false } = {}) {
+  createGroupLead({ roomId, roomName, leadName, leadDuty, leadPersona, pendingAutoName = false } = {}) {
     const id = `bot-lead-${roomId}`;
     const existing = this.store.get(botRecords, id);
     if (existing) return existing;
     const baseRoomName = typeof roomName === 'string' && roomName.trim() ? roomName.trim() : '新群聊';
     const hasExplicitLeadName = typeof leadName === 'string' && Boolean(leadName.trim());
     const hasExplicitLeadDuty = typeof leadDuty === 'string' && Boolean(leadDuty.trim());
+    const cleanedPersona = typeof leadPersona === 'string' && leadPersona.trim() ? instructionsOf(leadPersona.trim().slice(0, 1200)) : '';
     const autoNamePending = Boolean(pendingAutoName && !hasExplicitLeadName);
     const rawName = hasExplicitLeadName
       ? leadName.trim()
@@ -125,7 +126,7 @@ export class BotManager {
     return this.saveNew({
       id,
       name,
-      instructions: '',
+      instructions: cleanedPersona,
       public_duty: duty,
       model: { mode: 'follow_default' },
       owner: user,

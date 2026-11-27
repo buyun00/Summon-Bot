@@ -120,6 +120,16 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
     if (path === '/api/engines' && method === 'GET') {
       return { items: platform.engines.list({ fresh: true }) };
     }
+    if (path === '/api/capabilities' && method === 'GET') {
+      return {
+        dir: platform.capabilities.dir(),
+        items: platform.capabilities.list({ lookupBot: id => platform.store.get(botRecords, id) }),
+      };
+    }
+    if ((match = path.match(/^\/api\/capabilities\/([^/]+)$/)) && method === 'GET') {
+      const id = decodeURIComponent(match[1]);
+      return platform.capabilities.get(id, { lookupBot: id => platform.store.get(botRecords, id) });
+    }
     if ((match = path.match(/^\/api\/engines\/([^/]+)\/file$/))) {
       const id = decodeURIComponent(match[1]);
       if (method === 'GET') {

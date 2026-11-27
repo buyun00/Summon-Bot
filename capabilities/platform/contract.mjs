@@ -9,7 +9,7 @@ const value = {};
 const oneOf = (...values) => ({ enum: values });
 const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace', 'engine'];
+const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace', 'engine', 'capability'];
 const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
 const workspaceFileRef = object({ kind: oneOf('workspace_file'), workspace_id: text, path: text }, ['kind', 'workspace_id', 'path']);
 const ref = { anyOf: [typedRef(...kinds, 'user'), workspaceFileRef] };
@@ -208,13 +208,13 @@ const createRoomOpeningMessage = {
 };
 
 const definitions = [
-  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace, engine). To search chat messages & execution receipts across ALL rooms you belong to, use kind:"event" with query and OMIT scope (newest matches first); pass scope:{kind:"room",id} to limit to one room. Use kind:"room" (omit query to list all joined rooms), kind:"session" (matches work_summary, engine, origin room, and receipt output), kind:"bot" (full team directory).',
+  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace, engine, capability). Use kind:"capability" to inspect currently registered platform capabilities, integrations, and boundaries (each backed by a SKILL.md). To search chat messages & execution receipts across ALL rooms you belong to, use kind:"event" with query and OMIT scope (newest matches first); pass scope:{kind:"room",id} to limit to one room. Use kind:"room" (omit query to list all joined rooms), kind:"session" (matches work_summary, engine, origin room, and receipt output), kind:"bot" (full team directory).',
     object({ kind: oneOf(...kinds), scope: ref, query: text, cursor: text }, ['kind'])],
-  ['read', 'Read an accessible object, its history/output, a workspace directory/file, a file or directory inside a Bot folder ({kind:"bot",id:"<bot-id>"} with optional path/directory such as "instructions.md", "skills", "scripts", ".local/memory", or ".local/memory/<file>"), or a work engine directory/file ({kind:"engine",id:"<engine-id>"} with optional path:"engine.json"|"bridge.mjs"|"guide.md").',
+  ['read', 'Read an accessible object, its history/output, a workspace directory/file, a platform capability SKILL.md or companion file ({kind:"capability",id:"<capability-id>"} with optional path), a file or directory inside a Bot folder ({kind:"bot",id:"<bot-id>"} with optional path/directory such as "instructions.md", "skills", "scripts", ".local/memory", or ".local/memory/<file>"), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md"), or a work engine directory/file ({kind:"engine",id:"<engine-id>"} with optional path:"engine.json"|"bridge.mjs"|"guide.md").',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm"|"secret",title?,description?,submit_label?,secret_target?:{...},questions:[...]}). Whenever asking for passwords, API keys, or tokens, ALWAYS use prompt with kind:"secret" and an appropriate secret_target so secrets go directly to host storage without passing through chat history.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
-  ['save_file', 'Save text or a File source into a Room, Workspace directory, Bot folder ({kind:"bot",id:"<bot-id>"}), or (for the Summon maintenance lead) a work engine folder ({kind:"engine",id:"<engine-id>"}, path:"bridge.mjs"|"guide.md"|"engine.json").',
+  ['save_file', 'Save text or a File source into a Room, Workspace directory, Bot folder ({kind:"bot",id:"<bot-id>"}), a platform capability folder ({kind:"capability",id:"<capability-id>"}, path:"SKILL.md" or companion file, text only, no secrets), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md", text only, no secrets), or (for the Summon maintenance lead) a work engine folder ({kind:"engine",id:"<engine-id>"}, path:"bridge.mjs"|"guide.md"|"engine.json").',
     object({
       space: ref,
       path: text,
@@ -241,7 +241,7 @@ const definitions = [
       role_id: oneOf(...roleIds, null),
       env_slots: array(text),
     }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members. Regular group Rooms always include the host, automatically create a dedicated group-lead Bot for the new Room (respecting lead_name and lead_duty—never hijacking another Room’s group-lead) plus EggBot, and do not force a Bot caller into the new Room unless explicitly listed in members. When spinning off a Room from an existing Room, pass origin_room and opening_message (text + optional mentions/references) to deliver the handoff context atomically and wake the new Room’s members.',
+  ['create_room', 'Create a Room with the specified members. Regular group Rooms always include the host, automatically create a dedicated group-lead Bot for the new Room (respecting lead_name, lead_duty, and lead_persona—never hijacking another Room’s group-lead) plus EggBot, and do not force a Bot caller into the new Room unless explicitly listed in members. Always pass a vivid 2–3 sentence Chinese lead_persona when setting lead_name so the new group-lead starts with a distinct human personality instead of a blank shell. When spinning off a Room from an existing Room, pass origin_room and opening_message (text + optional mentions/references) to deliver the handoff context atomically and wake the new Room’s members.',
     object({
       members: array(principal),
       title: text,
@@ -249,6 +249,7 @@ const definitions = [
       workspace: refOrId,
       lead_name: text,
       lead_duty: text,
+      lead_persona: text,
       origin_room: roomOrId,
       opening_message: createRoomOpeningMessage,
       skip_welcome: flag,

@@ -36,9 +36,9 @@ export function enterDrain({ dataRoot, state }) {
   return advanceInstallation(dataRoot, state, 'draining', { cutoff: state.cutoff || new Date().toISOString() });
 }
 
-export async function finishDrain({ dataRoot, state, previous, owner, onProgress, timeoutMs = 180000, signal }) {
+export async function finishDrain({ dataRoot, state, previous, owner, onProgress, timeoutMs = 600000, signal }) {
   if (!previous) return state;
-  const deadline = Date.now() + (Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 180000);
+  const deadline = Date.now() + (Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 600000);
   const sameReport = (left, right) => JSON.stringify(left) === JSON.stringify(right);
   const stopOptions = { deadline, signal, onProgress };
   let waiting;

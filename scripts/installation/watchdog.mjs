@@ -22,12 +22,39 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
   const signal = () => { stopping = true; wake?.(); };
   const report = (type, details = {}) => console.log(JSON.stringify({ type, at: new Date().toISOString(), ...details }));
   const retries = new Map(), previous = new Map();
-  const pause = () => new Promise(accept => {
-    const timer = setTimeout(done, 5000);
+  const sameRelease = (left, right) => {
+    const norm = value => (process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value));
+    return norm(left) === norm(right);
+  };
+  const pause = (ms = 5000) => new Promise(accept => {
+    const timer = setTimeout(done, ms);
     function done() { clearTimeout(timer); wake = undefined; accept(); }
     wake = done;
     if (stopping) done();
   });
+  const yieldForUpdate = async (releaseRoot, reason) => {
+    // Keep the Task Scheduler supervisor alive while the installer drains and
+    // stops this release's services, otherwise Windows terminates child services mid-drain.
+    report('watchdog.yielding', { reason });
+    while (!stopping) {
+      const states = await Promise.all(['gateway', 'web'].map(type => inspectService(config, type).catch(() => ({ state: 'stopped' }))));
+      const anyActiveForThisRelease = states.some(state =>
+        state.state !== 'stopped' && (!state.releaseRoot || sameRelease(state.releaseRoot, releaseRoot)));
+      if (!anyActiveForThisRelease) {
+        report('watchdog.stopped', { reason });
+        return true;
+      }
+      if (reason === 'updating') {
+        const writable = await assertInstallationWritable(config.dataRoot, releaseRoot).then(() => true, err => err.code !== 'updating');
+        if (writable) {
+          report('watchdog.resumed', { reason: 'update-cleared' });
+          return false;
+        }
+      }
+      await pause(400);
+    }
+    return true;
+  };
   try {
     await assertInstallationWritable(config.dataRoot, config.releaseRoot);
     log = installProcessLog(join(config.dataRoot, 'web', 'watchdog'), config.logs, { tee: false });
@@ -51,8 +78,8 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
           return;
         }
         if (resolve(config.releaseRoot) !== resolve(releaseRoot)) {
-          report('watchdog.stopped', { reason: 'release-changed' });
-          return;
+          if (await yieldForUpdate(releaseRoot, 'release-changed')) return;
+          continue;
         }
         for (const type of ['gateway', 'web']) {
           if (stopping) break;
@@ -87,12 +114,18 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
               if (after.runIntent === 'stopped') { await stopSystem(after); return; }
             } finally { retry.next = Date.now() + delayMs; }
           } catch (error) {
-            if (error.code === 'updating') return;
+            if (error.code === 'updating') {
+              if (await yieldForUpdate(releaseRoot, 'updating')) return;
+              break;
+            }
             report('watchdog.error', { service: type, code: error.code || error.name, causeCode: error.cause?.code, message: message(error) });
           }
         }
       } catch (error) {
-        if (error.code === 'updating') return;
+        if (error.code === 'updating') {
+          if (await yieldForUpdate(releaseRoot, 'updating')) return;
+          continue;
+        }
         report('watchdog.error', { code: error.code || error.name, message: message(error) });
       }
       await pause();
