@@ -189,6 +189,10 @@ export async function startGateway(options = {}) {
       redact: clean,
       onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
       onProgressChange: () => emit('execution'),
+      onEngineHealth: (engineId, status) => {
+        platform.engines.recordRuntimeHealth(engineId, status);
+        emit('engine');
+      },
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, exec });

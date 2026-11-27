@@ -167,7 +167,7 @@ async function runBridge(startPayload) {
   };
 
   try {
-    await rpc('initialize', { clientInfo: { name: 'summon-bot', title: 'Summon Bot', version: '1' }, capabilities: { experimentalApi: true } });
+    await rpc('initialize', { clientInfo: { name: 'summon-bot', title: 'Summon Bot', version: '1' }, capabilities: { experimentalApi: true } }, 60_000);
     send({ method: 'initialized' });
     if (stopping) return finish('stopped');
 
@@ -179,7 +179,7 @@ async function runBridge(startPayload) {
       ...(sandbox && sandbox !== 'inherit' ? { sandbox } : {}),
       ...(approvalPolicy && approvalPolicy !== 'inherit' ? { approvalPolicy } : {}),
       ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }),
-    });
+    }, 60_000);
     threadId = response.thread?.id;
     if (!threadId) throw new Error('Codex did not return a thread ID');
     emit('session', { sessionId: threadId });
@@ -191,7 +191,7 @@ async function runBridge(startPayload) {
       ...(callId ? { clientUserMessageId: callId } : {}),
       ...(response.model ? { model: response.model } : {}),
       ...(response.reasoningEffort ? { effort: response.reasoningEffort } : {}),
-    });
+    }, 60_000);
     if (receipt?.turn?.id && !turnId) {
       turnId = receipt.turn.id;
       emit('turn', { sessionId: threadId, turnId });

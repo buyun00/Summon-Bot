@@ -112,6 +112,7 @@ export class SummonPlatform {
 
   checkWorkEngine(engineId, { roomId = null, wake = true } = {}) {
     this.initializeDefaults();
+    this.engines.clearRuntimeFault(engineId);
     const engine = this.engines.get(engineId, { fresh: true });
     const targetRoomId = roomId || botMaintenanceRoomId;
     const targetRoom = this.store.get('rooms', targetRoomId);

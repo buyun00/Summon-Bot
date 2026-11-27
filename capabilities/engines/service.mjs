@@ -129,6 +129,23 @@ export class EngineManager {
   constructor({ store, dataRoot, releaseRoot }) {
     Object.assign(this, { store, dataRoot: resolve(dataRoot), releaseRoot: resolve(releaseRoot) });
     this.detectCache = new Map();
+    this.runtimeFaults = new Map(); // engineId -> { message, at }
+  }
+
+  recordRuntimeHealth(id, { ok, error } = {}) {
+    if (!id) return;
+    if (ok) {
+      this.runtimeFaults.delete(id);
+      return;
+    }
+    const text = String(error || '').trim();
+    if (/not signed in|failed to authenticate|oauth session expired|please log in|authentication failed|unauthorized|invalid api key|missing .*api.?key|login --device-code/i.test(text)) {
+      this.runtimeFaults.set(id, { message: text.slice(0, 240), at: Date.now() });
+    }
+  }
+
+  clearRuntimeFault(id) {
+    if (id) this.runtimeFaults.delete(id);
   }
 
   ensureDefaults() {
@@ -197,7 +214,8 @@ export class EngineManager {
       const scriptReady = this.hasScript(meta.id, meta.script);
       const override = typeof saved?.enabled === 'boolean' ? saved.enabled : null;
       const enabled = override !== null ? override : Boolean(detectedPath);
-      const available = Boolean(enabled && scriptReady);
+      const fault = this.runtimeFaults.get(meta.id) || null;
+      const available = Boolean(enabled && scriptReady && !fault);
       const files = walkRelativeFiles(dir);
       items.push({
         kind: 'engine',
@@ -214,6 +232,7 @@ export class EngineManager {
         enabled,
         enabled_override: override,
         available,
+        ...(fault ? { runtime_error: fault.message } : {}),
         files,
       });
     }
@@ -236,6 +255,7 @@ export class EngineManager {
     if (enabled !== null && typeof enabled !== 'boolean') {
       reject('invalid_arguments', 'enabled must be true, false, or null');
     }
+    this.runtimeFaults.delete(current.id);
     this.store.save(engineRecords, {
       id: current.id,
       enabled,

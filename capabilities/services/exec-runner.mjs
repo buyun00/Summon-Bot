@@ -98,7 +98,7 @@ async function readLogPage(filePath, offset = 0, limit = 65_536) {
  * Two modes only: Bot `scripts/*.mjs` (via Summon's built-in Node) or native `shell`.
  */
 export class ExecRunner {
-  constructor({ store, dataRoot, releaseRoot = programRoot, workspace, onEvent, onWorkEvent, onProgressChange, redact }) {
+  constructor({ store, dataRoot, releaseRoot = programRoot, workspace, onEvent, onWorkEvent, onProgressChange, onEngineHealth, redact }) {
     Object.assign(this, {
       store,
       dataRoot: resolve(dataRoot),
@@ -107,6 +107,7 @@ export class ExecRunner {
       onEvent,
       onWorkEvent,
       onProgressChange,
+      onEngineHealth,
       redact: typeof redact === 'function' ? redact : (v => v),
     });
     this.running = new Map(); // sessionId -> LiveRun
@@ -471,6 +472,10 @@ export class ExecRunner {
         finished_at: new Date().toISOString(),
       });
       void this.publishReceipt(saved, restarted ? 'terminal:interrupted_by_restart' : `terminal:${status}`);
+      const engineId = launch.originExecInput?.engine;
+      if (engineId && !restarted && (status === 'completed' || status === 'failed')) {
+        this.onEngineHealth?.(engineId, { ok: status === 'completed', error });
+      }
       if (session.group_work) {
         this.onWorkEvent?.(session.id, opId, ['status', status], {
           program: launch.programLabel, cwd: launch.cwd, phase: 'execution', status, text: error?.slice(0, 8000), exit_code: exitCode,
