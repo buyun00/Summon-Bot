@@ -2,7 +2,7 @@ import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
 import { listBotFolderFiles, listBotMemoryItems, readBotFolderFile, readHostProfile, writeBotFolderFile, writeHostProfile } from '../bot-management/folders.mjs';
 import { roleCatalog } from '../bot-management/roles.mjs';
-import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
+import { assertRevision, page, protocolVersion, reject, user, validateTool } from '../platform/contract.mjs';
 
 const routeRef = (kind, id) => ({ kind, id: decodeURIComponent(id) });
 const preservedModelSettings = '/api/model-settings';
@@ -260,9 +260,29 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       if (args.action === 'clear') return platform.goals.update({ room: id, clear: true }, userContext);
       return mutation('update_goal', { ...args, room: { kind: 'room', id } }, clientId);
     }
+    function resolveAsBot(roomId, rawBotId) {
+      if (typeof rawBotId !== 'string' || !rawBotId.trim() || rawBotId === user.id) {
+        reject('invalid_as_bot', 'as_bot must be a non-empty bot ID string', 400);
+      }
+      const bot = platform.store.get(botRecords, rawBotId);
+      if (!bot) reject('bot_not_found', 'Bot not found', 404);
+      if (bot.archivedAt) reject('bot_archived', 'Archived Bot cannot send messages', 409);
+      const targetRoom = platform.store.get('rooms', roomId);
+      if (!targetRoom) reject('room_not_found', 'Room not found', 404);
+      const isMember = Array.isArray(targetRoom.members) && targetRoom.members.some(member =>
+        member === rawBotId || (member && typeof member === 'object' && (member.kind === undefined || member.kind === 'bot') && member.id === rawBotId));
+      if (!isMember) {
+        reject('bot_not_in_room', 'Bot is not a member of this Room', 403);
+      }
+      return rawBotId;
+    }
+
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
-      if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
+      if (method === 'GET' && match[3]) {
+        const actorId = params.has('as_bot') ? resolveAsBot(ref.id, params.get('as_bot')) : user.id;
+        return room.receipt(ref.id, params.get('clientId'), actorId);
+      }
       if (method === 'GET') {
         const result = await read(ref, params);
         const activities = platform.runtime?.roomActivities?.(ref.id) || [];
@@ -271,7 +291,45 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         const value = { ...result, activities, suspendedRuns, goal, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
-      if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
+      if (method === 'POST' && match[2] && !match[3]) {
+        const { as_bot: asBot, silent, ...messageArgs } = args;
+        if (silent !== undefined && typeof silent !== 'boolean') {
+          reject('invalid_arguments', 'silent must be a boolean', 400);
+        }
+        if (asBot === undefined && silent !== true) {
+          return mutation('send', { ...messageArgs, to: ref }, clientId);
+        }
+        const actor = asBot === undefined ? user : { kind: 'bot', id: resolveAsBot(ref.id, asBot) };
+        validateTool('send', { ...messageArgs, to: ref });
+        const { record, existing } = platform.calls.begin('send', { actor, clientId });
+        if (existing) {
+          return callResponse(platform.calls.replay(record, { actor }), record.id);
+        }
+        try {
+          platform.calls.bind(record.id, { target: ref });
+          const result = room.send(ref.id, { ...messageArgs, clientId }, actor.id, {
+            callId: record.id,
+            skipDelivery: silent === true,
+          });
+          platform.calls.finish(record.id, 'completed', result);
+          if (result?.message) {
+            if (actor.kind === 'user') platform.goals?.onUserMessage?.(ref.id);
+            else if (silent !== true) {
+              if (messageArgs.prompt || messageArgs.awaiting_reply === true) {
+                const reason = messageArgs.prompt?.title || messageArgs.prompt?.questions?.[0]?.label || '';
+                platform.goals?.onAwaitingUser?.(ref.id, reason, { hasPrompt: Boolean(messageArgs.prompt) });
+              } else {
+                platform.goals?.onRoomActivity?.(ref.id, 'bot_message');
+              }
+            }
+          }
+          return callResponse(result, record.id);
+        } catch (error) {
+          platform.calls.fail(record.id, error);
+          error.call_id = record.id;
+          throw error;
+        }
+      }
       if (method === 'PATCH' && !match[2]) return mutation('configure_room', { ...args, room: ref }, clientId);
       if (method === 'DELETE' && !match[2]) {
         const result = room.deleteGroup(ref.id, args.revision, user);
