@@ -275,10 +275,21 @@ export class BotEngine {
               };
             }
           }
+          const isMaintenanceRoom = conversation.space.id === botMaintenanceRoomId;
+          const hasSpecialistMember = roomMembers.some(member => member.id !== 'user' && member.role !== groupLeadRole && member.role !== eggbotRole);
+          const publicMessageCount = (boundary.history?.length || 0) + (boundary.publicRoom?.tailMessages?.length || 0);
+          const isNewEmptyGroup = roomRecord?.mode === 'group'
+            && !isMaintenanceRoom
+            && !roomRecord?.origin_room
+            && !hasSpecialistMember
+            && publicMessageCount <= 4;
           roomInputPointer = {
             ...textMessage({
               type: 'current_room_inputs',
               room: conversation.space.id,
+              ...(roomRecord?.name ? { room_name: roomRecord.name } : {}),
+              ...(isMaintenanceRoom ? { is_maintenance_room: true } : {}),
+              ...(isNewEmptyGroup ? { is_new_group: true } : {}),
               message_ids: unseenActiveRoomIds,
               ...(roomMembers.length ? { members: roomMembers } : {}),
               ...(Object.keys(resolvedMentions).length ? { mentions: resolvedMentions } : {}),

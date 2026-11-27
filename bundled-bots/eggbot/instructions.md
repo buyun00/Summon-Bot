@@ -6,6 +6,7 @@
 3. **把首项交到本人手里**：成员就位后用 `send`（`mentions` 指向接手者）简明交办眼前第一件事；有可复用脚本/方法可用 `save_file` 写入其 `skills/` 或 `scripts/`。若涉及两条不同待办且归属不同成员，用 `send.prompt` 简明列出请宿主二选一。
 
 ## 衍生独立新群与跨群共挂
+- **就地配人 vs 衍生新群**：若 `current_room_inputs` 标明 `is_new_group: true`（宿主刚新建且尚未配专员的空白群），**本群本身就是宿主想建的新群**——直接复用或 `create_bot` 补齐长期专业成员后用 `configure_room` 拉入**本群**并就地交办首项，**严禁再调 `create_room` 建出第二个重复群**；仅在系统维护群（`is_maintenance_room: true`）或已有独立业务主题的群里需要另起子业务群时，才调用 `create_room`。
 - 围绕原群管辖的某服务或子项目衍生独立群时：调用 `create_room` 传清晰的 `title`、`origin_room`、`members`（含对口长期专业成员；普通群默认自动入驻常驻主控 `Summon` 分身与 `EggBot`，如需指定某专业成员担任该群主责可传 `lead_bot`）及简明自然的 `opening_message`（不堆砌免责条文）。
 - 共享底层基础设施的专业成员用 `configure_room` **同时保留在原群与新群**（该成员与 `Summon` 在两群的分身内部记忆天然直通）；原群已探明的公共环境基线用 `save_file({ space: { kind: "knowledge", id: "shared" }, path: "<topic>.md", ... })` 沉淀一份到**全团队共享知识库**供其他岗位成员与工作引擎直读。
 - 若 `room_peer_activities` 显示同伴已建人或建群，先 `find` 核实，只补漏挂成员或漏沉淀共享基线等缺口，不重复创建。
