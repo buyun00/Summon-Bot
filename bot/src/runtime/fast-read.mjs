@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
+import { listBotMemoryItems, readBotInstructions } from '../../../capabilities/bot-management/folders.mjs';
 import { botMaintenanceRoomId, builtInInstructions, defaultPublicDuty, eggbotRole, groupLeadRole } from '../../../capabilities/bot-management/roles.mjs';
 import { keyOf } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
@@ -68,16 +68,16 @@ const fastReadSystemPrompt = [
     '     b) 两位专员正在做中段点对点衔接（如 A 把主机信息递给 B 方便 B 去查），尚未汇齐最终结论，等查清再由主控统一收口更清爽；\n' +
     '     c) 纯礼貌致谢、收到、自然收尾且无未闭环事项。\n' +
     '2. 领域专职成员（`self.role === "default"` 或其他业务角色）：\n' +
-    '   - 本群已有群主控兜底，专职成员**绝不为怕冷场或命中领域关键词而抢在群主控前面空口表态**（比如未查证就抢答“收到，@主控怎么看”）。\n' +
-    '   - 仅在以下 5 种情况判 `main`：\n' +
+    '   - 本群有主控 Summon 兜底日常寒暄，专职成员**绝不为怕冷场或无增量附和（如“我赞同”）而抢话**，但**绝不在专业判断和方案把关上保持沉默**。\n' +
+    '   - 在以下 5 种情况必须判 `main`：\n' +
     '     (1) 被明确 `@`（`pending_mentions` 含 `self.id`）或被直接回复；\n' +
-    '     (2) 必须立刻动用你独有的私有记忆、专属环境访问权限或工具开展实地核查，且尚未有其他同伴接手；\n' +
+    '     (2) 宿主提出的问题或方案讨论涉及你的专业职责/已知领域记忆（见 `self.duty`、`self.instructions`、`self.memory_topics`），需要你提供一线环境事实、实地核查或专业视角（且尚未有同岗成员正在核查同一范围）；\n' +
     '     (3) 涉及你名下在途任务（`active_sessions` 非空）的补件、改需求、叫停、纠偏或进度追问；\n' +
-    '     (4) 旁听到群主控或同伴说出了**影响结论的关键事实错误、明显遗漏或严重隐性代价**（例如把未停的容器说成已停、把只读核查说成已改线上、漏算高频轮询的 Token/电费代价），需要你带着一线事实与专业判断立刻纠偏；\n' +
+    '     (4) **有刺必挑**：旁听到主控或同伴抛出的结论/技术方案存在**关键事实遗漏（如漏用了你已知的现成服务/网络条件）、未验证的片面假设、或明显不合理的长期成本/复杂度**，立即判 `main` 带着一手事实进场挑刺补盲；\n' +
     '     (5) `room_goal` 的当前或下一步骤 `owner` 正是本 Bot。\n' +
-    '   - 以下情况一律安心判 `quiet`：\n' +
-    '     (a) 宿主面向全群的开放提问、路线吐槽、偏好确认或最终拍板讨论（未 @ 你时默认先由群主控承接，主控需要你实地核查时会点名或你已有在途任务时再跟进）；\n' +
-    '     (b) 同伴刚给出清晰完整的答复，你没有增量事实或纠偏意见（绝不为了附和“我赞同”而判 `main`）；\n' +
+    '   - 以下情况判 `quiet`：\n' +
+    '     (a) 与你专业职责完全无关的话题，或纯业务偏好闲聊且主控已准确承接、无需你补任何技术事实或挑刺；\n' +
+    '     (b) 同伴刚给出准确完整的方案且你完全认同、没有任何增量事实或漏洞可挑（严禁为说“我同意/说得对”判 `main`）；\n' +
     '     (c) 纯收悉、致谢、自然收尾或他人点名第三方的内部交接。\n' +
     '3. 团队孵化伙伴 EggBot（`self.role === "eggbot"`）：\n' +
     '   - 日常业务完全由群主控与领域专员自行推进，顺畅时保持静默（`quiet`）。\n' +
@@ -89,27 +89,22 @@ const fastReadSystemPrompt = [
 
   '三、典型路由校准样例（帮你拿捏边界，避免过度唤醒或漏接）：\n' +
     '- 样例 1（群主控静默等专员汇齐）：新群刚建好，EggBot 交接给 `@专员A` 和 `@专员B` 分别去查服务和告警；专员 A 先查完并 `@专员B` 问一句连接线索，专员 B 回复线索。此时两路核查还没全收齐，群主控判 `quiet` 等两人汇报完毕再一起收口；当两人均交回关键核查结果、且留下需要宿主对齐的取舍时，群主控判 `main` 替宿主做总结和提问。\n' +
-    '- 样例 2（专员不抢开放讨论）：群主控刚向宿主问了两个产品偏好问题，宿主回复“那个 webhook 是之前试过的，现在就想直接推本群，你觉得最简单怎么搞？”。未 @ 专员且属于方案方向讨论，群主控判 `main` 拍板，专员若无事实纠偏应判 `quiet`，避免三人同时抢答重复说一遍。\n' +
-    '- 样例 3（专员必须纠偏）：群主控在总结里误称“服务器上已经有现成的外部短信告警可以直接用”，而运维专员刚实地查过确认主机上没有任何外部告警通道。即使没被 @，运维专员也应判 `main` 直接补一句事实纠偏。\n' +
-    '- 样例 4（EggBot 不插手日常问答）：运维群里宿主发了一段 SSH 验连命令让查服务器上跑着哪些服务，这是运维主控的日常工作，没有建群或增员诉求，EggBot 判 `quiet`；随后宿主说“我希望有个独立群专门对接 TeslaMate 并配个监控维护的人”，涉及衍生新群与配专员，EggBot 立刻判 `main`。\n' +
-    '- 样例 5（单条消息多 Bot 去重）：专员刚在群里汇报完并加了一句“等宿主确认偏好后再动”，此时没有新事实也没有未回答的问题，其他未负责收口的同伴判 `quiet`，避免无意义互致谢意循环。',
+    '- 样例 2（认同静默 vs 有刺必挑）：宿主问“最简单怎么搞？”，主控给出了一套考虑周全且已覆盖已知基础设施的方案，专员无新事实要补则判 `quiet`（不刷附和）；但若主控提议了一套笨重轮询或漏掉了专员已知的现成环境通路，专员必须判 `main` 站出来挑刺补盲。\n' +
+    '- 样例 3（专员事实纠偏）：主控在总结里误称“服务器上已经有现成的外部短信告警可以直接用”，而运维专员刚实地查过确认主机上没有任何外部告警通道。即使没被 `@`，运维专员也应判 `main` 直接补一句事实纠偏。\n' +
+    '- 样例 4（EggBot 不插手日常问答）：运维群里宿主发了一段 SSH 验连命令让查服务器上跑着哪些服务，这是日常业务工作，没有建群或增员诉求，EggBot 判 `quiet`；随后宿主说“我希望有个独立群专门对接这个服务并配个长期盯监控的人”，涉及衍生新群与配专员，EggBot 立刻判 `main`。\n' +
+    '- 样例 5（单条消息多 Bot 去重）：专员刚在群里汇报完并加了一句“等宿主确认偏好后再动”，此时没有新事实也没有漏洞，其他未负责收口的同伴判 `quiet`，避免无意义互致谢意循环。',
 
-  '四、新群自动命名与主控人设（仅当 `fast_read_batch` 含有 `auto_naming` 字段时触发）：\n' +
+  '四、新群自动命名（仅当 `fast_read_batch` 含有 `auto_naming` 字段时触发）：\n' +
     '- 当 `auto_naming.needs_room_title === true` 时，在顶层 JSON 输出 `room_title`（2–12 字简洁中文，提炼真实主题，避开 `existing_group_names`，严禁机械截取用户原话前缀或输出“新群聊/群聊/默认群聊”）。\n' +
-    '- 当 `auto_naming.needs_lead_name === true` 时，在顶层 JSON 同时输出：\n' +
-    '  1) `lead_name`：2–8 字自然好记的中文定位名（如「稳航」「路伴」「运维总控」「架构搭档」），严禁「群主控/主控/助手/AI」或机械拼接「群名·主控」；\n' +
-    '  2) `lead_duty`：12–48 字一句话概括本群核心职责；\n' +
-    '  3) `lead_persona`：2–3 句（40–140 字）鲜活自然的中文人设，写清性格底色、专业较真点与日常口语风格（例如说话利落有主见、讨厌花架子和无意义轮询、敢帮宿主算总账并直说取舍），严禁写“严格遵守安全底线、先交方案不动线上、明确事实与未核实之处”这类官僚审计模板套话。\n' +
-    '- 仅当 `auto_naming.allow_defer_naming === true` 且宿主仅发无任何主题的纯寒暄（如“你好”“在吗”）且未绑定项目目录时，才可将 `room_title` / `lead_name` 暂设 `null`；只要包含具体事务、岗位或目标意图，必须当轮直接给出。',
+    '- 仅当 `auto_naming.allow_defer_naming === true` 且宿主仅发无任何主题的纯寒暄（如“你好”“在吗”）且未绑定项目目录时，才可将 `room_title` 暂设 `null`；只要包含具体事务、岗位或目标意图，必须当轮直接给出。',
 
   '五、严格输出格式（只输出单个合法 JSON 对象，不加 Markdown 代码块或任何解释文字）：\n' +
     '{"items":[{"message_id":"<pending_message_ids中的ID>","route":"quiet"|"main","activity":"正在...（仅route为main时填写，quiet省略）"}]}\n' +
     '- `items` 必须覆盖 `pending_message_ids` 中的全部 ID，顺序一一对应，不可遗漏。\n' +
-    '- 若 `fast_read_batch` 包含 `auto_naming`，在顶层同级附加 `"room_title"`、`"lead_name"`、`"lead_duty"`、`"lead_persona"` 字段。',
+    '- 若 `fast_read_batch` 包含 `auto_naming`，在顶层同级附加 `"room_title"` 字段。',
 ].join('\n\n');
 
 const FORBIDDEN_ROOM_TITLES = new Set(['新群聊', '群聊', '未命名', '默认群聊', 'null', 'undefined', 'none']);
-const FORBIDDEN_LEAD_NAMES = new Set(['群主控', '主控', '未命名', '助手', 'ai助手', 'ai', 'bot', 'null', 'undefined', 'none']);
 
 function cleanGeneratedLabel(value, { maxLen = 32, forbidden = null } = {}) {
   if (typeof value !== 'string') return null;
@@ -173,16 +168,7 @@ function parseFastReadResponse(answer, pendingIds, namingContext = null) {
   const roomTitle = namingContext?.needsRoomTitle
     ? cleanGeneratedLabel(parsed.room_title ?? parsed.roomTitle, { maxLen: 32, forbidden: FORBIDDEN_ROOM_TITLES })
     : null;
-  const leadName = namingContext?.needsLeadName
-    ? cleanGeneratedLabel(parsed.lead_name ?? parsed.leadName, { maxLen: 24, forbidden: FORBIDDEN_LEAD_NAMES })
-    : null;
-  const leadDuty = namingContext?.needsLeadName
-    ? cleanGeneratedDuty(parsed.lead_duty ?? parsed.leadDuty, 240)
-    : null;
-  const leadPersona = namingContext?.needsLeadName
-    ? cleanGeneratedDuty(parsed.lead_persona ?? parsed.leadPersona, 500)
-    : null;
-  const naming = (roomTitle || leadName) ? { roomTitle, leadName, leadDuty, ...(leadPersona ? { leadPersona } : {}) } : null;
+  const naming = roomTitle ? { roomTitle } : null;
 
   let rawItems = Array.isArray(parsed.items) ? parsed.items : null;
   if (!rawItems && pendingIds.length === 1 && (typeof parsed.route === 'string' || typeof parsed.activity === 'string')) {
@@ -266,7 +252,7 @@ export class FastReadRuntime {
     const isAutoNaming = Boolean(
       roomRecord && roomRecord.mode === 'group' && roomRecord.id !== botMaintenanceRoomId &&
       (roomRecord.lead_bot_id === bot.id || liveBotRecord.built_in_role?.id === groupLeadRole) &&
-      (roomRecord.auto_title_pending || liveBotRecord.auto_name_pending),
+      roomRecord.auto_title_pending,
     );
     this.runtime.setLiveActivity?.(bot.id, roomId, {
       phase: 'fast_read',
@@ -337,12 +323,11 @@ export class FastReadRuntime {
         room.lead_bot_id === bot.id || liveBot.built_in_role?.id === groupLeadRole
       );
       const needsRoomTitle = isGroupLead && room.auto_title_pending === true;
-      const needsLeadName = isGroupLead && liveBot.auto_name_pending === true;
       const userMessageIds = new Set();
       for (const msg of snapshot.messages) if (msg.senderId === 'user') userMessageIds.add(msg.id);
       for (const route of batch) if (route.event?.author?.kind === 'user') userMessageIds.add(route.event_id);
-      const namingContext = (needsRoomTitle || needsLeadName)
-        ? { needsRoomTitle, needsLeadName, allowDeferNaming: userMessageIds.size <= 1 }
+      const namingContext = needsRoomTitle
+        ? { needsRoomTitle, allowDeferNaming: userMessageIds.size <= 1 }
         : null;
 
       // Deterministic fast-paths: skip the fast_read LLM call whenever routing is 100% unambiguous.
@@ -468,6 +453,9 @@ export class FastReadRuntime {
       }
       const selfRole = liveBot.built_in_role?.id || 'default';
       const rawInstructions = selfRole === 'default' ? readBotInstructions(this.platform.dataRoot, liveBot) : '';
+      const memoryTopics = selfRole === 'default'
+        ? listBotMemoryItems(this.platform.dataRoot, liveBot.id).slice(0, 8).map(item => item.item_id)
+        : [];
       const tail = textMessage({
         type: 'fast_read_batch',
         self: {
@@ -476,6 +464,7 @@ export class FastReadRuntime {
           role: selfRole,
           duty: (defaultPublicDuty(liveBot) || '').slice(0, 48),
           ...(rawInstructions ? { instructions: rawInstructions.slice(0, 120) } : {}),
+          ...(memoryTopics.length ? { memory_topics: memoryTopics } : {}),
         },
         room: {
           id: room.id,
@@ -498,7 +487,6 @@ export class FastReadRuntime {
         ...(namingContext ? {
           auto_naming: {
             needs_room_title: needsRoomTitle,
-            needs_lead_name: needsLeadName,
             allow_defer_naming: namingContext.allowDeferNaming,
             ...(room.workspace?.name || room.workspace?.path ? { workspace: room.workspace.name || room.workspace.path } : {}),
             ...(existingGroupNames.length ? { existing_group_names: existingGroupNames } : {}),

@@ -7,9 +7,10 @@ import { delimiter, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPathAccess, pathWithin } from '../../bot/src/capabilities/file-policy.mjs';
 import { attachWindowsJob, cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
-import { botRootDir, protectedRuntimeDirs, validateBotRelPath } from '../bot-management/folders.mjs';
+import { botRootDir, hostProfilePath, protectedRuntimeDirs, validateBotRelPath } from '../bot-management/folders.mjs';
 import { engineRootDir, extraToolDirs, validateEngineRelPath } from '../engines/service.mjs';
 import { capabilitiesDataRoot } from '../skills/service.mjs';
+import { knowledgeDataRoot } from '../knowledge/service.mjs';
 import { keyOf, reject } from '../platform/contract.mjs';
 import { pipeNativeText } from './windows-native-text.mjs';
 
@@ -22,13 +23,16 @@ const envNameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const validText = (v, max = 32_768) => typeof v === 'string' && v.length > 0 && v.length <= max && !v.includes('\0');
 const settled = s => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(s);
 
-function buildSafeEnv(rawEnv, optionalEnv = null, dataRoot = null) {
+function buildSafeEnv(rawEnv, optionalEnv = null, dataRoot = null, botId = null) {
   const env = cleanEnvironment();
   for (const key of ['CODEX_HOME', 'GROK_HOME', 'GROK_AUTH_PATH', 'CLAUDE_CONFIG_DIR']) {
     if (process.env[key]) env[key] = process.env[key];
   }
   if (dataRoot) {
     env.SUMMON_CAPABILITIES_DIR = capabilitiesDataRoot(dataRoot);
+    env.SUMMON_KNOWLEDGE_DIR = knowledgeDataRoot(dataRoot);
+    env.SUMMON_HOST_PROFILE_FILE = hostProfilePath(dataRoot);
+    if (botId) env.SUMMON_BOT_DIR = botRootDir(dataRoot, botId);
   }
   const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') || 'PATH';
   const existing = (env[pathKey] || '').split(delimiter).filter(Boolean);
@@ -178,8 +182,9 @@ export class ExecRunner {
       if (!scriptPath.startsWith(engineDir + sep) || !existsSync(scriptPath)) {
         reject('engine_script_not_found', `Engine script not found: ${engineId}/${relScript}`, 404);
       }
+      const actorBotId = session.execution_actor?.kind === 'bot' ? session.execution_actor.id : null;
       const optionalSlots = Array.isArray(meta.env_slots) ? meta.env_slots : [];
-      const { env, secrets } = buildSafeEnv(data.env, optionalSlots, this.dataRoot);
+      const { env, secrets } = buildSafeEnv(data.env, optionalSlots, this.dataRoot, actorBotId);
       const rejectInlineSecrets = values => {
         if (secrets.length && values.some(v => typeof v === 'string' && secrets.some(s => v.includes(s)))) {
           reject('inline_credential_forbidden', 'Pass secret env var names via env instead of inline values');
@@ -208,7 +213,8 @@ export class ExecRunner {
       };
     }
 
-    const { env, secrets } = buildSafeEnv(data.env, null, this.dataRoot);
+    const actorBotId = session.execution_actor?.kind === 'bot' ? session.execution_actor.id : null;
+    const { env, secrets } = buildSafeEnv(data.env, null, this.dataRoot, actorBotId);
     const rejectInlineSecrets = values => {
       if (secrets.length && values.some(v => typeof v === 'string' && secrets.some(s => v.includes(s)))) {
         reject('inline_credential_forbidden', 'Pass secret env var names via env instead of inline values');
@@ -322,10 +328,21 @@ export class ExecRunner {
       stopping: false, settled: false, nativeOutcome: null, finalResult: null,
       stdoutTail: '', stderrTail: '', pending: [], drainTimer: null,
       hasReadableProgress: false,
+      recentProgress: [],
     };
     this.running.set(session.id, live);
 
     const writeLog = (file, text) => { try { appendFileSync(join(dir, file), text); } catch {} };
+    const pushStep = text => {
+      const cleaned = this.clean(String(text || ''), live.secrets).replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (!cleaned || live.recentProgress.at(-1) === cleaned) return;
+      live.recentProgress.push(cleaned);
+      if (live.recentProgress.length > 6) live.recentProgress.splice(0, live.recentProgress.length - 6);
+      this.store.save(executionRecords, { id: session.id, recent_progress: live.recentProgress, updated_at: new Date().toISOString() });
+    };
+    if (launch.protocol === 'stdin' && launch.programLabel) {
+      pushStep(`执行: ${launch.programLabel}`);
+    }
     const emitProgress = text => {
       const cleaned = this.clean(String(text || ''), live.secrets).replace(/\s+/g, ' ').trim().slice(0, 60);
       if (!cleaned) return;
@@ -362,9 +379,15 @@ export class ExecRunner {
       } else if (ev.type === 'progress' && typeof ev.text === 'string' && ev.text.trim()) {
         live.hasReadableProgress = true;
         emitProgress(ev.text);
+        pushStep(`进展: ${ev.text}`);
       } else if (ev.type === 'tool') {
         const summary = summarizeToolProgress(ev);
         if (summary) emitProgress(summary);
+        if (ev.phase !== 'completed' && ev.command) {
+          pushStep(`动作[${ev.tool || 'cmd'}]: ${ev.command}`);
+        } else if (ev.phase === 'completed' && ev.status === 'failed' && ev.text) {
+          pushStep(`报错[${ev.tool || 'cmd'}]: ${ev.text}`);
+        }
         this.onWorkEvent?.(session.id, opId, ['item', ev.itemId || randomUUID(), ev.phase || 'call', ev.status || 'running'], {
           program: launch.programLabel, cwd: launch.cwd, phase: ev.phase, status: ev.status, tool: ev.tool, command: ev.command,
           text: typeof ev.text === 'string' ? ev.text.slice(0, 8000) : undefined,
@@ -468,6 +491,7 @@ export class ExecRunner {
         exit_code: Number.isInteger(exitCode) ? exitCode : null,
         exit_signal: exitSignal || null,
         ...(restarted ? { interrupted_by_restart: true } : {}),
+        ...(live.recentProgress.length ? { recent_progress: live.recentProgress } : {}),
         error, result,
         finished_at: new Date().toISOString(),
       });
@@ -509,6 +533,7 @@ export class ExecRunner {
       ...(op.exit_signal ? { exit_signal: op.exit_signal } : {}),
       ...(op.result ? { output: op.result } : {}),
       ...(op.error ? { error: op.error } : {}),
+      ...((live?.recentProgress?.length || op.recent_progress?.length) ? { recent_progress: live?.recentProgress?.length ? live.recentProgress : op.recent_progress } : {}),
       ...(op.pending?.length ? { pending_input: op.pending } : {}),
     });
   }

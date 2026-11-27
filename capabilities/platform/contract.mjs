@@ -9,7 +9,7 @@ const value = {};
 const oneOf = (...values) => ({ enum: values });
 const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace', 'engine', 'capability'];
+const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'conversation', 'call', 'wait', 'workspace', 'engine', 'capability', 'knowledge'];
 const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
 const workspaceFileRef = object({ kind: oneOf('workspace_file'), workspace_id: text, path: text }, ['kind', 'workspace_id', 'path']);
 const ref = { anyOf: [typedRef(...kinds, 'user'), workspaceFileRef] };
@@ -208,13 +208,13 @@ const createRoomOpeningMessage = {
 };
 
 const definitions = [
-  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace, engine, capability). Use kind:"capability" to inspect currently registered platform capabilities, integrations, and boundaries (each backed by a SKILL.md). To search chat messages & execution receipts across ALL rooms you belong to, use kind:"event" with query and OMIT scope (newest matches first); pass scope:{kind:"room",id} to limit to one room. Use kind:"room" (omit query to list all joined rooms), kind:"session" (matches work_summary, engine, origin room, and receipt output), kind:"bot" (full team directory).',
+  ['find', 'Find accessible objects (bot, room, event, file, session, wakeup, conversation, call, wait, workspace, engine, capability, knowledge). Use kind:"knowledge" to search shared team notes/docs (server baselines, network topology, runbooks across all rooms). Use kind:"capability" to inspect currently registered platform capabilities and boundaries (SKILL.md). Use kind:"event" with query and OMIT scope to search chat messages & execution receipts across ALL group rooms (read-only cross-room search; pass scope:{kind:"room",id} to limit to one room). Use kind:"room" (omit query to list all readable group rooms with joined status), kind:"session" (cross-room group session receipts), kind:"bot" (full team directory).',
     object({ kind: oneOf(...kinds), scope: ref, query: text, cursor: text }, ['kind'])],
-  ['read', 'Read an accessible object, its history/output, a workspace directory/file, a platform capability SKILL.md or companion file ({kind:"capability",id:"<capability-id>"} with optional path), a file or directory inside a Bot folder ({kind:"bot",id:"<bot-id>"} with optional path/directory such as "instructions.md", "skills", "scripts", ".local/memory", or ".local/memory/<file>"), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md"), or a work engine directory/file ({kind:"engine",id:"<engine-id>"} with optional path:"engine.json"|"bridge.mjs"|"guide.md").',
+  ['read', 'Read an accessible object, its history/output, a workspace directory/file, a shared knowledge note ({kind:"knowledge",id:"<path>"} or {kind:"knowledge",id:"shared"} to list), a platform capability SKILL.md ({kind:"capability",id:"<capability-id>"} with optional path), a file or directory inside a Bot folder ({kind:"bot",id:"<bot-id>"} with optional path/directory such as "instructions.md", "skills", "scripts", ".local/memory", or ".local/memory/<file>"), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md"), or a work engine directory/file ({kind:"engine",id:"<engine-id>"} with optional path:"engine.json"|"bridge.mjs"|"guide.md").',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm"|"secret",title?,description?,submit_label?,secret_target?:{...},questions:[...]}). Whenever asking for passwords, API keys, or tokens, ALWAYS use prompt with kind:"secret" and an appropriate secret_target so secrets go directly to host storage without passing through chat history.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
-  ['save_file', 'Save text or a File source into a Room, Workspace directory, Bot folder ({kind:"bot",id:"<bot-id>"}), a platform capability folder ({kind:"capability",id:"<capability-id>"}, path:"SKILL.md" or companion file, text only, no secrets), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md", text only, no secrets), or (for the Summon maintenance lead) a work engine folder ({kind:"engine",id:"<engine-id>"}, path:"bridge.mjs"|"guide.md"|"engine.json").',
+  ['save_file', 'Save text or a File source into a Room, Workspace directory, shared team knowledge ({kind:"knowledge",id:"shared"}, path:"<topic>.md", text only, no secrets), Bot folder ({kind:"bot",id:"<bot-id>"}), a platform capability folder ({kind:"capability",id:"<capability-id>"}, path:"SKILL.md" or companion file, text only, no secrets), the shared host profile ({kind:"user",id:"user"}, path:"host-profile.md", text only, no secrets), or (for the Summon maintenance lead) a work engine folder ({kind:"engine",id:"<engine-id>"}, path:"bridge.mjs"|"guide.md"|"engine.json").',
     object({
       space: ref,
       path: text,
@@ -241,15 +241,13 @@ const definitions = [
       role_id: oneOf(...roleIds, null),
       env_slots: array(text),
     }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members. Regular group Rooms always include the host, automatically create a dedicated group-lead Bot for the new Room (respecting lead_name, lead_duty, and lead_persona—never hijacking another Room’s group-lead) plus EggBot, and do not force a Bot caller into the new Room unless explicitly listed in members. Always pass a vivid 2–3 sentence Chinese lead_persona when setting lead_name so the new group-lead starts with a distinct human personality instead of a blank shell. When spinning off a Room from an existing Room, pass origin_room and opening_message (text + optional mentions/references) to deliver the handoff context atomically and wake the new Room’s members.',
+  ['create_room', 'Create a Room with the specified members. Regular group Rooms always include the host, automatically join the persistent Summon lead Bot (as Summon’s room clone, unless another member is designated via lead_bot) plus EggBot, and never spawn disposable per-room lead Bots. When spinning off a Room from an existing Room, pass title, origin_room, reusable long-term specialist members, and a concise natural opening_message (text + optional mentions/references).',
     object({
       members: array(principal),
       title: text,
       mode: oneOf('group', 'direct'),
       workspace: refOrId,
-      lead_name: text,
-      lead_duty: text,
-      lead_persona: text,
+      lead_bot: { anyOf: [typedRef('bot'), text] },
       origin_room: roomOrId,
       opening_message: createRoomOpeningMessage,
       skip_welcome: flag,
@@ -257,7 +255,7 @@ const definitions = [
     }, ['members'])],
   ['configure_room', 'Update the title, membership, pins, or project workspace in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal), pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
-  ['open_session', 'Open an async background Session. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn silently and deliver one concise reply once the completion receipt arrives.',
+  ['open_session', 'Open an async background work Session on your private desk. Set engine:"pi" for a lightweight Pi AI session, engine:"exec" to run a shell command ({shell, env?}) or own Bot script ({script:"scripts/xxx.mjs", bot?, args?, protocol?:"summon-jsonl", payload?, env?}), OR an enabled work engine id from work_engines (e.g. "codex", "claude-code", "grok-build") with input as a task string or {text, model?, effort?}. Pass a concise Chinese work_summary (6–24 chars). When wait_ref is registered, end your turn without filler chat; once the receipt returns to your desk, critically verify evidence, blind spots, and host constraints first—use send_input/open_session silently to probe missing ends or fix flaws, and call send to the Room ONLY for cross-role handoffs, genuine host trade-offs, or verified conclusions.',
     openSessionInput],
   ['configure_session', 'Update work_summary on a Session.',
     configureSessionInput],

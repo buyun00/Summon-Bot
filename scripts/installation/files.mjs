@@ -31,7 +31,15 @@ export async function writeJson(path, value) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx', flush: true });
-    await rename(temporary, path);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(temporary, path);
+        break;
+      } catch (error) {
+        if (process.platform !== 'win32' || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt >= 12) throw error;
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 30 * (attempt + 1)));
+      }
+    }
   } finally {
     await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
   }

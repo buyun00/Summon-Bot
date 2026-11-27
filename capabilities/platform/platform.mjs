@@ -9,6 +9,7 @@ import { listBotMemoryItems, protectedRuntimeDirs, readBotFolderFile, readHostPr
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { EngineManager } from '../engines/service.mjs';
 import { CapabilityManager } from '../skills/service.mjs';
+import { KnowledgeManager } from '../knowledge/service.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
@@ -37,6 +38,7 @@ export class SummonPlatform {
     this.manager = new BotManager({ store, dataRoot, releaseRoot, models, canUseModel: (actor, id) => this.canUseModel(actor, id) });
     this.engines = new EngineManager({ store, dataRoot, releaseRoot });
     this.capabilities = new CapabilityManager({ dataRoot, releaseRoot });
+    this.knowledge = new KnowledgeManager({ dataRoot });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit, chatroom: () => this.room,
       onEnqueue: () => this.scheduleFlush(),
       canReadEvent: (botId, event) => this.canReadEvent(event, { actor: { kind: 'bot', id: botId } }),
@@ -102,6 +104,7 @@ export class SummonPlatform {
     const defaultWs = this.ensureDefaultWorkspace();
     this.engines.ensureDefaults();
     this.capabilities.ensureDefaults();
+    this.knowledge.ensureRoot();
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
     this.room.ensureMaintenanceRoom({ defaultWorkspaceId: defaultWs?.id || null });
     this.store.transaction(() => {
@@ -324,8 +327,7 @@ export class SummonPlatform {
     }
     if (name === 'create_room') {
       const title = args.title ? `「${String(args.title).slice(0, 40)}」` : '';
-      const lead = args.lead_name ? `（主控：${String(args.lead_name).slice(0, 24)}）` : '';
-      return { summary: `创建群聊${title}${lead}` };
+      return { summary: `创建群聊${title}` };
     }
     if (name === 'configure_room') {
       const parts = [];
@@ -417,9 +419,8 @@ export class SummonPlatform {
     return !existing.owner_bot || existing.owner_bot === actor.id || existing.owner_alive === false;
   }
 
-  applyAutoGroupNaming(roomId, botId, { roomTitle, leadName, leadDuty, leadPersona } = {}) {
+  applyAutoGroupNaming(roomId, botId, { roomTitle } = {}) {
     let updatedRoom = null;
-    let updatedBot = null;
     this.store.transaction(() => {
       const room = this.store.get('rooms', roomId);
       if (!room || room.archivedAt || room.mode !== 'group' || room.id === botMaintenanceRoomId) return;
@@ -427,10 +428,9 @@ export class SummonPlatform {
         member !== 'user' && this.store.get(botRecords, member)?.built_in_role?.id === groupLeadRole);
       if (botId && effectiveLeadId && botId !== effectiveLeadId) return;
 
-      let finalRoomName = room.name;
       const cleanRoomTitle = typeof roomTitle === 'string' ? roomTitle.trim().slice(0, 80) : '';
       if (room.auto_title_pending && cleanRoomTitle) {
-        finalRoomName = this.room.uniqueGroupTitle(cleanRoomTitle, room.id);
+        const finalRoomName = this.room.uniqueGroupTitle(cleanRoomTitle, room.id);
         updatedRoom = this.store.save('rooms', {
           id: room.id,
           name: finalRoomName,
@@ -438,32 +438,13 @@ export class SummonPlatform {
           revision: (room.revision ?? 0) + 1,
         });
       }
-
-      const cleanLeadName = typeof leadName === 'string' ? leadName.trim().slice(0, 60) : '';
-      const cleanLeadDuty = typeof leadDuty === 'string' && leadDuty.trim()
-        ? leadDuty.trim().slice(0, 300)
-        : (finalRoomName && finalRoomName !== '新群聊'
-          ? `负责「${finalRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`
-          : '');
-      const cleanLeadPersona = typeof leadPersona === 'string' ? leadPersona.trim().slice(0, 600) : '';
-      if (effectiveLeadId && cleanLeadName) {
-        updatedBot = this.manager.applyAutoName(effectiveLeadId, {
-          name: cleanLeadName,
-          publicDuty: cleanLeadDuty,
-          ...(cleanLeadPersona ? { instructions: cleanLeadPersona } : {}),
-        }, { syncFiles: false });
-      }
     });
-    if (updatedBot) {
-      this.manager.syncFolderMeta(updatedBot);
-      this.emit('bot', this.manager.view(updatedBot, user));
-    }
     if (updatedRoom) {
       this.room.emit('room', this.room.projectRoom(updatedRoom));
     }
     return {
       room: updatedRoom ? this.room.projectRoom(updatedRoom) : null,
-      bot: updatedBot ? this.manager.view(updatedBot, user) : null,
+      bot: null,
     };
   }
   ensureRoomBase(botId, roomId) { return this.deliveries.ensureBase(botId, roomId); }
@@ -524,6 +505,14 @@ export class SummonPlatform {
 
   canFindTeam(context) {
     return context.actor.kind === 'user' || context.actor.kind === 'bot';
+  }
+
+  canReadRoomHistory(actor, space) {
+    if (!space || space.kind !== 'room') return false;
+    const room = this.store.get('rooms', space.id);
+    if (!room) return false;
+    if (actor.kind === 'user' || room.members.includes(actor.id)) return true;
+    return actor.kind === 'bot' && room.mode === 'group' && !room.archivedAt;
   }
 
   canReadSpace(actor, space, context = {}) {
@@ -588,7 +577,11 @@ export class SummonPlatform {
     }
     if (event.bot_id && event.bot_id !== context.actor.id && context.actor.kind !== 'user') return false;
     const resource = context.resource_refs?.some(ref => sameRef(ref, { kind: 'event', id: event.id }));
-    return this.canReadSpace(context.actor, event.space || { kind: 'room', id: event.roomId }, resource ? {} : context);
+    const targetSpace = event.space || (event.roomId ? { kind: 'room', id: event.roomId } : null);
+    if ((event.type === 'message' || event.kind === 'message') && targetSpace?.kind === 'room') {
+      return this.canReadRoomHistory(context.actor, targetSpace);
+    }
+    return this.canReadSpace(context.actor, targetSpace, resource ? {} : context);
   }
 
   canReadReference(ref, context) {
@@ -601,7 +594,8 @@ export class SummonPlatform {
     }
     if (!ref.id) return false;
     switch (ref.kind) {
-      case 'room': case 'user': return this.canReadSpace(actor, ref, context);
+      case 'room': return this.canReadRoomHistory(actor, ref);
+      case 'user': return this.canReadSpace(actor, ref, context);
       case 'bot': {
         const record = this.store.get(botRecords, ref.id);
         return Boolean(record && (this.visibleBot(record, context) ||
@@ -612,7 +606,8 @@ export class SummonPlatform {
         return Boolean(event && this.canReadEvent(event, context));
       }
       case 'file': return this.files.canRead(ref.id, context);
-      case 'session': case 'conversation': return this.executions.permission(ref, this.executions.record(ref), context);
+      case 'session': return this.executions.canRead(ref, this.executions.record(ref), context);
+      case 'conversation': return this.executions.permission(ref, this.executions.record(ref), context);
       case 'call': {
         const call = this.store.get('platform-calls', ref.id);
         return Boolean(call && this.calls.canRead(actor, call, context));
@@ -620,6 +615,7 @@ export class SummonPlatform {
       case 'workspace': return this.workspaceAvailable(ref.id, actor, context);
       case 'engine': return this.engines.list().some(item => item.id === ref.id);
       case 'capability': return Boolean(this.capabilities.readEntry(ref.id));
+      case 'knowledge': return ref.id === 'shared' || this.knowledge.exists(ref.id);
       case 'wakeup': return this.deliveries.list(context).some(item => item.id === ref.id);
       default: return false;
     }
@@ -918,8 +914,7 @@ export class SummonPlatform {
   assertSessionAuthority(session) {
     if (session.authority_revoked ||
         (session.sharing && !this.store.get('rooms', session.space?.id)) ||
-        (!session.sharing && session.origin_room?.kind === 'room' && session.execution_actor?.kind === 'bot' &&
-          !this.roomMembers(session.origin_room.id).includes(session.execution_actor.id))) {
+        (!session.sharing && session.execution_actor?.kind === 'bot' && !this.store.get(botRecords, session.execution_actor.id)?.enabled)) {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution authority', 403);
     }
     if (session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id)) {
@@ -1235,6 +1230,18 @@ export class SummonPlatform {
         });
         return { result, call_id: record.id };
       }
+      if (name === 'save_file' && args.space.kind === 'knowledge') {
+        const content = typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
+        if (typeof content !== 'string') reject('invalid_content', 'Provide text content when saving into shared knowledge');
+        const targetPath = String(args.path || (args.space.id !== 'shared' ? args.space.id : '')).trim();
+        const written = this.knowledge.write(targetPath, content);
+        this.emit('knowledge');
+        const result = this.store.transaction(() => {
+          this.calls.bind(record.id, { target: { kind: 'knowledge', id: written.id } });
+          return this.calls.finish(record.id, 'completed', written);
+        });
+        return { result, call_id: record.id };
+      }
       if (name === 'save_file' && args.space.kind === 'capability') {
         if (!this.canConfigureCapability(context.actor, args.space.id)) {
           reject('configuration_forbidden', 'Cannot modify this platform capability folder', 403);
@@ -1499,6 +1506,8 @@ export class SummonPlatform {
           item.id, item.name, item.description, item.owner_bot, item.owner_name, item.room_id,
           ...(Array.isArray(item.env_slots) ? item.env_slots : []),
         ];
+      case 'knowledge':
+        return [item.id, item.path, item.title, item.summary, item._text];
       default:
         return [item.id, item.name, item.path, item.content, item.text, item.public_duty, item.role_id, item.summary, item.work_summary];
     }
@@ -1517,6 +1526,10 @@ export class SummonPlatform {
         items = this.capabilities.list({ lookupBot: id => this.store.get(botRecords, id) });
         break;
       }
+      case 'knowledge': {
+        items = this.knowledge.list({ includeSnippet: Boolean(query?.trim()) });
+        break;
+      }
       case 'bot': {
         const team = this.canFindTeam(context);
         const members = scope?.kind === 'room' ? new Set(this.roomMembers(scope.id)) : null;
@@ -1525,13 +1538,14 @@ export class SummonPlatform {
           .map(bot => team ? directoryEntry(bot) : this.manager.view(bot, actor, { details: !context.session }));
         break;
       }
-      case 'room': items = this.room.rooms(actor.id).filter(room => this.canReadSpace(actor, { kind: 'room', id: room.id }, context))
+      case 'room': items = this.room.readableRooms(actor.id, { includeCrossRoomGroups: actor.kind === 'bot' })
         .map(room => ({ ...room, kind: 'room' })); break;
       case 'event': {
-        const accessibleRooms = this.room.rooms(actor.id)
-          .filter(room => (!scope || sameRef(scope, room.ref)) && this.canReadSpace(actor, room.ref, context));
+        const allowCross = actor.kind === 'bot';
+        const accessibleRooms = this.room.readableRooms(actor.id, { includeCrossRoomGroups: allowCross })
+          .filter(room => !scope || sameRef(scope, room.ref));
         const messages = accessibleRooms.flatMap(room =>
-          this.room.messages(room.id, actor.id).map(msg => ({
+          this.room.messages(room.id, actor.id, { allowCrossRoomGroup: allowCross }).map(msg => ({
             ...msg,
             room_name: room.name,
             senderName: msg.senderName || this.actorLabel(msg.senderId),
@@ -1588,13 +1602,19 @@ export class SummonPlatform {
     }
     if (items?.items) items = items.items;
     const tokens = (query?.trim().toLowerCase() || '').split(/\s+/).filter(Boolean);
-    const filtered = tokens.length ? items.filter(item => {
+    const filtered = (tokens.length ? items.filter(item => {
       const haystack = this.searchableTexts(kind, item, context)
         .filter(value => typeof value === 'string' && value.length > 0)
         .join('\n')
         .toLowerCase();
       return tokens.every(token => haystack.includes(token));
-    }) : items;
+    }) : items).map(item => {
+      if (item && typeof item === 'object' && '_text' in item) {
+        const { _text, ...cleanItem } = item;
+        return cleanItem;
+      }
+      return item;
+    });
     return page(filtered, cursor);
   }
 
@@ -1656,10 +1676,17 @@ export class SummonPlatform {
         }
         return this.capabilities.get(ref.id, { lookupBot: id => this.store.get(botRecords, id) });
       }
-      case 'room': return this.room.read(args, context.actor.id);
+      case 'knowledge': {
+        const targetPath = String(args.path || (ref.id !== 'shared' ? ref.id : '')).trim();
+        if (!targetPath) {
+          return { ref, kind: 'knowledge', id: 'shared', dir: this.knowledge.dir(), items: this.knowledge.list() };
+        }
+        return { ref, ...this.knowledge.read(targetPath) };
+      }
+      case 'room': return this.room.read(args, context.actor.id, { allowCrossRoomGroup: context.actor.kind === 'bot' });
       case 'event': {
         const event = this.store.get('platform-events', ref.id);
-        return event ?? this.room.read(args, context.actor.id);
+        return event ?? this.room.read(args, context.actor.id, { allowCrossRoomGroup: context.actor.kind === 'bot' });
       }
       case 'file': return this.files.readObject(ref.id, context, args.cursor, args.limit, args.revision);
       case 'workspace_file': return this.read({ ...args, ref: { kind: 'workspace', id: ref.workspace_id }, path: ref.path }, context);

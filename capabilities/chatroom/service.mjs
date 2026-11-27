@@ -341,13 +341,17 @@ export class ChatroomService {
     `);
   }
 
-  room(id, actor) {
+  room(id, actor, { allowCrossRoomGroup = false } = {}) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
     const room = this.store.get('rooms', id);
     if (!room)
       fail('会话不存在', 404);
-    if (!room.members.includes(actor)) fail('无权访问这个会话', 403);
+    if (!room.members.includes(actor)) {
+      if (!(allowCrossRoomGroup && actor !== 'user' && room.mode === 'group' && !room.archivedAt)) {
+        fail('无权访问这个会话', 403);
+      }
+    }
     return room;
   }
 
@@ -390,8 +394,15 @@ export class ChatroomService {
       .map(room => this.projectRoom(room));
   }
 
-  messages(id, actor) {
-    const room = this.room(id, actor);
+  readableRooms(actor, { includeCrossRoomGroups = false } = {}) {
+    actor = identity(actor).id;
+    return this.store.list('rooms')
+      .filter(room => room.members.includes(actor) || (includeCrossRoomGroups && actor !== 'user' && room.mode === 'group' && !room.archivedAt))
+      .map(room => ({ ...this.projectRoom(room), joined: room.members.includes(actor) }));
+  }
+
+  messages(id, actor, options = {}) {
+    const room = this.room(id, actor, options);
     return this.roomMessages.all(room.id).map(rowMessage);
   }
 
@@ -509,7 +520,7 @@ export class ChatroomService {
     return { events, more: false };
   }
 
-  read({ ref, cursor, limit = 40 }, actor) {
+  read({ ref, cursor, limit = 40 }, actor, options = {}) {
     if (ref?.kind === 'event') {
       const row = this.messageRow.get(ref.id);
       const event = this.projectMessage(row);
@@ -520,12 +531,12 @@ export class ChatroomService {
         const sharedRoom = this.store.get('rooms', rid);
         return sharedRoom && (actorId === 'user' || sharedRoom.members.includes(actorId));
       });
-      if (!shared) this.room(event.roomId, actor);
+      if (!shared) this.room(event.roomId, actor, options);
       return event;
     }
     if (ref?.kind !== 'room') fail('需要会话或消息引用');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('消息页大小须为 1 至 100');
-    const room = this.room(ref.id, actor);
+    const room = this.room(ref.id, actor, options);
     const before = cursor == null ? null : this.messageRow.get(identifier(cursor, '消息游标'));
     if (cursor != null && (!before || rowMessage(before).roomId !== room.id)) fail('消息游标已失效', 409);
     const rows = this.messagePage.all(room.id, before?.sequence ?? null, before?.created_at ?? null, before?.sequence ?? null, limit + 1);
@@ -543,15 +554,16 @@ export class ChatroomService {
 
   ensureMaintenanceRoom({ defaultWorkspaceId = null } = {}) {
     const existing = this.store.get('rooms', botMaintenanceRoomId);
+    const summon = this.manager.ensureSummonLead();
     const egg = this.manager.eggBot();
     if (!existing) {
-      const members = egg?.enabled ? [egg.id] : [];
+      const members = [summon.id, ...(egg?.enabled ? [egg.id] : [])];
       return this.createRoom({
         title: 'Summon',
         members,
         mode: 'group',
         workspace: defaultWorkspaceId || undefined,
-        lead_name: 'Summon',
+        lead_bot: summon.id,
         skip_welcome: true,
       }, 'user', { id: botMaintenanceRoomId });
     }
@@ -559,18 +571,13 @@ export class ChatroomService {
     const next = { ...existing };
     const members = [...(next.members || [])];
     if (!members.includes('user')) { members.unshift('user'); changed = true; }
-    let leadBotId = next.lead_bot_id || members.find(member =>
-      member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
-    let createdLead = null;
-    if (!leadBotId) {
-      createdLead = this.manager.createGroupLead({ roomId: botMaintenanceRoomId, roomName: 'Summon', leadName: 'Summon' });
-      leadBotId = createdLead.id;
-      const insertAt = members.includes('user') ? members.indexOf('user') + 1 : 0;
-      if (!members.includes(leadBotId)) members.splice(insertAt, 0, leadBotId);
-      next.lead_bot_id = leadBotId;
+    const insertAt = members.includes('user') ? members.indexOf('user') + 1 : 0;
+    if (!members.includes(summon.id)) {
+      members.splice(insertAt, 0, summon.id);
       changed = true;
-    } else if (!next.lead_bot_id) {
-      next.lead_bot_id = leadBotId;
+    }
+    if (next.lead_bot_id !== summon.id) {
+      next.lead_bot_id = summon.id;
       changed = true;
     }
     if (egg?.enabled && !members.includes(egg.id)) { members.push(egg.id); changed = true; }
@@ -585,7 +592,6 @@ export class ChatroomService {
       next.revision = (next.revision ?? 0) + 1;
       this.store.save('rooms', next);
       for (const member of members) if (member !== 'user') this.platform.ensureRoomBase(member, botMaintenanceRoomId);
-      if (createdLead) this.platform.emit('bot', this.manager.view(createdLead, { kind: 'user', id: 'user' }));
       this.emit('room', this.projectRoom(next));
     }
     return this.projectRoom(next);
@@ -614,13 +620,14 @@ export class ChatroomService {
     }
   }
 
-  createRoom({ title, members, mode, workspace, lead_name, lead_duty, lead_persona, skip_welcome, auto_title, origin_room, opening_message }, actor, { id = randomUUID() } = {}) {
+  createRoom({ title, members, mode, workspace, lead_bot, skip_welcome, auto_title, origin_room, opening_message }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const explicitMembers = [...new Set(list(members, '成员').map(member => identity(member).id))];
+    const explicitLeadId = lead_bot != null ? identity(lead_bot).id : null;
+    if (explicitLeadId === 'user') fail('群主责成员必须是 Bot');
     const hasGroupSignals = Boolean(
-      lead_name || lead_duty || lead_persona || auto_title === true || origin_room || opening_message || workspace != null || id === botMaintenanceRoomId,
+      explicitLeadId || auto_title === true || origin_room || opening_message || workspace != null || id === botMaintenanceRoomId,
     );
-    let createdLead = null;
     let openingMessage = null;
     const saved = this.store.transaction(() => {
       if (this.store.get('rooms', id)) fail('会话 ID 已存在', 409);
@@ -634,8 +641,8 @@ export class ChatroomService {
         if (!directMembers(requested)) fail('私聊必须包含用户和一位 Bot');
       } else {
         // Creating a group Room on behalf of the host does NOT force a Bot caller
-        // to become a member (or hijack lead_bot_id) unless explicitly listed.
-        requested = [...new Set(['user', ...explicitMembers])];
+        // to become a member unless explicitly listed.
+        requested = [...new Set(['user', ...(explicitLeadId ? [explicitLeadId] : []), ...explicitMembers])];
       }
       this.validateMembers(requested, actor);
       let originRoomRef = null;
@@ -651,7 +658,7 @@ export class ChatroomService {
       const autoNameGroup = isStandardGroup && (
         auto_title === true
         || title === undefined
-        || (skip_welcome === true && requested.length === 1 && !lead_name)
+        || (skip_welcome === true && requested.length === 1)
       );
       let roomName;
       if (autoNameGroup) {
@@ -676,29 +683,12 @@ export class ChatroomService {
       const included = [...requested];
       let leadBotId = null;
       if (isStandardGroup || (mode === 'group' && id === botMaintenanceRoomId)) {
-        // A group-lead with a different home_room_id belongs to its own home room
-        // and must never hijack lead_bot_id or swallow lead_name of a new group.
-        const existingLead = (!lead_name && !lead_duty) ? included.find(member => {
-          if (member === 'user') return false;
-          const bot = this.store.get('platform-bots', member);
-          return bot?.built_in_role?.id === groupLeadRole && (!bot.home_room_id || bot.home_room_id === id);
-        }) : null;
-        if (existingLead) {
-          leadBotId = existingLead;
-        } else {
-          const leadBot = this.manager.createGroupLead({
-            roomId: id,
-            roomName,
-            leadName: lead_name,
-            leadDuty: lead_duty,
-            leadPersona: lead_persona,
-            pendingAutoName: autoNameGroup && !lead_name,
-          });
-          createdLead = leadBot;
-          leadBotId = leadBot.id;
-          const insertAt = included.includes('user') ? included.indexOf('user') + 1 : 0;
-          if (!included.includes(leadBot.id)) included.splice(insertAt, 0, leadBot.id);
+        const summon = this.manager.ensureSummonLead();
+        const insertAt = included.includes('user') ? included.indexOf('user') + 1 : 0;
+        if ((summon.enabled !== false || id === botMaintenanceRoomId) && !included.includes(summon.id)) {
+          included.splice(insertAt, 0, summon.id);
         }
+        leadBotId = explicitLeadId || (included.includes(summon.id) ? summon.id : included.find(m => m !== 'user') || null);
         const egg = this.manager.eggBot();
         if (egg?.enabled && !included.includes(egg.id)) included.push(egg.id);
       }
@@ -758,8 +748,8 @@ export class ChatroomService {
         const leadRecord = this.store.get('platform-bots', leadBotId);
         const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
         const welcomeText = wsLabel
-          ? `我是「${roomName}」的群主控，已绑定目录「${wsLabel}」，EggBot 已就位。直接说需求就行。`
-          : `我是「${roomName}」的群主控，EggBot 已就位。直接说你想做什么就行。`;
+          ? `已绑定目录「${wsLabel}」，直接说你想做什么就行。`
+          : '直接说你想做什么就行。';
         const openId = randomUUID();
         this.store.save('messages', {
           id: openId,
@@ -778,9 +768,6 @@ export class ChatroomService {
       }
       return room;
     });
-    if (createdLead) {
-      this.platform.emit('bot', this.manager.view(createdLead, { kind: 'user', id: 'user' }));
-    }
     const projection = this.projectRoom(saved);
     this.emit('room', projection);
     if (openingMessage) this.emit('message', openingMessage);

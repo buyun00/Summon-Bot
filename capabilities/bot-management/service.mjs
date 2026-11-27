@@ -1,10 +1,11 @@
-import { eggbotRole, defaultPublicDuty, groupLeadRole } from './roles.mjs';
+import { botMaintenanceLeadId, eggbotRole, defaultPublicDuty, groupLeadRole } from './roles.mjs';
 import { botRootDir, ensureBotFolder, installBundledBotFiles, listBotFolderFiles, listBundledBots, readBotFolderMeta, readBotInstructions, syncBotMetaFiles } from './folders.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, user } from '../platform/contract.mjs';
 
 export const botRecords = 'platform-bots';
 export const deletedBotRecords = 'deleted-bots';
+const isProtectedSystemBot = id => id === 'bot-default-eggbot-local' || id === botMaintenanceLeadId;
 
 export function activeControl() {
   return { state: 'active', control_version: 1, stop_id: null, requested_by: null, stop_status: null };
@@ -103,57 +104,39 @@ export class BotManager {
     });
   }
 
-  createGroupLead({ roomId, roomName, leadName, leadDuty, leadPersona, pendingAutoName = false } = {}) {
-    const id = `bot-lead-${roomId}`;
-    const existing = this.store.get(botRecords, id);
-    if (existing) return existing;
-    const baseRoomName = typeof roomName === 'string' && roomName.trim() ? roomName.trim() : '新群聊';
-    const hasExplicitLeadName = typeof leadName === 'string' && Boolean(leadName.trim());
-    const hasExplicitLeadDuty = typeof leadDuty === 'string' && Boolean(leadDuty.trim());
-    const cleanedPersona = typeof leadPersona === 'string' && leadPersona.trim() ? instructionsOf(leadPersona.trim().slice(0, 1200)) : '';
-    const autoNamePending = Boolean(pendingAutoName && !hasExplicitLeadName);
-    const rawName = hasExplicitLeadName
-      ? leadName.trim()
-      : autoNamePending
-        ? '群主控'
-        : `${baseRoomName.slice(0, 88)} · 主控`;
-    const name = cleanName(rawName.slice(0, 100));
-    const duty = hasExplicitLeadDuty
-      ? publicDuty(leadDuty.trim().slice(0, 600))
-      : autoNamePending
-        ? publicDuty('本群群主控，负责理解宿主建群意向、协调推进任务与交付')
-        : publicDuty(`负责「${baseRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`);
+  summonLead(bots = this.list()) {
+    const direct = this.store.get(botRecords, botMaintenanceLeadId);
+    if (direct && !direct.archivedAt) return direct;
+    return bots.find(bot => !bot.archivedAt && bot.id === botMaintenanceLeadId) || null;
+  }
+
+  ensureSummonLead() {
+    const existing = this.store.get(botRecords, botMaintenanceLeadId);
+    if (existing && !existing.archivedAt) {
+      if (existing.home_room_id || existing.auto_name_pending) {
+        const cleaned = {
+          ...existing,
+          home_room_id: undefined,
+          auto_name_pending: undefined,
+          revision: (existing.revision ?? 1) + 1,
+        };
+        delete cleaned.home_room_id;
+        delete cleaned.auto_name_pending;
+        const saved = this.store.save(botRecords, cleaned);
+        syncBotMetaFiles(this.dataRoot, saved);
+        return saved;
+      }
+      return existing;
+    }
     return this.saveNew({
-      id,
-      name,
-      instructions: cleanedPersona,
-      public_duty: duty,
+      id: botMaintenanceLeadId,
+      name: 'Summon',
+      instructions: '说话利落自然、有主见、重本质，讨厌走过场套话和低效冗余设计；善于站在宿主视角算清真实体验与维护账，对干活 AI 的半成品严格把关。',
+      public_duty: '全平台常驻主控搭档，跨群承接需求、把关方案与统筹交付',
       model: { mode: 'follow_default' },
       owner: user,
       built_in_role: { id: groupLeadRole },
-      home_room_id: roomId,
-      ...(autoNamePending ? { auto_name_pending: true } : {}),
     });
-  }
-
-  applyAutoName(id, { name, publicDuty: duty, instructions: persona } = {}, { syncFiles = true } = {}) {
-    const before = this.store.get(botRecords, id);
-    if (!before || before.archivedAt || !before.auto_name_pending) return null;
-    const cleanedName = typeof name === 'string' ? name.trim().slice(0, 100) : '';
-    if (!cleanedName) return null;
-    const changes = {
-      name: cleanName(cleanedName),
-      auto_name_pending: false,
-    };
-    if (typeof duty === 'string' && duty.trim()) {
-      changes.public_duty = publicDuty(duty.trim().slice(0, 600));
-    }
-    if (typeof persona === 'string' && persona.trim() && !readBotInstructions(this.dataRoot, before).trim()) {
-      changes.instructions = instructionsOf(persona.trim().slice(0, 1200));
-    }
-    const updated = this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 });
-    if (syncFiles) syncBotMetaFiles(this.dataRoot, updated);
-    return updated;
   }
 
   syncFolderMeta(bot) {
@@ -165,6 +148,25 @@ export class BotManager {
     const model = { mode: 'follow_default' };
     const resolved = this.models.resolveForBot(model, 'conversation');
     let changed = false;
+
+    const ensureDefaultModelGrant = bot => {
+      if (!bot || !resolved || bot.model?.mode !== 'follow_default') return;
+      const access = this.store.get('platform-access', bot.id);
+      if (!access?.model_ids?.includes(resolved.connection_id)) {
+        this.store.save('platform-access', {
+          id: bot.id,
+          revision: (access?.revision ?? 0) + 1,
+          model_ids: [...new Set([...(access?.model_ids ?? []), resolved.connection_id])],
+          workspace_ids: access?.workspace_ids ?? [],
+        });
+      }
+    };
+
+    const hadSummon = Boolean(this.summonLead(existing));
+    const summon = this.ensureSummonLead();
+    if (!hadSummon) changed = true;
+    ensureDefaultModelGrant(summon);
+
     const eggId = 'bot-default-eggbot-local';
     let egg = this.eggBot(existing) ?? this.store.get(botRecords, eggId);
     if (!egg) {
@@ -181,18 +183,10 @@ export class BotManager {
         owner: user,
         built_in_role: { id: eggbotRole },
       });
-    } else if (resolved && egg.model?.mode === 'follow_default') {
-      const access = this.store.get('platform-access', egg.id);
-      if (!access?.model_ids?.includes(resolved.connection_id)) {
-        this.store.save('platform-access', {
-          id: egg.id,
-          revision: (access?.revision ?? 0) + 1,
-          model_ids: [...new Set([...(access?.model_ids ?? []), resolved.connection_id])],
-          workspace_ids: access?.workspace_ids ?? [],
-        });
-      }
+    } else {
+      ensureDefaultModelGrant(egg);
     }
-    return { bots: [egg], changed };
+    return { bots: [summon, egg], changed };
   }
 
   roleOf(id, context, bot) {
@@ -213,8 +207,6 @@ export class BotManager {
     const base = {
       ...directoryEntry(liveBot),
       avatar: liveBot.avatar ? normalizePaperAvatar(liveBot.avatar) : defaultPaperAvatar(liveBot.id),
-      ...(liveBot.home_room_id ? { home_room_id: liveBot.home_room_id } : {}),
-      ...(liveBot.auto_name_pending ? { auto_name_pending: true } : {}),
       env_slots: Array.isArray(liveBot.env_slots) ? liveBot.env_slots : [],
       archived_at: liveBot.archivedAt || null,
       created_at: liveBot.createdAt,
@@ -223,7 +215,7 @@ export class BotManager {
     if (!details || !this.canConfigure(actor, liveBot)) return base;
     const target = { kind: 'bot', id: liveBot.id };
     const binding_source = liveBot.model?.mode || (liveBot.model?.connection_id ? 'custom' : 'unconfigured');
-    const isDefault = liveBot.id === 'bot-default-eggbot-local';
+    const isDefault = isProtectedSystemBot(liveBot.id);
     const instructions = readBotInstructions(this.dataRoot, liveBot);
     const folder_files = listBotFolderFiles(this.dataRoot, liveBot.id);
     return {
@@ -353,7 +345,6 @@ export class BotManager {
     const changes = {};
     if (args.name !== undefined) {
       changes.name = cleanName(args.name);
-      if (before.auto_name_pending) changes.auto_name_pending = false;
     }
     if (args.instructions !== undefined) changes.instructions = instructionsOf(args.instructions);
     if (args.public_duty !== undefined) changes.public_duty = publicDuty(args.public_duty);
@@ -400,7 +391,7 @@ export class BotManager {
     const before = this.get(id);
     if (actor.kind !== 'user' && !sameIdentity(actor, before.owner))
       reject('configuration_forbidden', 'Bot archive requires the host or owner', 403);
-    if (before.id === 'bot-default-eggbot-local')
+    if (isProtectedSystemBot(before.id))
       reject('bot_protected', 'Default system Bots cannot be archived', 403);
     if (revision !== undefined) assertRevision(before.revision, revision);
     if (before.archivedAt) return before;
@@ -431,7 +422,7 @@ export class BotManager {
   assertRemovable(id, revision, actor) {
     if (actor.kind !== 'user') reject('configuration_forbidden', 'Only the host can delete a Bot', 403);
     const before = this.get(id);
-    if (before.id === 'bot-default-eggbot-local')
+    if (isProtectedSystemBot(before.id))
       reject('bot_protected', 'Default system Bots cannot be deleted', 403);
     if (revision !== undefined) assertRevision(before.revision, revision);
     return before;

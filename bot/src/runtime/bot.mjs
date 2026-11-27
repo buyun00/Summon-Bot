@@ -67,6 +67,7 @@ const roomEvent = message => ({
 });
 
 const liveSessionStatuses = new Set(['opening', 'running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+const wRoomOf = work => work?.origin_room || (work?.space?.kind === 'room' ? work.space : null);
 
 function compactActivityText(value, maxLen = 44) {
   if (typeof value !== 'string') return null;
@@ -134,6 +135,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (kind === 'bot') return '正在查看成员列表';
       if (kind === 'engine') return '正在查看工作引擎';
       if (kind === 'capability') return '正在查看平台能力';
+      if (kind === 'knowledge') return args.query ? `正在检索共享笔记 ${compactActivityText(args.query, 18)}` : '正在查看共享知识库';
       if (kind === 'execution') return '正在查看执行状态';
       if (kind === 'event') return '正在检索群记录';
       if (kind === 'wakeup') return '正在查看提醒规则';
@@ -152,6 +154,7 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (refKind === 'bot') return args.path ? `正在读取 ${shortPathLabel(args.path)}` : '正在查看成员配置';
       if (refKind === 'engine') return args.path ? `正在读取工作引擎 ${shortPathLabel(args.path)}` : '正在查看工作引擎';
       if (refKind === 'capability') return args.path ? `正在读取能力文件 ${shortPathLabel(args.path)}` : '正在读取能力说明';
+      if (refKind === 'knowledge') return `正在读取共享笔记 ${shortPathLabel(args.path || args.ref?.id || '')}`;
       if (refKind === 'room') return '正在读取群信息';
       return '正在读取内容';
     }
@@ -1065,7 +1068,7 @@ export class BotRuntime {
         let text;
         if (toolCount === 0) {
           if (hasReceipt) {
-            text = '正在查看结果并整理结论';
+            text = '正在核验执行结果';
           } else {
             const existing = roomId && this.liveActivities.get(recordKey(roomId, bot.id));
             text = existing?.phase === 'planned' && existing.text ? existing.text : '正在分析需求';
@@ -1186,28 +1189,23 @@ export class BotRuntime {
           kind: 'room',
           id: roomRecord.origin_room.id,
           ...(originRoomRecord?.name ? { name: originRoomRecord.name } : {}),
-          readable: this.platform.canReadSpace(context.actor, roomRecord.origin_room, context),
+          readable: this.platform.canReadRoomHistory(context.actor, roomRecord.origin_room),
         },
       }));
     }
-    if (!conversation.session_id && conversation.kind === 'room' && conversation.space?.kind === 'room') {
-      const otherRooms = this.platform.room.rooms(context.actor.id)
-        .filter(item => item.id !== conversation.space.id && !item.archived_at)
-        .sort((left, right) =>
-          (Date.parse(right.lastMessage?.createdAt || right.updatedAt || right.createdAt || 0) || 0) -
-          (Date.parse(left.lastMessage?.createdAt || left.updatedAt || left.createdAt || 0) || 0))
-        .slice(0, 10)
-        .map(item => ({
-          id: item.id,
-          name: item.name,
-          role: item.lead_bot_id === context.actor.id ? 'lead' : 'member',
-        }));
-      if (otherRooms.length) {
-        facts.push(textMessage({
-          type: 'other_joined_rooms',
-          rooms: otherRooms,
-        }));
-      }
+    const activeRoomId = conversation.kind === 'room' && conversation.space?.kind === 'room'
+      ? conversation.space.id
+      : (view.session?.origin_room?.id || null);
+    const originRoomId = roomRecord?.origin_room?.id
+      || (activeRoomId ? this.platform.store.get('rooms', activeRoomId)?.origin_room?.id : null)
+      || null;
+    const selfClones = this.collectSelfClones(inbox, conversation, activeRoomId, originRoomId);
+    if (selfClones.length) {
+      facts.push(textMessage({
+        type: 'self_clones',
+        note: '你（同一 Bot 本体）在其他群的分身状态与近期结论；同体内部数据可直接 read({ref:{kind:"conversation",id}}) 查看完整对话、思考与回执，或用 send_input 内部联动，切勿在群聊里 @自己。',
+        clones: selfClones,
+      }));
     }
     if (Array.isArray(roomRecord?.pins) && roomRecord.pins.length) {
       const readablePins = roomRecord.pins
@@ -1252,26 +1250,19 @@ export class BotRuntime {
       const leadBot = this.platform.store.get('platform-bots', context.actor.id);
       const isRoomLead = roomRecord.lead_bot_id === context.actor.id || leadBot?.built_in_role?.id === groupLeadRole;
       const needsRoomTitle = isRoomLead && roomRecord.auto_title_pending === true;
-      const needsLeadName = isRoomLead && leadBot?.auto_name_pending === true;
-      if (needsRoomTitle || needsLeadName) {
-        const existingGroupNames = needsRoomTitle
-          ? this.platform.store.list('rooms')
-              .filter(item => item.mode === 'group' && item.id !== roomRecord.id && item.name)
-              .map(item => item.name)
-              .slice(0, 40)
-          : [];
+      if (needsRoomTitle) {
+        const existingGroupNames = this.platform.store.list('rooms')
+          .filter(item => item.mode === 'group' && item.id !== roomRecord.id && item.name)
+          .map(item => item.name)
+          .slice(0, 40);
         facts.push(textMessage({
           type: 'room_naming_required',
           room: { id: roomRecord.id, name: roomRecord.name, revision: roomRecord.revision },
-          lead_bot: { id: leadBot.id, name: leadBot.name, revision: leadBot.revision },
-          needs_room_title: needsRoomTitle,
-          needs_lead_name: needsLeadName,
+          needs_room_title: true,
           ...(existingGroupNames.length ? { existing_group_names: existingGroupNames } : {}),
           instruction: [
-            '当前新建群聊尚未完成 AI 总结命名。请在调用 send 回复宿主前，结合宿主消息的核心目标与主题（严禁机械截取用户原话前几个字）：',
-            ...(needsRoomTitle ? [`1) 调用 configure_room({ room: "${roomRecord.id}", revision: ${roomRecord.revision}, title: "<2-12字简洁总结群名>" }) 更新群名（避开已有群名）；`] : []),
-            ...(needsLeadName ? [`2) 调用 configure_bot({ bot: "${leadBot.id}", revision: ${leadBot.revision}, name: "<2-8字贴合定位的主控名>", public_duty: "<一句话职责>" }) 更新你的主控名称与职责（不要机械拼接「群名 · 主控」，也不要留「群主控」泛称）；`] : []),
-            '3) 仅当宿主首条消息是完全没有主题的纯寒暄且未绑定明确目录时，可先问清目标待下轮再命名；只要有明确意向，务必先完成命名再调用 send 正常回应。',
+            `当前新建群聊尚未完成 AI 总结命名。请在调用 send 回复宿主前，结合宿主消息的核心目标与主题（严禁机械截取用户原话前几个字），调用 configure_room({ room: "${roomRecord.id}", revision: ${roomRecord.revision}, title: "<2-12字简洁总结群名>" }) 更新群名（避开已有群名）；`,
+            '仅当宿主首条消息是完全没有主题的纯寒暄且未绑定明确目录时，可先问清目标待下轮再命名。',
           ].join(' '),
         }));
       }
@@ -1347,28 +1338,36 @@ export class BotRuntime {
       if (!observation || observation.result_access === 'revoked') continue;
       const target = observation.target;
       const session = target?.kind === 'session' && this.platform.executions.record(target);
-      if (session?.owner_conversation_id === conversation.id) relevantGroups.add(workGroup(session));
+      if (session && (session.owner_conversation_id === conversation.id || session.owner?.id === context.actor.id || session.execution_actor?.id === context.actor.id)) {
+        relevantGroups.add(workGroup(session));
+      }
       // The event names an immutable receipt position. A newer receipt may already exist on the call.
       const result = event.result ?? observation.result;
       const content = JSON.stringify(result ?? null);
+      const isRoomMainReceipt = !conversation.session_id && conversation.kind === 'room' && event.status === 'completed';
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         ...(session ? {
           ...(session.work_summary ? { work_summary: session.work_summary } : {}),
+          ...(Array.isArray(session.recent_progress) && session.recent_progress.length ? { steps_taken: session.recent_progress } : {}),
           can_steer: Boolean(session.can_steer),
           can_continue: Boolean(session.can_continue),
+        } : {}),
+        ...(isRoomMainReceipt ? {
+          desk_review_gate: '工位审卷（群里不可见）：先对照宿主真实诉求、host_profile 与已知家底核查 steps_taken 及未查盲区——若漏查关联端或方案撞宿主红线，群里保持静默（勿调 send），直接用 send_input/open_session 打回补查；仅在需跨岗位 @同事 交接、请宿主拍真实取舍、纠偏群内错误前提或已彻底验实时才调 send。',
         } : {}),
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
         result: content.length <= 256_000 ? result : { preview: content.slice(0, 256_000), characters: content.length, truncated: true } }));
     }
+    const allBotOwned = this.platform.executions.botWork ? this.platform.executions.botWork(context.actor.id) : this.platform.executions.directWork(conversation.id);
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
-      const owned = this.platform.executions.directWork(conversation.id);
+      const owned = allBotOwned;
       if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
         const hasActiveOwned = owned.some(w => sameRef(w.origin_room, conversation.space) && !['completed', 'failed', 'stopped'].includes(w.status));
         if (hasActiveOwned || publicRoom?.summary) {
           const recent = new Map();
           for (const work of owned.slice().reverse()) {
-            if (!sameRef(work.origin_room, conversation.space) || !work.origin_message_id || recent.has(work.origin_message_id)) continue;
+            if (!sameRef(wRoomOf(work), conversation.space) || !work.origin_message_id || recent.has(work.origin_message_id)) continue;
             const question = this.platform.store.get('messages', work.origin_message_id);
             if (question?.roomId === conversation.space.id)
               recent.set(question.id, { origin_message_id: question.id, original_question: question.content.slice(0, 160) });
@@ -1378,7 +1377,10 @@ export class BotRuntime {
         }
       }
       for (const work of owned) {
-        if (work.owner_run_id === runId || requestIds.has(work.origin_message_id)) relevantGroups.add(workGroup(work));
+        if (work.owner_run_id === runId || requestIds.has(work.origin_message_id) ||
+            (sameRef(wRoomOf(work), conversation.space) && liveSessionStatuses.has(work.status))) {
+          relevantGroups.add(workGroup(work));
+        }
       }
       const groups = new Map();
       for (const work of owned) {
@@ -1396,6 +1398,7 @@ export class BotRuntime {
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status,
           ...(work.live_progress ? { live_progress: work.live_progress } : {}),
+          ...(Array.isArray(work.recent_progress) && work.recent_progress.length ? { recent_progress: work.recent_progress } : {}),
           can_steer: Boolean(work.can_steer),
           can_continue: Boolean(work.can_continue),
           control: work.control, latest_call_id: work.latest_call_id,
@@ -1659,6 +1662,136 @@ export class BotRuntime {
     const canContinue = !active && !this.starting.has(conversation.id) &&
       (summary.status === 'idle' || summary.status === 'suspended' || sessionInput && summary.status === 'waiting');
     return { ...summary, can_steer: Boolean(active?.accepting), can_continue: canContinue, input_revision: revision };
+  }
+
+  collectSelfClones(inbox, currentConversation, activeRoomId = null, originRoomId = null) {
+    const botId = inbox.botId;
+    const allWork = this.platform.executions.botWork ? this.platform.executions.botWork(botId) : [];
+    const candidates = inbox.store.listRecords(R.conversation).filter(c =>
+      c.kind === 'room' && !c.session_id && c.id !== currentConversation.id &&
+      c.space?.kind === 'room' && c.space.id !== activeRoomId);
+    const items = [];
+    for (const clone of candidates) {
+      const rid = clone.space.id;
+      const roomRec = this.platform.store.get('rooms', rid);
+      if (!roomRec) continue;
+      const runs = inbox.runs(clone.id);
+      const lastRun = this.inputRun(inbox, clone, runs);
+      const summaryState = this.runSummary(clone.id, lastRun);
+      const cloneActiveSessions = allWork
+        .filter(s => (s.owner_conversation_id === clone.id || s.origin_room?.id === rid) && liveSessionStatuses.has(s.status))
+        .slice(-3)
+        .map(s => ({
+          session_id: s.id,
+          engine: s.engine,
+          status: s.status,
+          ...(s.work_summary ? { work_summary: s.work_summary } : {}),
+          ...(Array.isArray(s.recent_progress) && s.recent_progress.length ? { recent_progress: s.recent_progress.slice(-2) } : {}),
+        }));
+      let lastHostInput = null;
+      let lastSelfConclusion = null;
+      for (let i = runs.length - 1; i >= 0 && (!lastHostInput || !lastSelfConclusion); i--) {
+        const r = runs[i];
+        if (!lastSelfConclusion) {
+          const sendCalls = inbox.calls(r.id).filter(call => call.tool === 'send' && typeof call.args?.text === 'string' && call.args.text.trim());
+          if (sendCalls.length) {
+            lastSelfConclusion = sendCalls.at(-1).args.text.replace(/\s+/g, ' ').trim().slice(0, 200);
+          } else if (typeof r.result?.text === 'string' && r.result.text.trim()) {
+            lastSelfConclusion = r.result.text.replace(/\s+/g, ' ').trim().slice(0, 180);
+          }
+        }
+        if (!lastHostInput && Array.isArray(r.injected_event_ids)) {
+          for (let j = r.injected_event_ids.length - 1; j >= 0; j--) {
+            const ev = inbox.event(r.injected_event_ids[j]);
+            if (ev?.author?.kind === 'user' && typeof ev.text === 'string' && ev.text.trim()) {
+              lastHostInput = ev.text.replace(/\s+/g, ' ').trim().slice(0, 140);
+              break;
+            }
+          }
+        }
+      }
+      const persistedSummary = this.platform.store.get('room-public-history', rid)?.summary;
+      const isOrigin = Boolean(originRoomId && rid === originRoomId);
+      if (!runs.length && !cloneActiveSessions.length && !persistedSummary && !isOrigin) continue;
+      const updatedMs = Date.parse(lastRun?.updated_at || clone.updated_at || roomRec.updatedAt || 0) || 0;
+      items.push({
+        _sortOrigin: isOrigin ? 1 : 0,
+        _sortActive: (summaryState.status === 'running' || cloneActiveSessions.length > 0) ? 1 : 0,
+        _updatedMs: updatedMs,
+        conversation_id: clone.id,
+        room_id: rid,
+        room_name: roomRec.name || rid,
+        ...(isOrigin ? { is_origin_room: true } : {}),
+        ...(roomRec.archivedAt ? { archived: true } : {}),
+        status: summaryState.status,
+        ...(lastHostInput ? { last_host_input: lastHostInput } : {}),
+        ...(lastSelfConclusion ? { last_self_conclusion: lastSelfConclusion } : {}),
+        ...(persistedSummary ? { room_consensus_summary: String(persistedSummary).replace(/\s+/g, ' ').trim().slice(0, 220) } : {}),
+        ...(cloneActiveSessions.length ? { active_sessions: cloneActiveSessions } : {}),
+      });
+    }
+    return items
+      .sort((a, b) => (b._sortOrigin - a._sortOrigin) || (b._sortActive - a._sortActive) || (b._updatedMs - a._updatedMs))
+      .slice(0, 6)
+      .map(({ _sortOrigin, _sortActive, _updatedMs, ...clean }) => clean);
+  }
+
+  inspectCloneInternal(inbox, conversation, { cursor, limit } = {}) {
+    if (conversation.session_id || cursor || limit !== undefined) {
+      return this.inspectLocal(inbox, conversation, {
+        cursor,
+        limit,
+        sessionInput: Boolean(conversation.session_id),
+        modelPage: true,
+      });
+    }
+    const runs = inbox.runs(conversation.id);
+    const last = this.inputRun(inbox, conversation, runs);
+    const state = this.localInputState(inbox, conversation, false, last);
+    const rid = conversation.space?.kind === 'room' ? conversation.space.id : null;
+    const roomRec = rid ? this.platform.store.get('rooms', rid) : null;
+    const publicSummary = rid ? this.platform.store.get('room-public-history', rid)?.summary || null : null;
+    let recentRoomMessages = [];
+    if (rid && roomRec) {
+      try {
+        const allMsgs = this.platform.room.roomMessages.all(rid).map(r => JSON.parse(r.data));
+        recentRoomMessages = allMsgs.slice(-16).map(m => ({
+          id: m.id,
+          sender: m.senderId === 'user' ? '宿主' : (m.senderName || this.platform.actorLabel(m.senderId)),
+          text: String(m.content || '').slice(0, 600),
+          ...(m.promptResponse ? { prompt_response: m.promptResponse } : {}),
+          time: m.createdAt,
+        }));
+      } catch {}
+    }
+    const recentInternalRuns = runs.slice(-5).map(r => {
+      const calls = inbox.calls(r.id).map(c => ({
+        id: c.id,
+        tool: c.tool,
+        state: c.state,
+        ...(c.args?.work_summary ? { work_summary: c.args.work_summary } : {}),
+        ...(c.result?.target ? { target: c.result.target } : {}),
+      }));
+      return {
+        run_id: r.id,
+        state: r.state,
+        updated_at: r.updated_at,
+        ...(calls.length ? { calls } : {}),
+        ...(typeof r.result?.text === 'string' && r.result.text.trim() ? { internal_thought: r.result.text.slice(0, 600) } : {}),
+      };
+    });
+    return {
+      kind: 'conversation',
+      id: conversation.id,
+      self_clone: true,
+      ...(rid ? { room: { id: rid, name: roomRec?.name || rid } } : {}),
+      ...state,
+      ...(publicSummary ? { room_consensus_summary: publicSummary } : {}),
+      recent_room_messages: recentRoomMessages,
+      recent_internal_runs: recentInternalRuns,
+      next_cursor: 'start',
+      note: '以上为你（同一 Bot 本体）在该分身的纯净群对话记录与内部执行脉络；如需逐条翻阅原始 transcript 可传 cursor:"start"。',
+    };
   }
 
   inspectLocal(inbox, conversation, { cursor, limit, sessionInput = false, modelPage = false } = {}) {

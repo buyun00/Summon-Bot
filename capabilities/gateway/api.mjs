@@ -130,6 +130,12 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       const id = decodeURIComponent(match[1]);
       return platform.capabilities.get(id, { lookupBot: id => platform.store.get(botRecords, id) });
     }
+    if (path === '/api/knowledge' && method === 'GET') {
+      return { dir: platform.knowledge.dir(), items: platform.knowledge.list() };
+    }
+    if (path === '/api/knowledge/file' && method === 'GET') {
+      return platform.knowledge.read(params.get('path') || '');
+    }
     if ((match = path.match(/^\/api\/engines\/([^/]+)\/file$/))) {
       const id = decodeURIComponent(match[1]);
       if (method === 'GET') {
@@ -176,7 +182,6 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
             const patch = { id, revision: bot.revision + 1 };
             if (typeof parsed.name === 'string' && parsed.name.trim()) {
               patch.name = parsed.name.trim().slice(0, 100);
-              if (bot.auto_name_pending) patch.auto_name_pending = false;
             }
             if (typeof parsed.public_duty === 'string') patch.public_duty = parsed.public_duty.trim().slice(0, 600);
             if (Array.isArray(parsed.env_slots)) patch.env_slots = parsed.env_slots;

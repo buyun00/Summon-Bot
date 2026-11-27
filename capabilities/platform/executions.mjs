@@ -72,6 +72,26 @@ export class Executions {
       AND json_extract(data,'$.owner_conversation_id')=?`).all(conversationId).map(row => JSON.parse(row.data));
   }
 
+  botWork(botId) {
+    return this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
+      AND (json_extract(data,'$.owner.id')=? OR json_extract(data,'$.execution_actor.id')=? OR json_extract(data,'$.bot_id')=?)`)
+      .all(botId, botId, botId)
+      .map(row => JSON.parse(row.data));
+  }
+
+  appendProgress(sessionId, stepText) {
+    if (!sessionId || typeof stepText !== 'string') return;
+    const cleaned = stepText.replace(/\s+/g, ' ').trim().slice(0, 160);
+    if (!cleaned) return;
+    const session = this.record({ kind: 'session', id: sessionId });
+    if (!session) return;
+    const list = Array.isArray(session.recent_progress) ? [...session.recent_progress] : [];
+    if (list.at(-1) === cleaned) return;
+    list.push(cleaned);
+    if (list.length > 6) list.splice(0, list.length - 6);
+    this.store.save(sessionRecords, { id: sessionId, recent_progress: list, updated_at: new Date().toISOString() });
+  }
+
   openChildren(sessionId) {
     const session = this.record({ kind: 'session', id: sessionId });
     if (!session) return [];
@@ -170,8 +190,7 @@ export class Executions {
     const { actor } = context;
     if (actor.kind === 'user') return true;
     if (target.kind === 'conversation') {
-      if (record.bot_id !== actor.id) return false;
-      return record.space?.kind !== 'room' || this.platform.roomMembers(record.space.id).includes(actor.id);
+      return record.bot_id === actor.id;
     }
     if (record.sharing || record.space?.kind === 'room') {
       return this.platform.roomMembers(record.space.id).includes(actor.id);
@@ -179,9 +198,21 @@ export class Executions {
     return sameIdentity(record.owner, actor) || sameIdentity(record.execution_actor, actor);
   }
 
+  canRead(target, record, context) {
+    if (this.permission(target, record, context)) return true;
+    if (!record || target.kind !== 'session' || record.private_work) return false;
+    return Boolean(record.origin_room && this.platform.canReadRoomHistory(context.actor, record.origin_room));
+  }
+
   require(target, context) {
     const record = this.record(target);
     if (!this.permission(target, record, context)) reject('execution_not_found', 'Execution is unavailable', 404);
+    return record;
+  }
+
+  requireReadable(target, context) {
+    const record = this.record(target);
+    if (!this.canRead(target, record, context)) reject('execution_not_found', 'Execution is unavailable', 404);
     return record;
   }
 
@@ -198,7 +229,7 @@ export class Executions {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
         sameRef(record.origin_room, scope) || scope.kind === 'bot' && record.bot_id === scope.id) &&
-        this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
+        this.canRead({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
 
   baseView(target, record, context, observation) {
@@ -222,7 +253,7 @@ export class Executions {
           plain_text: req.plain_text,
         }))
       : [];
-    const originRoomReadable = Boolean(!conversation && record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context));
+    const originRoomReadable = Boolean(!conversation && record.origin_room && this.platform.canReadRoomHistory(context.actor, record.origin_room));
     const originRoomName = originRoomReadable ? this.store.get('rooms', record.origin_room.id)?.name || null : null;
     const convRoomName = conversation && record.space?.kind === 'room' && this.platform.canReadSpace(context.actor, record.space, context)
       ? this.store.get('rooms', record.space.id)?.name || null
@@ -233,6 +264,7 @@ export class Executions {
       ...(record.origin_message_id ? { origin_message_id: record.origin_message_id } : {}),
       ...(record.owner_conversation_id ? { owner_conversation_id: record.owner_conversation_id } : {}),
       ...(record.work_summary ? { work_summary: record.work_summary } : {}),
+      ...(Array.isArray(record.recent_progress) && record.recent_progress.length ? { recent_progress: record.recent_progress } : {}),
       ...(record.created_at || record.createdAt ? { created_at: record.created_at || record.createdAt } : {}),
       ...(record.updated_at || record.updatedAt ? { updated_at: record.updated_at || record.updatedAt } : {}),
       ...(record.host_fallback_delivered_at ? { host_fallback_delivered_at: record.host_fallback_delivered_at } : {}),
@@ -261,9 +293,9 @@ export class Executions {
   }
 
   async read(target, context, args = {}) {
-    const record = this.require(target, context);
+    const record = this.requireReadable(target, context);
     const observation = await this.inspect(target, record, { cursor: args.cursor, limit: args.limit, modelPage: context.actor.kind === 'bot' });
-    const current = this.require(target, context);
+    const current = this.requireReadable(target, context);
     const safe = observation.safe_to_disconnect;
     if (target.kind === 'session' && current.control.state === 'paused' && current.control.stop_status !== 'stopped' &&
         current.latest_call_id === record.latest_call_id &&
@@ -589,6 +621,7 @@ export class Executions {
       pending_input: pendingInput,
       can_steer: facts.can_steer ?? (ended ? false : session.can_steer ?? false),
       can_continue: facts.can_continue ?? session.can_continue ?? false,
+      ...(Array.isArray(facts.recent_progress) && facts.recent_progress.length ? { recent_progress: facts.recent_progress } : {}),
       ...(ended ? { live_progress: null } : {}),
       ...(nextError ? { last_error: nextError } : clearError ? { last_error: null } : {}),
       safe_to_disconnect: facts.safe_to_disconnect,

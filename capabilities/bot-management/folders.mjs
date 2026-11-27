@@ -10,7 +10,7 @@ export function protectedRuntimeDirs(dataRoot, releaseRoot) {
   const root = resolve(dataRoot);
   const rel = resolve(releaseRoot);
   const installRoot = basename(dirname(rel)) === 'releases' ? dirname(dirname(rel)) : rel;
-  const dataProtected = ['config', 'capabilities', 'bots', 'engines', 'skills', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json', 'host-profile.md']
+  const dataProtected = ['config', 'capabilities', 'bots', 'engines', 'skills', 'knowledge', 'web', 'connectors', 'client-releases', 'history.json', 'installation.json', 'host-profile.md']
     .map(name => join(root, name));
   return [...dataProtected, installRoot];
 }
