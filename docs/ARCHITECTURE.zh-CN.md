@@ -9,15 +9,16 @@ Summon Bot 是本地自托管的多 Bot 群聊协作平台，采用单一正式�
 | 模块 | 职责 |
 | --- | --- |
 | `capabilities/gateway` | 统一回环网关、`/api/*` 路由、SSE 推送流与 APNs 生产推送队列 |
-| `capabilities/platform` | 协议 3（`X-Summon-Protocol: 3`）对象契约与处理器：Bot、Room、Event、File、Session、Conversation、Call、Wait、Wakeup、Connection、Workspace |
+| `capabilities/platform` | 协议 3（`X-Summon-Protocol: 3`）对象契约与处理器：Bot、Room、Goal、Event、File、Session、Conversation、Call、Wait、Wakeup、Workspace |
 | `capabilities/chatroom` | 群聊成员、消息、引用、附件、置顶与共享记录库（`capabilities/chatroom/state.sqlite`） |
-| `capabilities/bot-management` | Bot 创建、预置角色初始化、群主控同步创建、修订管理与启停控制 |
-| `capabilities/models` | 模型连接目录、按用途路由表、凭据存储与供应商额度快照 |
-| `capabilities/services` & `capabilities/connectors` | Codex App Server、Grok Build、Claude Code、本地 CLI、SSH、MCP、HTTP 的真实调用、进程管理与原生输入目标 |
-| `bot/src` | `BotRuntime`、快读收件器（`FastReadRuntime`）、Pi 引擎、上下文投影与主线/Fork 管理、资料索引与 Token 账本（`usage.sqlite`） |
-| `roles` & `skills` | 5 个内置角色说明（`roles/index.mjs`）与执行接入指南（`skills/summon-execution-onboarding/SKILL.md`） |
-| `web`、`desktop-tauri`、`ios`、`android` | 普通网页（Paper / Midnight）、Tauri 桌面外壳、SwiftUI iOS 26 原生客户端、Jetpack Compose Android 原生客户端 |
-| `scripts` | 发行构建（`scripts/build`）、正式安装与看门狗（`scripts/installation`）、数据维护（`scripts/maintenance`）与四端发布（`scripts/release`） |
+| `capabilities/bot-management` | Bot 创建、内置角色（`roles.mjs`）、Bot 目录（`instructions.md`、`skills/`、`scripts/`、`.local/memory/`）、宿主画像与启停控制 |
+| `capabilities/knowledge` & `capabilities/skills` | 全团队共享知识库（`D:/Relay-Bot-data/knowledge/`）与平台能力文档目录（`D:/Relay-Bot-data/skills/`） |
+| `capabilities/engines` & `capabilities/services` | 外部工作引擎（`agy`、`codex`、`claude-code`、`grok-build`）探测、桥接执行（`exec-runner.mjs`）、原生 `exec` 与宿主机安全凭据 |
+| `capabilities/models` | 模型连接目录、按用途与工作引擎分档路由表、凭据存储与供应商额度快照 |
+| `bot/src` | `BotRuntime`、快读收件器（`FastReadRuntime`）、Pi 引擎、上下文投影与主线/Fork 管理、Token 账本（`usage.sqlite`） |
+| `bundled-bots` / `bundled-engines` / `bundled-skills` | 预置 EggBot、内置工作引擎桥接脚本与 5 个核心能力文档（`chatroom`、`host-files`、`secrets`、`sessions`、`wakeups`） |
+| `web`、`desktop-tauri`、`ios`、`android` | 普通网页（Paper / Midnight）、Tauri 桌面端（内嵌 `summon-runtime`）、SwiftUI iOS 26 原生客户端、Jetpack Compose Android 原生客户端 |
+| `scripts` | 发行构建（`scripts/build`）、正式安装与桌面运行时管理（`scripts/installation`）、数据维护（`scripts/maintenance`）与四端发布（`scripts/release`） |
 
 ## 2. 聊干分离与三层运行机制
 

@@ -146,12 +146,17 @@ async function buildIos() {
 async function prepareWeb({ committedOnly = false, reuse = false } = {}) {
   if (process.platform !== 'win32') throw new Error('The existing production installation runs on Windows');
   const state = await readInstallationState(dataRoot);
-  if (state && state.phase !== 'done' && !flag('replace-pending')) {
+  if (state && state.phase !== 'done' && !flag('replace-pending') && !existsSync(join(state.release_root, 'tauri-boot-helper.mjs'))) {
     const expected = await readJson(join(state.release_root, 'release-manifest.json'));
     return { releaseRoot: state.release_root, expected, resuming: true };
   }
-  const base = state && (['runtime_ready', 'done'].includes(state.phase) ? state.release_root : state.previous_release);
-  const previous = base && await readJson(join(base, 'release-manifest.json'));
+  const deployment = existsSync(join(dataRoot, 'config', 'deployment.json'))
+    ? await readJson(join(dataRoot, 'config', 'deployment.json')).catch(() => null)
+    : null;
+  const base = (state && (['runtime_ready', 'done'].includes(state.phase) ? state.release_root : state.previous_release)) || deployment?.releaseRoot || null;
+  const previous = base && existsSync(join(base, 'release-manifest.json'))
+    ? await readJson(join(base, 'release-manifest.json')).catch(() => null)
+    : null;
   if (committedOnly && !buildSourceCommit) throw new Error('Select a Git commit for the web release');
   if (reuse && state?.phase === 'done' && previous?.sourceMode === 'git-archive' && previous.sourceCommit === buildSourceCommit) {
     return { releaseRoot: base, expected: previous };
@@ -237,13 +242,22 @@ if (process.platform === 'win32' && ['web', 'desktop', 'desktop-tauri', 'all'].i
     const runnerRoot = await mkdtemp(join(relayRoot, 'release-runner-'));
     const runner = join(runnerRoot, 'node.exe');
     try {
-      const installation = existsSync(installationStatePath(dataRoot)) ? await readInstallationState(dataRoot) : null;
-      let runtime = process.env.SUMMON_RELEASE_NODE;
-      if (!runtime) {
-        const selected = installation?.release_root || (await readJson(join(appRoot, 'current.json'))).releaseRoot;
-        runtime = join(selected, 'runtime/node.exe');
-      }
-      if (!existsSync(runtime)) throw new Error('Set SUMMON_RELEASE_NODE to an installed Node runtime with the Windows TCP keepalive fix');
+      const installation = existsSync(installationStatePath(dataRoot)) ? await readInstallationState(dataRoot).catch(() => null) : null;
+      const deployment = existsSync(join(dataRoot, 'config', 'deployment.json'))
+        ? await readJson(join(dataRoot, 'config', 'deployment.json')).catch(() => null)
+        : null;
+      const currentApp = existsSync(join(appRoot, 'current.json'))
+        ? await readJson(join(appRoot, 'current.json')).catch(() => null)
+        : null;
+      const candidates = [
+        process.env.SUMMON_RELEASE_NODE,
+        installation?.release_root && join(installation.release_root, 'runtime/node.exe'),
+        deployment?.releaseRoot && join(deployment.releaseRoot, 'runtime/node.exe'),
+        process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Summon Bot', 'summon-runtime', 'runtime/node.exe'),
+        currentApp?.releaseRoot && join(currentApp.releaseRoot, 'runtime/node.exe'),
+      ].filter(Boolean);
+      const runtime = candidates.find(candidate => existsSync(candidate));
+      if (!runtime) throw new Error('Set SUMMON_RELEASE_NODE to an installed Node runtime with the Windows TCP keepalive fix');
       await copyFile(runtime, runner);
       await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, SUMMON_RELEASE_RUNNER: '1' } });
     } finally { await removeInside(relayRoot, runnerRoot); }

@@ -71,21 +71,8 @@ async function main() {
     return;
   }
 
-  let needsEmbeddedDeps = true;
-  try {
-    const depPath = join(dataRoot, 'config', 'deployment.json');
-    if (existsSync(depPath)) {
-      const dep = JSON.parse(readFileSync(depPath, 'utf8'));
-      if (dep?.releaseRoot && resolve(dep.releaseRoot).toLowerCase() !== resolve(runtimeRoot).toLowerCase() && existsSync(dep.releaseRoot)) {
-        needsEmbeddedDeps = false;
-      }
-    }
-  } catch {}
-
-  if (needsEmbeddedDeps) {
-    if (existsSync(join(runtimeRoot, 'node_modules.tar'))) {
-      await stopLocalInstance({ dataRoot, releaseRoot: runtimeRoot }).catch(() => {});
-    }
+  if (existsSync(join(runtimeRoot, 'node_modules.tar'))) {
+    await stopLocalInstance({ dataRoot, releaseRoot: runtimeRoot }).catch(() => {});
     await ensureRuntimeDependencies();
   }
 

@@ -79,7 +79,8 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       const enrichRoom = roomItem => {
         const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });
         const goal = platform.goals.view(roomItem.id);
-        return { ...roomItem, room_files, ...(goal ? { goal } : { goal: null }) };
+        const activities = platform.runtime?.roomActivities?.(roomItem.id) || [];
+        return { ...roomItem, room_files, activities, ...(goal ? { goal } : { goal: null }) };
       };
       const allRooms = room.rooms(user.id).map(enrichRoom);
       const state = {

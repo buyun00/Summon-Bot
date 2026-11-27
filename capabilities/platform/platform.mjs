@@ -1401,7 +1401,10 @@ export class SummonPlatform {
       }
       if (sendResult?.message) {
         if (actor.kind === 'user') this.goals.onUserMessage(id);
-        else if (args.prompt || args.awaiting_reply === true) this.goals.onAwaitingUser(id);
+        else if (args.prompt || args.awaiting_reply === true) {
+          const reason = args.prompt?.title || args.prompt?.questions?.[0]?.label || '';
+          this.goals.onAwaitingUser(id, reason);
+        }
         else this.goals.onRoomActivity(id, 'bot_message');
       }
       return sendResult;

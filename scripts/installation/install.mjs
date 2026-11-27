@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readdir, realpath, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyTree, parseArgs, readJson, removeInside, within, writeJson } from './files.mjs';
@@ -12,6 +13,8 @@ import { acquireServiceLock } from './service-lock.mjs';
 import { createDeployment, deploymentPath, startSystem } from './system.mjs';
 
 const launchers = ['Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
+const syncRuntimeDirs = ['bot', 'web', 'capabilities', 'bundled-bots', 'bundled-engines', 'bundled-skills', 'scripts', 'node_modules'];
+const syncRuntimeFiles = ['package.json', 'release.json', 'release-manifest.json', ...launchers];
 const readOptional = async path => {
   try { return await readJson(path); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -56,11 +59,7 @@ async function installLauncher(source, target) {
   } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 
-async function cleanReleases({ appRoot, sourceRoot, destination }) {
-  for (const entry of await entries(join(appRoot, 'releases'))) {
-    const file = join(appRoot, 'releases', entry.name);
-    if (resolve(file) !== destination) await removeInside(appRoot, file);
-  }
+async function cleanSourceBuilds(sourceRoot) {
   if (!sourceRoot) return;
   for (const entry of await entries(join(sourceRoot, 'dist', 'releases'))) {
     const owner = Number(/\.building-(\d+)$/.exec(entry.name)?.[1]);
@@ -72,10 +71,19 @@ async function cleanReleases({ appRoot, sourceRoot, destination }) {
   }
 }
 
-async function startSelected(config, appRoot, previousIntent, resumeRuntime) {
+async function cleanReleases({ appRoot, sourceRoot, destination }) {
+  for (const entry of await entries(join(appRoot, 'releases'))) {
+    const file = join(appRoot, 'releases', entry.name);
+    if (resolve(file) !== destination) await removeInside(appRoot, file);
+  }
+  await cleanSourceBuilds(sourceRoot);
+}
+
+async function startSelected(config, launcherRoot, previousIntent, resumeRuntime) {
   if (previousIntent === 'stopped' || config.runIntent === 'stopped') return 'stopped';
-  if (process.platform === 'win32' && !resumeRuntime) {
-    const args = ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot, '-RespectIntent'];
+  const startScript = join(launcherRoot, 'Start.ps1');
+  if (process.platform === 'win32' && !resumeRuntime && existsSync(startScript)) {
+    const args = ['-NoProfile', '-NonInteractive', '-File', startScript, '-DataRoot', config.dataRoot, '-RespectIntent'];
     await new Promise((accept, reject) => {
       const launcher = spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });
       const timer = setTimeout(() => {
@@ -101,6 +109,104 @@ async function startSelected(config, appRoot, previousIntent, resumeRuntime) {
   return 'running';
 }
 
+async function syncTauriRuntime({ releaseRoot, dataRoot, sourceRoot, deployment, manifest, publicOrigin = '',
+  onCopyProgress, onProgress, requireClients = false, drainTimeoutMs, signal }) {
+  const targetRoot = resolve(deployment.releaseRoot);
+  if (within(targetRoot, dataRoot) || within(dataRoot, targetRoot)) {
+    throw new Error('Business data must be separate from the desktop runtime');
+  }
+  if (process.platform === 'win32' && within(await realpath(targetRoot), await realpath(process.execPath))) {
+    throw new Error('Run the installer with Node outside the installed runtime directory');
+  }
+  const bootId = randomUUID();
+  const ownership = await acquireServiceLock(dataRoot, 'installation', () => ({ pid: process.pid, bootId, state: 'installing' }));
+  try {
+    const previousManifest = await candidate(targetRoot).catch(() => null);
+    const previous = { ...deployment, dataRoot, releaseRoot: targetRoot };
+    const owner = currentWriters(previous);
+    const gateway = await owner.gateway();
+    if (gateway.state === 'ready') {
+      const result = await installationRequest(previous, gateway, 'GET', signal);
+      if (result.supportsDrain !== true) throw new Error('The current gateway lacks a protocol drain handler');
+    }
+    if (requireClients || (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion)) {
+      try {
+        await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+      } catch (error) {
+        if (requireClients) throw error;
+        console.warn(`[Summon Install Warning] Protocol version changed (${previousManifest.protocolVersion} -> ${manifest.protocolVersion}) without all client packages published: ${error.message}`);
+      }
+    }
+    let state = await writeInstallationState(dataRoot, {
+      schemaVersion: 1,
+      phase: 'prepared',
+      migration_id: randomUUID(),
+      target_build: manifest.buildId,
+      target_format: manifest.dataFormat,
+      release_root: targetRoot,
+      previous_release: targetRoot,
+      previousIntent: deployment.runIntent ?? 'running',
+      source_root: sourceRoot ?? deployment.sourceRoot ?? null,
+    });
+    onProgress?.({ phase: state.phase, buildId: manifest.buildId });
+    state = await enterDrain({ dataRoot, state, previous, owner });
+    state = await finishDrain({ dataRoot, state, previous, owner, onProgress, timeoutMs: drainTimeoutMs, signal });
+    signal?.throwIfAborted();
+    state = await advanceInstallation(dataRoot, state, 'converting');
+    onProgress?.({ phase: state.phase, buildId: manifest.buildId });
+    await owner.assertStopped({ drain: state.drain });
+
+    await rm(join(targetRoot, 'node_modules.tar'), { force: true }).catch(() => {});
+    for (const dir of syncRuntimeDirs) {
+      const srcDir = join(releaseRoot, dir);
+      if (!existsSync(srcDir)) continue;
+      const destDir = join(targetRoot, dir);
+      await rm(destDir, { recursive: true, force: true });
+      await copyTree(srcDir, destDir, undefined, onCopyProgress);
+    }
+    for (const file of syncRuntimeFiles) {
+      const srcFile = join(releaseRoot, file);
+      if (!existsSync(srcFile)) continue;
+      await copyFile(srcFile, join(targetRoot, file));
+    }
+    if (sourceRoot && existsSync(join(sourceRoot, 'desktop-tauri', 'boot-helper.mjs'))) {
+      await copyFile(join(sourceRoot, 'desktop-tauri', 'boot-helper.mjs'), join(targetRoot, 'tauri-boot-helper.mjs'));
+    }
+    const targetNode = join(targetRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+    if (!existsSync(targetNode) && existsSync(join(releaseRoot, 'runtime'))) {
+      await copyTree(join(releaseRoot, 'runtime'), join(targetRoot, 'runtime'));
+    }
+
+    await stageConfiguration({ dataRoot, state, deployment, publicOrigin });
+    state = await advanceInstallation(dataRoot, state, 'data_ready');
+    const staged = await readJson(join(dataRoot, 'config', `deployment.${state.migration_id}.json`));
+    const nextDeployment = { ...staged, installedBuildId: manifest.buildId };
+    await writeJson(deploymentPath(dataRoot), nextDeployment);
+    const selectedAt = new Date().toISOString();
+    state = await advanceInstallation(dataRoot, state, 'runtime_ready', { selected_at: selectedAt });
+    onProgress?.({ phase: state.phase, buildId: manifest.buildId });
+
+    signal?.throwIfAborted();
+    const runtimeState = await startSelected(nextDeployment, targetRoot, state.previousIntent, false);
+    try {
+      await cleanSourceBuilds(state.source_root);
+      await unlink(join(dataRoot, 'config', `deployment.${state.migration_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    } catch (error) {
+      return { schemaVersion: 1, releaseRoot: targetRoot, buildId: manifest.buildId, dataRoot, selectedAt,
+        sourceCommit: manifest.sourceCommit, runtimeState, cleanupPending: error.message };
+    }
+    await writeInstallationState(dataRoot, {
+      schemaVersion: 1,
+      phase: 'done',
+      target_build: manifest.buildId,
+      target_format: manifest.dataFormat,
+      release_root: targetRoot,
+    });
+    return { schemaVersion: 1, releaseRoot: targetRoot, buildId: manifest.buildId, dataRoot, selectedAt,
+      sourceCommit: manifest.sourceCommit, runtimeState };
+  } finally { await ownership.close(); }
+}
+
 export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoot, defaultCwd, publicOrigin = '', port = 8787,
   onCopyProgress, onProgress, replacePending = false, requireClients = false, drainTimeoutMs, signal } = {}) {
   signal?.throwIfAborted();
@@ -116,6 +222,13 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     if (source.name !== 'summon-bot') throw new Error('Invalid Summon Bot source root for build cleanup');
   }
   const manifest = await candidate(releaseRoot);
+  const existingDeployment = await readOptional(deploymentPath(dataRoot));
+  if (existingDeployment?.releaseRoot && existsSync(join(existingDeployment.releaseRoot, 'tauri-boot-helper.mjs'))) {
+    return syncTauriRuntime({
+      releaseRoot, dataRoot, sourceRoot, deployment: existingDeployment, manifest, publicOrigin,
+      onCopyProgress, onProgress, requireClients, drainTimeoutMs, signal,
+    });
+  }
   const destination = join(appRoot, 'releases', manifest.buildId);
   await mkdir(dataRoot, { recursive: true });
   await mkdir(appRoot, { recursive: true });

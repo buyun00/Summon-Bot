@@ -2,18 +2,18 @@
 
 # 运行维护
 
-Summon Bot 仅运行唯一正式环境：业务数据根目录为 `D:/Relay-Bot-data`，后端程序安装目录为 `D:/Relay-Bot-app`。公网入口 `https://bot.lin0.org` 与本机入口 `http://127.0.0.1:8787` 共用同一实例与数据。
+Summon Bot 仅运行唯一正式环境：业务数据根目录为 `D:/Relay-Bot-data`，运行主体统一为独立安装的 Tauri 桌面客户端内置运行时（`%LOCALAPPDATA%/Summon Bot/summon-runtime`）。公网入口 `https://bot.lin0.org` 与本机入口 `http://127.0.0.1:8787` 共用同一实例与数据。
 
 ## 1. 启停、状态与日志
 
 ```powershell
-& D:/Relay-Bot-app/Start.ps1 -DataRoot D:/Relay-Bot-data
-& D:/Relay-Bot-app/Stop.ps1 -DataRoot D:/Relay-Bot-data
+& "$env:LOCALAPPDATA\Summon Bot\summon-runtime\Start.ps1" -DataRoot D:/Relay-Bot-data
+& "$env:LOCALAPPDATA\Summon Bot\summon-runtime\Stop.ps1" -DataRoot D:/Relay-Bot-data
 npm run summon:status -- --data-root D:/Relay-Bot-data
 ```
 
-- Windows 启动入口使用选定发行物自带的 Node 运行时；双击 `Start-Hidden.vbs` 或 `Run.cmd` 可隐藏终端窗口启动。
-- 计划任务 StartupHub `Summon Bot` 通过同一入口运行看门狗，依据服务身份自动恢复意外退出的 Web 与网关进程。正常停止会记录运行意图；用户主动暂停的 Bot、对话与执行会话在重启后继续维持暂停状态。
+- 独立桌面端更新时通过 NSIS（Windows）或公证 DMG（macOS）自动停服、覆盖 `summon-runtime` 并重启新版；关闭桌面窗口不会停止后台服务，`https://bot.lin0.org` 与手机端保持持续在线。
+- 计划任务 StartupHub `Summon Bot` 指向 Tauri 内置 `summon-runtime/Start-Hidden.vbs` 运行看门狗，依据服务身份自动恢复意外退出的 Web 与网关进程；桌面端升级前会自动优雅停止看门狗，升级完成后重新拉起。正常停止会记录运行意图；用户主动暂停的 Bot、对话与执行会话在重启后继续维持暂停状态。
 - 网关与 Web 就绪后本机入口立即可用，Web 在后台恢复已登记的自管远程连接器（Tailscale / Cloudflare Tunnel），恢复结果体现在 `summon:status` 中；远程连接不可用时不影响本机正常使用。
 - 配置文件说明：
   - `config/deployment.json`（Schema v4，数据格式 3）：记录当前选定的发行目录、监听地址、访问令牌（`web.accessToken`）、初始模型配置、日志轮转与宿主资源上限。

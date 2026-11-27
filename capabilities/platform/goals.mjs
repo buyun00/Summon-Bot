@@ -261,14 +261,16 @@ export class GoalManager {
     this.platform.emit('room', { id: roomId });
   }
 
-  onAwaitingUser(roomId) {
+  onAwaitingUser(roomId, reason = '') {
     const goal = this.get(roomId);
     if (!goal || goal.status !== 'active') return;
     const nowIso = new Date().toISOString();
     const steps = (goal.steps || []).map(s => ({ ...s }));
     const active = steps.find(s => s.status === 'in_progress') || steps.find(s => s.status === 'pending');
+    const note = cleanText(reason, 260);
     if (active) {
       active.status = 'awaiting_user';
+      if (note) active.note = note;
       active.updated_at = nowIso;
     }
     this.platform.store.save(goalRecords, {

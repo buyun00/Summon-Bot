@@ -2,27 +2,22 @@
 
 # EggBot 与内置角色
 
-Summon Bot 不要求用户在开局前手写复杂的角色配置表。平台内置 5 种核心角色（定义于 `roles/index.mjs`），由默认常驻的 **EggBot**、**接口 Bot** 以及建群时自动生成的 **群主控** 协同完成日常对话主持、工具接入维护与按需团队孵化。
+Summon Bot 不要求用户在开局前手写复杂的角色配置表。平台内置 3 种核心角色（定义于 `capabilities/bot-management/roles.mjs`），由全平台常驻主控 **Summon**、团队孵化伙伴 **EggBot** 与按需创建的长期专职成员协同完成日常需求推进、重活委派与团队扩张。
 
-## 1. 五种内置角色
+## 1. 三种内置角色
 
 | `role_id` | 显示名称 | 职责与默认行为 |
 | --- | --- | --- |
-| `default` | 普通成员 | 通用协作伙伴。简洁推进分配到的任务并在拿到结论后统一汇报；需要宿主选择或确认时使用 `send` 的 `prompt` 选择框。 |
-| `group-lead` | 群主控（群聊主持） | 每个普通群聊创建时同步生成（ID 为 `bot-lead-<roomId>`）。默认承接本群常规需求、未 `@` 指定他人的消息与选择框作答，拆解推进任务并做好收口；群内已有专责成员承接时不抢活。 |
-| `eggbot` | EggBot（团队孵化） | 团队孵化与协作改善伙伴。默认退居幕后观察群内分工与缺口，不抢答常规需求；仅在被 `@` 点名、直接追问、发现长期职责缺口或周期观察发现明显卡点/遗漏时介入。 |
-| `tool-onboarding` | 接口 Bot | 总接口 Bot。帮助查询、复用、接入本机 CLI / MCP / HTTP / SSH / 外部编码器连接并协调维修；支持在维护群（`room-default-bot-maintenance`）按日程复盘工具调用统计。 |
-| `catalog-maintainer` | 连接维护者 | 绑定到具体执行连接的专责维护 Bot。收到 `connection.repair.request` 或探测失配时，核查版本、帮助、方法与脚本，按授权修复并实调验证后用 `send(..., reply_to)` 回报原连接事件。 |
+| `group-lead` | 主控（Summon） | 全平台常驻主控，以分身形态入驻所有普通群聊与维护群（ID 为 `bot-lead-room-default-bot-maintenance`），跨群共享内部大脑与记忆。负责承接需求、区分调研（`inquiry`）与执行（`execute`）、把关方案、委派工作引擎与统筹收口；在系统维护群中还兼管工作引擎自检与桥接自愈。 |
+| `eggbot` | EggBot（团队孵化） | 团队孵化与协作改善伙伴（`bot-default-eggbot-local`）。日常顺畅时静默旁听；被 `@`、讨论分工、需要衍生独立业务群或发现长期专业缺口时介入，优先复用老成员，确有长期专业空白时才招新。 |
+| `default` | 专职成员 | 长期负责某专业领域的赛博员工，在各群的分身上下文彼此隔离防串台、内部记忆与工作会话互通；重活优先整包派给工作引擎（如 `agy` / `codex`），工位内审活后再向群内交付。 |
 
-> 说明：普通专责成员（如关卡策划、前端视觉、运维专员、测试工程师等）由 EggBot 或用户通过 `create_bot` 动态创建，填写清晰的 `public_duty` 与私有 `instructions`，无需新增硬编码内置角色。
+> 说明：工作引擎（`agy`、`codex`、`claude-code`、`grok-build`）由平台在 `D:/Relay-Bot-data/engines/` 统一提供，无需为其创建独立 Bot 成员。
 
 ## 2. 预置 Bot 与自动入群机制
 
-- **实例启动预置**：Summon 启动时自动创建或复用两个全局预置 Bot：
-  - `bot-default-eggbot-local`（EggBot）
-  - `bot-default-tool-onboarding-local`（接口 Bot）
-  已有预置 Bot 保留用户调整过的模型、指令和启停状态；新建预置 Bot 默认采用 `model: { mode: "follow_default" }`，跟随实例默认模型配置。
-- **建群自动编队**：通过 `create_room` 创建普通群聊（`mode: "group"`）时，平台自动同步创建该群专属的 **群主控**（`group-lead`），并将启用的 **EggBot** 与 **接口 Bot** 一并加入群成员，同时可绑定一个可写项目工作区。已有群聊仍以实际成员列表为准。
+- **实例启动预置**：Summon 启动时自动创建或复用全局主控 **Summon**（`bot-lead-room-default-bot-maintenance`）与 **EggBot**（`bot-default-eggbot-local`），均默认跟随实例默认模型配置。
+- **建群自动编队**：通过 `create_room` 创建普通群聊（`mode: "group"`）时，默认自动入驻常驻主控 **Summon** 分身与 **EggBot**，可同时绑定项目工作区与指定专职成员。已有群聊仍以实际成员列表为准。
 
 ## 3. EggBot 的观察、复用与孵化流程
 

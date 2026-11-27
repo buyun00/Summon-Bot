@@ -70,13 +70,13 @@ export async function buildTauriDesktop({ platform, arch, output, candidate, com
     await rm(setupDistDir, { recursive: true, force: true });
     await mkdir(setupDistDir, { recursive: true });
 
-    // 1. Build summon-runtime (with bundled Node 24.21+ LTS) directly into staged-resources
+    // 1. Build summon-runtime (with bundled Node 24.21+ LTS and launchers) directly into staged-resources
     const bundled = await buildRelease({
       sourceRoot: root,
       releaseRoot: runtime,
       committedOnly: !candidate,
       commit,
-      includeLaunchers: false,
+      includeLaunchers: true,
     });
 
     // 2. Stage desktop setup assets & helper from commit or workspace

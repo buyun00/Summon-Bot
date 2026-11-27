@@ -78,5 +78,5 @@ npm run release:web -- --committed-only
 
 ## 5. 正式环境边界与 PWA 退出
 
-- 后端仅运行 `D:/Relay-Bot-app` 中的正式安装，业务数据位于 `D:/Relay-Bot-data`，入口与端口固定不变。源码 `dist/` 仅供后端构建中转；`D:/Relay-Bot-data/client-releases` 不作为后端构建中间目录清理，各目标只保留当前最新发行物。
+- 本机仅运行独立 Tauri 桌面端内置的 `summon-runtime`（`%LOCALAPPDATA%/Summon Bot/summon-runtime`），业务数据位于 `D:/Relay-Bot-data`，入口与端口固定不变。源码 `dist/` 仅供构建中转；`D:/Relay-Bot-data/client-releases` 不作为后端构建中间目录清理，各目标只保留当前最新发行物。
 - 网页不再提供 PWA 安装或离线缓存。旧 `/sw.js` 仅用于清理历史离线页面缓存并注销自身，同时保留聊天草稿与连接设置等必要本地数据。

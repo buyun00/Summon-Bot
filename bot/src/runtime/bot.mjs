@@ -1051,6 +1051,7 @@ export class BotRuntime {
     const initialActivitySeq = isRoomConv && this.platform.currentRoomActivitySeq
       ? this.platform.currentRoomActivitySeq(conversation.space.id) : null;
     const job = { inbox, conversation, botId: bot.id, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
+      startedAt: run.first_started_at || now(),
       seenRoomSequence: null,
       roomActivityStartSeq: initialActivitySeq,
       seenRoomActivitySeq: initialActivitySeq,
@@ -1234,6 +1235,9 @@ export class BotRuntime {
           progress: activeRoomGoal.progress,
           steps: activeRoomGoal.steps,
         },
+        ...(activeRoomGoal.status === 'awaiting_user' ? {
+          note: '当前群目标处于 awaiting_user。若本轮宿主消息已回应确认、切到了新问题或旧任务已结束，务必调用 update_goal 更新步骤、标记 completed 或 clear:true，避免旧目标长期滞留；若仍需宿主确认，务必在对应步骤 note 中写清具体需要确认什么。',
+        } : {}),
       }));
     }
     const workEngines = this.platform.workEngines?.() || [];
@@ -2096,8 +2100,8 @@ export class BotRuntime {
         text: live?.text || convLive?.text || '正在处理中',
         work_summary: existing?.work_summary || null,
         execution_ref: live?.execution_ref || executionRef,
-        started_at: live?.started_at || existing?.started_at || now(),
-        updated_at: live?.updated_at || convLive?.updated_at || now(),
+        started_at: live?.started_at || existing?.started_at || job.startedAt,
+        updated_at: live?.updated_at || convLive?.updated_at || job.startedAt,
       });
     }
 

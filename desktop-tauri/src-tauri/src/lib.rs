@@ -1456,10 +1456,7 @@ async fn stop_bundled_runtime_before_update(app: &AppHandle) {
     if !is_bundled || !node_bin.exists() || !helper_path.exists() {
         return;
     }
-    let profile = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("summon-bot"));
+    let profile = profile_root();
     let mut cmd = tokio::process::Command::new(&node_bin);
     cmd.arg(&helper_path)
         .arg("--stop-local")
@@ -1475,7 +1472,7 @@ async fn stop_bundled_runtime_before_update(app: &AppHandle) {
         cmd.creation_flags(0x08000000);
     }
     if let Ok(mut child) = cmd.spawn() {
-        let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(15), child.wait()).await;
     }
 }
 

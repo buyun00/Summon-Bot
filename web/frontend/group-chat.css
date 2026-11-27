@@ -62,6 +62,7 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .group-face.pos-1 { right: 0; top: 0; z-index: 2; }
 .group-face.pos-2 { left: 0; bottom: 0; z-index: 3; }
 .group-face.pos-3 { right: 0; bottom: 0; z-index: 4; }
+.group-face.is-working { z-index: 6; }
 .group-face .bot-avatar, .group-face .user-avatar { filter: none; border-radius: 0; background: transparent; }
 .group-avatar .group-face > .bot-avatar { width: 100% !important; height: 100% !important; }
 .group-avatar .group-face .summon-bot-face { width: 100% !important; height: 100% !important; }

@@ -1343,11 +1343,11 @@ async function loadCurrent() {
   ui.roomGoal = goal ?? null;
   const activeIndex = state.rooms.findIndex(item => item.id === id);
   if (room && activeIndex >= 0 && room.revision >= state.rooms[activeIndex].revision) {
-    state.rooms[activeIndex] = { ...room, goal: goal ?? null };
+    state.rooms[activeIndex] = { ...state.rooms[activeIndex], ...room, activities: ui.roomActivities, goal: goal ?? null };
   }
   const archivedIndex = (state.archivedRooms || []).findIndex(item => item.id === id);
   if (room && archivedIndex >= 0 && room.revision >= state.archivedRooms[archivedIndex].revision) {
-    state.archivedRooms[archivedIndex] = { ...room, goal: goal ?? null };
+    state.archivedRooms[archivedIndex] = { ...state.archivedRooms[archivedIndex], ...room, activities: ui.roomActivities, goal: goal ?? null };
   }
   const roomRef = encodeURIComponent(id);
   const roomDetails = [
@@ -2697,7 +2697,10 @@ async function act(action, element) {
     ui.roomGoal = null;
     const room = roomById(ui.roomId);
     if (room) room.goal = null;
+    const cached = ui.messageCache.get(ui.roomId);
+    if (cached?.snapshot) cached.snapshot.goal = null;
     ui.openRoomExecution = null;
+    render();
     return refresh();
   }
   if (action === 'scroll-to-work') {
@@ -3277,18 +3280,37 @@ function renderUserAvatar(size) {
   const iconSize = Math.max(14, Math.round(size * 0.56));
   return `<span class="user-avatar is-guest" style="width:${size}px;height:${size}px" aria-hidden="true"><svg viewBox="0 0 24 24" width="${iconSize}" height="${iconSize}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.2" r="3.6"/><path d="M5.2 19.2c.9-3.2 3.5-5 6.8-5s5.9 1.8 6.8 5"/></svg></span>`;
 }
-function avatar(id, large = false, key = '') {
+function avatar(id, large = false, key = '', motionOverride = null) {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
   if (id === 'user') return renderUserAvatar(size);
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
-  const motion = key ? (botActivity(botById(id)).motion || 'idle') : 'idle';
+  const motion = motionOverride ?? (key ? (botActivity(botById(id)).motion || 'idle') : 'idle');
   return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, static: !key, identity: `bot:${id}`, state: motion })}</span>`;
 }
-function groupAvatar(room, size = 96, _key = '') {
+function groupAvatar(room, size = 96, key = '') {
   const bots = (room?.members || []).filter(id => botById(id));
-  const members = (bots.length ? bots : (room?.members || []).filter(id => id === 'user')).slice(0, 4);
+  const workingIds = key ? roomWorkingBotIds(room) : new Set();
+  let members = (bots.length ? bots : (room?.members || []).filter(id => id === 'user')).slice(0, 4);
+  if (bots.length > 4 && workingIds.size) {
+    const missingWorking = bots.slice(4).filter(id => workingIds.has(id));
+    if (missingWorking.length) {
+      const next = [...members];
+      let slot = next.length - 1;
+      for (const wid of missingWorking) {
+        while (slot >= 0 && workingIds.has(next[slot])) slot--;
+        if (slot < 0) break;
+        next[slot--] = wid;
+      }
+      members = next;
+    }
+  }
   if (!members.length) return `<span class="group-avatar group-avatar-empty" style="width:${size}px;height:${size}px">${icon('chat', Math.round(size * .6))}</span>`;
-  return `<span class="group-avatar" data-count="${members.length}" style="width:${size}px;height:${size}px">${members.map((id, index) => `<span class="group-face pos-${index}">${avatar(id, members.length === 1 ? size : Math.round(size * .64), '')}</span>`).join('')}</span>`;
+  return `<span class="group-avatar" data-count="${members.length}" style="width:${size}px;height:${size}px">${members.map((id, index) => {
+    const isWorking = workingIds.has(id);
+    const faceKey = key && botById(id) ? `${key}:${id}` : '';
+    const liveKey = faceKey && (isWorking || window.SummonAvatars?.has?.(faceKey)) ? faceKey : '';
+    return `<span class="group-face pos-${index}${isWorking ? ' is-working' : ''}">${avatar(id, members.length === 1 ? size : Math.round(size * .64), liveKey, isWorking ? 'work' : 'idle')}</span>`;
+  }).join('')}</span>`;
 }
 function currentBot() {
   const room = roomById(ui.roomId);
@@ -3422,25 +3444,69 @@ function deleteHomeFolder(id) {
   homeOrg.collapsedIds = homeOrg.collapsedIds.filter(x => x !== id);
   saveHomeOrg(); renderTopbar();
 }
-function roomExclusiveLiveBot(room) {
-  const members = (room?.members || []).filter(id => id !== 'user');
-  const candidates = [];
-  if (room?.lead_bot_id) {
-    const lead = botById(room.lead_bot_id);
-    if (lead) candidates.push(lead);
+function roomLiveActivities(room) {
+  if (!room?.id || isArchivedRoom(room)) return [];
+  const hub = window.SummonHub;
+  const activeNodeId = hub?.state?.activeNodeId || '';
+  const sameNode = !room._nodeId || room._nodeId === activeNodeId;
+  if (sameNode && room.id === ui.roomId && ui.view === 'chat' && !ui.creatingRoom) {
+    const members = (room.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
+    return collectRoomActivityItems(room, members);
   }
-  for (const id of members) {
-    if (id === room?.lead_bot_id) continue;
-    const bot = botById(id);
-    if (!bot || isBuiltinGroupBot(bot)) continue;
-    const roomCount = state.rooms.filter(r => !directRoom(r) && r.members.includes(id)).length;
-    if (roomCount <= 1) candidates.push(bot);
+  const seen = new Set(), items = [];
+  for (const act of room.activities || []) {
+    const botId = act.bot_id;
+    if (!botId || !botById(botId) || seen.has(botId)) continue;
+    seen.add(botId);
+    items.push({
+      botId,
+      name: nameOf(botId),
+      text: act.text || '正在处理中',
+      workSummary: act.work_summary || null,
+      phase: act.phase || 'thinking',
+      ref: act.execution_ref || null,
+      startedAt: parseTimestampMs(act.started_at),
+      updatedAt: parseTimestampMs(act.updated_at || act.started_at),
+    });
   }
-  for (const bot of candidates) {
-    const act = botActivity(bot);
-    if (['running', 'waiting'].includes(act.kind)) return { bot, activity: act };
+  if (!items.length && sameNode) {
+    const opt = ui.optimisticRoomWork?.[room.id];
+    if (opt && Date.now() - opt.startedAt <= 12000 && botById(opt.botId)) {
+      items.push({
+        botId: opt.botId,
+        name: nameOf(opt.botId),
+        text: room.auto_title_pending ? '正在理解需求并命名群聊' : '正在工作',
+        workSummary: null,
+        phase: 'thinking',
+        ref: null,
+        startedAt: opt.startedAt,
+        updatedAt: opt.startedAt,
+      });
+    }
   }
-  return null;
+  return items;
+}
+
+function roomWorkingBotIds(room) {
+  const live = ui.streamConnected && !ui.connectionNotice;
+  if (!live || !room?.id || isArchivedRoom(room)) return new Set();
+  return new Set(roomLiveActivities(room).map(item => item.botId));
+}
+
+function roomLivePreview(room) {
+  const items = roomLiveActivities(room);
+  if (!items.length) return null;
+  const ranked = [...items].sort((a, b) => (WORK_PHASE_RANK[b.phase] ?? 1) - (WORK_PHASE_RANK[a.phase] ?? 1));
+  const substantive = ranked.filter(it => it.phase !== 'fast_read');
+  const displayItems = substantive.length ? substantive : ranked;
+  const primary = displayItems[0];
+  const hasWaitingInput = displayItems.some(it => it.phase === 'waiting_input');
+  const preview = hasWaitingInput
+    ? `${primary.name} · 等待输入`
+    : displayItems.length > 1
+      ? `${displayItems.length} 位伙伴工作中`
+      : `${primary.name} · 工作中`;
+  return { primary, items: displayItems, hasWaitingInput, preview };
 }
 
 function buildHomeEntries(sourceRooms = state.rooms) {
@@ -3455,10 +3521,10 @@ function buildHomeEntries(sourceRooms = state.rooms) {
     const sameNode = !nodeId || nodeId === activeNodeId;
     const archived = isArchivedRoom(room);
     const last = room.lastMessage;
-    const active = !archived && live && sameNode ? roomExclusiveLiveBot(room) : null;
+    const active = !archived && live ? roomLivePreview(room) : null;
     const running = Boolean(active);
     const preview = active
-      ? `${active.bot.name} · ${active.activity.text}`
+      ? active.preview
       : last ? roomPreview(room) : (archived ? '已归档' : '开始聊天');
     const fullPreview = last?.content?.trim() || preview;
     entries.push({
@@ -4192,7 +4258,7 @@ function renderMessageAcks(message, timeline) {
   }).join('')}</div>`;
 }
 
-function renderChatMessage(message, timeline, grouped, isGroup, previous = null) {
+function renderChatMessage(message, timeline, grouped, isGroup, previous = null, workingBotIds = null, roomId = ui.roomId) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
   const senderLabel = message.senderName || nameOf(sender);
   const rawParent = message.replyTo ? timeline.find(item => item.id === message.replyTo) : null;
@@ -4202,8 +4268,11 @@ function renderChatMessage(message, timeline, grouped, isGroup, previous = null)
   const mentions = message.mentions || [];
   const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(senderLabel)}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
   const ownTime = own && message.createdAt ? `<time class="outgoing-time" datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time>` : '';
+  const msgAvatarKey = `msg:${roomId || ''}:${message.id}`;
+  const isSenderWorking = Boolean(workingBotIds?.has(sender));
+  const liveMsgKey = isSenderWorking || window.SummonAvatars?.has?.(msgAvatarKey) ? msgAvatarKey : '';
   const avatarSlot = own || (!isGroup && !platform) ? '' : grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
-    ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'')}</button>`
+    ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,liveMsgKey,isSenderWorking ? 'work' : 'idle')}</button>`
     : `<span class="message-avatar">${avatar(sender,36,'')}</span>`;
   const reply = showReplyQuote ? `<button type="button" class="reply-quote" data-action="open-reference" data-kind="event" data-id="${esc(message.replyTo)}">
     <strong>${esc(parent ? nameOf(parent.senderId) : '引用消息')}</strong><span>${esc(parent ? messagePreview(parent) : '查看原文')}</span></button>` : '';
@@ -4307,6 +4376,10 @@ function renderChat() {
   if (!room) return renderNewGroupDraft();
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
   const title = room?.name || '消息';
+  const archived = isArchivedRoom(room);
+  const liveWorkItems = archived ? [] : collectRoomActivityItems(room, members);
+  const liveWork = archived ? null : summarizeRoomWork(room, liveWorkItems);
+  const workingBotIds = new Set(liveWorkItems.map(item => item.botId));
   const timeline = mergedRoomMessages(ui.roomId, ui.messages);
   const visibleTimeline = timeline.filter(message => !message.promptResponse);
   let previousDay = '';
@@ -4317,11 +4390,8 @@ function renderChat() {
     const divider = day !== previousDay ? `<div class="date-divider">${esc(day)}</div>` : '';
     const grouped = day === previousDay && previous?.senderId === message.senderId && !previous?.prompt && elapsed >= 0 && elapsed <= 120000;
     previousDay = day;
-    return divider + renderChatMessage(message, timeline, grouped, isGroup, previous);
+    return divider + renderChatMessage(message, timeline, grouped, isGroup, previous, workingBotIds, room.id);
   }).join('');
-  const archived = isArchivedRoom(room);
-  const liveWorkItems = archived ? [] : collectRoomActivityItems(room, members);
-  const liveWork = archived ? null : summarizeRoomWork(room, liveWorkItems);
   const subtitleHtml = archived
     ? `<small>${esc(`已归档 · ${members.length} 位伙伴`)}</small>`
     : liveWork
@@ -4333,7 +4403,7 @@ function renderChat() {
       : (isGroup ? `<small>${esc(`${members.length} 位伙伴`)}</small>` : bot ? `<small>${esc(botActivity(bot).text)}</small>` : '');
   const header = `<div class="floating-header"><div class="header-left"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack',23)}</button>
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
-    ${room ? `<button type="button" class="chat-title-pill ${liveWork ? 'is-working' : ''}" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
+    ${room ? `<button type="button" class="chat-title-pill ${liveWork ? 'is-working' : ''}" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,`slot:title:${room.id}`,workingBotIds.has(bot.id) ? 'work' : 'idle') : groupAvatar(room,30,`slot:title-group:${room.id}`)}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitleHtml}</span></button>` : ''}
     <div class="chat-header-actions">${room && archived
         ? `<button type="button" class="secondary-button small-button" data-action="restore-room" data-id="${esc(room.id)}">移出归档</button>`
@@ -4430,25 +4500,6 @@ function collectRoomActivityItems(room, members) {
       startedAt: parseTimestampMs(exec.created_at),
       updatedAt: parseTimestampMs(exec.updated_at || exec.created_at),
     });
-  }
-  if (directRoom(room)) {
-    for (const member of members) {
-      if (seen.has(member.id)) continue;
-      const act = botActivity(member);
-      if (act.kind === 'running') {
-        seen.add(member.id);
-        items.push({
-          botId: member.id,
-          name: member.name,
-          text: act.text === '等待输入' ? '等待你的输入' : '正在处理中',
-          workSummary: null,
-          phase: 'thinking',
-          ref: null,
-          startedAt: 0,
-          updatedAt: 0,
-        });
-      }
-    }
   }
   if (!items.length && room?.id) {
     const opt = ui.optimisticRoomWork?.[room.id];
@@ -4600,6 +4651,30 @@ function renderGoalStepMarker(step, index) {
   return `<span class="goal-step-marker is-pending" aria-label="待执行">${index + 1}</span>`;
 }
 
+function findUnansweredRoomPrompt(room) {
+  if (!room?.id || ui.roomId !== room.id) return null;
+  const timeline = mergedRoomMessages(room.id, ui.messages);
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const msg = timeline[i];
+    if (msg.senderId === 'user' || !msg.prompt?.questions?.length) continue;
+    if (!findPromptAnswer(msg, timeline)) return msg;
+  }
+  return null;
+}
+
+function goalAwaitingContext(room, goal, snap) {
+  const promptMsg = findUnansweredRoomPrompt(room);
+  const promptText = promptMsg?.prompt?.title || promptMsg?.prompt?.questions?.[0]?.label || '';
+  const stepNote = snap?.active?.note || '';
+  const detail = promptText || stepNote;
+  return {
+    hasExplicitQuestion: Boolean(detail),
+    detail,
+    badgeText: detail ? '等待确认' : '待你回复',
+    promptMsg,
+  };
+}
+
 function renderRoomExecutionDrawer(room, liveItems) {
   if (ui.openRoomExecution !== room.id) return '';
   const goal = currentRoomGoal(room);
@@ -4613,21 +4688,30 @@ function renderRoomExecutionDrawer(room, liveItems) {
   const recentFinished = allExecutions.filter(e => !LIVE_EXEC_STATUSES.has(e.status)).slice(0, 3);
   const executions = [...liveExecutions, ...recentFinished];
   const liveBotsInExec = new Set(liveExecutions.map(e => e.execution_actor?.id || e.bot_id));
+  const liveBotIds = new Set([...liveBotsInExec, ...liveItems.map(item => item.botId)]);
   const activeCount = liveExecutions.length + liveItems.filter(item => !liveBotsInExec.has(item.botId)).length;
 
   if (goal && ui.roomDrawerMode !== 'executions') {
     const snap = goalStepSnapshot(goal);
     const intentBadge = goalIntentBadge(goal);
+    const awaiting = goal.status === 'awaiting_user' ? goalAwaitingContext(room, goal, snap) : null;
     const statusMap = {
       active: goal.stalled ? { text: '已暂停', cls: 'warn' } : { text: '进行中', cls: 'live' },
-      awaiting_user: { text: '等待确认', cls: 'warn' },
+      awaiting_user: { text: awaiting?.badgeText || '待你回复', cls: 'warn' },
       completed: { text: '已完成', cls: 'done' },
       stopped: { text: '已停止', cls: '' },
     };
     const badge = statusMap[goal.status] || { text: '进行中', cls: 'live' };
     const canStop = goal.status === 'active' || activeCount > 0;
     const canResume = Boolean(goal.stalled || goal.status === 'stopped');
-    const canClear = Boolean(goal.status === 'completed' || goal.status === 'stopped' || goal.stalled);
+    const canClear = Boolean(goal.status === 'completed' || goal.status === 'stopped' || goal.status === 'awaiting_user' || goal.stalled || activeCount === 0);
+    const awaitingBannerHtml = goal.status === 'awaiting_user'
+      ? `<div class="goal-stall-banner">${esc(
+          awaiting?.hasExplicitQuestion
+            ? `当前等待你确认：${awaiting.detail}`
+            : `当前等待你的下一步回复（${snap.active?.title || goal.title}）。如已结束或无需继续，可直接点击「清除」关闭此目标。`
+        )}</div>`
+      : '';
     const stepRows = snap.steps.map((step, idx) => {
       const ownerId = step.owner || null;
       const ownerLabel = ownerId === 'user' ? '宿主' : (ownerId ? nameOf(ownerId) : '');
@@ -4642,12 +4726,14 @@ function renderRoomExecutionDrawer(room, liveItems) {
       const liveLabel = liveExec
         ? `${executionLabel(liveExec)} · ${liveExec.live_progress || liveExec.work_summary || '执行中'}`
         : (matchedLive ? matchedLive.text : '');
+      const ownerWorking = Boolean(ownerIsBot && liveBotIds.has(ownerId));
+      const ownerAvatarKey = ownerWorking ? `drawer-step:${room.id}:${step.id}:${ownerId}` : '';
       return `<div class="goal-step-item is-${esc(step.status)}">
         ${renderGoalStepMarker(step, idx)}
         <div class="goal-step-body">
           <div class="goal-step-top">
             <span class="goal-step-title">${esc(step.title)}</span>
-            ${ownerLabel ? `<span class="goal-step-owner">${ownerIsBot ? avatar(ownerId, 16, '') : ''}${esc(ownerLabel)}</span>` : ''}
+            ${ownerLabel ? `<span class="goal-step-owner">${ownerIsBot ? avatar(ownerId, 16, ownerAvatarKey, ownerWorking ? 'work' : 'idle') : ''}${esc(ownerLabel)}</span>` : ''}
           </div>
           ${step.note ? `<div class="goal-step-note">${esc(step.note)}</div>` : ''}
           ${liveLabel ? (liveRef
@@ -4673,7 +4759,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
         </div>
       </div>
       ${goal.done_criteria ? `<div class="goal-criteria">验收：${esc(goal.done_criteria)}</div>` : ''}
-      ${goal.stalled && goal.stall_reason ? `<div class="goal-stall-banner">${esc(goal.stall_reason)}</div>` : ''}
+      ${goal.stalled && goal.stall_reason ? `<div class="goal-stall-banner">${esc(goal.stall_reason)}</div>` : awaitingBannerHtml}
       <div class="goal-plan-list">${stepRows}</div>
     </section>`;
   }
@@ -4697,7 +4783,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
       : (item.live_progress || item.work_summary || '');
     const error = executionError(item);
     return `<button type="button" class="bot-execution-item ${isLive ? 'is-live' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
-      ${botId && botById(botId) ? avatar(botId, 24, '') : `<span class="bot-execution-dot ${isLive ? 'live' : ''}"></span>`}
+      ${botId && botById(botId) ? avatar(botId, 24, isLive ? `drawer-exec:${room.id}:${ref.id}:${botId}` : '', isLive ? 'work' : 'idle') : `<span class="bot-execution-dot ${isLive ? 'live' : ''}"></span>`}
       <div class="bot-execution-copy">
         <div class="bot-execution-top">
           <strong>${esc(botId ? nameOf(botId) : executionLabel(item))}</strong>
@@ -4735,11 +4821,12 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
       ? active.owner
       : (goal.owner_bot_id && botById(goal.owner_bot_id) ? goal.owner_bot_id : null);
     const avatarHtml = displayItems.length
-      ? `<div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">${displayItems.slice(0, 2).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}</div>`
+      ? `<div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">${displayItems.slice(0, 3).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}</div>`
       : ownerBotId
-        ? `<div class="cwb-avatars">${face(botAvatar(ownerBotId), 24, { key: `composer-goal:${room.id}:${ownerBotId}`, identity: `bot:${ownerBotId}`, state: goal.status === 'active' && !goal.stalled ? 'work' : 'idle' })}</div>`
+        ? `<div class="cwb-avatars">${face(botAvatar(ownerBotId), 24, { key: `composer-goal:${room.id}:${ownerBotId}`, identity: `bot:${ownerBotId}`, state: 'idle' })}</div>`
         : `<span class="goal-band-dot is-${esc(goal.stalled ? 'warn' : goal.status)}"></span>`;
 
+    const awaiting = goal.status === 'awaiting_user' ? goalAwaitingContext(room, goal, snap) : null;
     let labelText = '';
     let stepHtml = '';
     if (goal.status === 'completed') {
@@ -4749,11 +4836,12 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
       labelText = '计划已停止';
       stepHtml = `<span class="cwb-step is-muted">${esc(goal.title)}</span>`;
     } else if (goal.stalled) {
-      labelText = `已暂停 · 第 ${snap.activeIdx}/${snap.total} 步`;
+      labelText = '已暂停';
       stepHtml = `<span class="cwb-quiet">${esc(active?.title || goal.title)}（点击查看或继续）</span>`;
     } else if (goal.status === 'awaiting_user') {
-      labelText = `等待确认 · 第 ${snap.activeIdx}/${snap.total} 步`;
-      stepHtml = `<span class="cwb-waiting">${esc(active?.title || goal.title)}</span>`;
+      labelText = awaiting?.badgeText || '待你回复';
+      const detailText = awaiting?.detail || active?.title || goal.title;
+      stepHtml = `<span class="cwb-waiting">${esc(detailText)}</span>`;
     } else {
       labelText = `第 ${snap.activeIdx}/${snap.total} 步`;
       const stepTitle = active?.title || goal.title;
@@ -4768,24 +4856,28 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
     const elapsedLabel = showTimer ? formatElapsedClock(Date.now() - startedMs) : '';
     const railDeterminate = goal.status === 'completed' || goal.status === 'stopped' || goal.status === 'awaiting_user' || goal.stalled || snap.done > 0;
     const railPct = goal.status === 'completed' ? 100 : (snap.total > 0 ? Math.max(snap.done > 0 ? Math.round((snap.done / snap.total) * 100) : 8, 8) : 0);
+    const canQuickClear = !isRunning && (['completed', 'stopped', 'awaiting_user'].includes(goal.status) || goal.stalled);
 
-    return `<button type="button" class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}"
-        data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
-        title="${esc(intentBadge.text + ' · ' + goal.title)}（点击${drawerOpen ? '收起' : '展开'}当前计划）">
-      <div class="cwb-row">
-        ${avatarHtml}
-        <span class="goal-intent-pill ${esc(intentBadge.cls)}" title="${esc(intentBadge.title)}">${esc(intentBadge.text)}</span>
-        <span class="cwb-name">${esc(labelText)}</span>
-        <span class="cwb-sep">·</span>
-        ${stepHtml}
-        <span class="cwb-batch">${snap.done}/${snap.total} 步</span>
-        ${showTimer ? `<span class="cwb-timer" data-live-timer data-started-at="${startedMs}">${esc(elapsedLabel)}</span>` : ''}
-        <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
-      </div>
+    return `<div class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}">
+      <button type="button" class="cwb-main"
+          data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
+          title="${esc(intentBadge.text + ' · ' + goal.title)}（点击${drawerOpen ? '收起' : '展开'}当前计划）">
+        <div class="cwb-row">
+          ${avatarHtml}
+          <span class="goal-intent-pill ${esc(intentBadge.cls)}" title="${esc(intentBadge.title)}">${esc(intentBadge.text)}</span>
+          <span class="cwb-name">${esc(labelText)}</span>
+          <span class="cwb-sep">·</span>
+          ${stepHtml}
+          <span class="cwb-batch">${snap.done}/${snap.total} 步</span>
+          ${showTimer ? `<span class="cwb-timer" data-live-timer data-started-at="${startedMs}">${esc(elapsedLabel)}</span>` : ''}
+          <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
+        </div>
+      </button>
+      ${canQuickClear ? `<button type="button" class="cwb-dismiss" data-action="clear-room-goal" title="清除此目标" aria-label="清除此目标">${icon('close', 14)}</button>` : ''}
       <div class="cwb-rail ${railDeterminate ? 'is-determinate' : ''}" aria-hidden="true">
         <span class="cwb-rail-fill" ${railDeterminate ? `style="width:${railPct}%"` : ''}></span>
       </div>
-    </button>`;
+    </div>`;
   }
 
   if (!work || !items.length) return '';
@@ -4796,24 +4888,26 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
     : `<span class="${work.hasWaitingInput ? 'cwb-waiting' : 'shimmer-status'} cwb-step">${esc(primary.text)}</span>`;
   const elapsedLabel = formatElapsedClock(work.elapsedMs);
 
-  return `<button type="button" class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}"
-      data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
-      title="${esc(work.actorLabel + ' · ' + primary.text)}（点击${drawerOpen ? '收起' : '查看'}执行过程）">
-    <div class="cwb-row">
-      <div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">
-        ${displayItems.slice(0, 2).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
+  return `<div class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}">
+    <button type="button" class="cwb-main"
+        data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
+        title="${esc(work.actorLabel + ' · ' + primary.text)}（点击${drawerOpen ? '收起' : '查看'}执行过程）">
+      <div class="cwb-row">
+        <div class="cwb-avatars ${displayItems.length > 1 ? 'is-multi' : ''}">
+          ${displayItems.slice(0, 3).map(item => face(botAvatar(item.botId), 24, { key: `composer-work:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })).join('')}
+        </div>
+        <span class="cwb-name">${esc(work.actorLabel)}</span>
+        <span class="cwb-sep">·</span>
+        ${stepHtml}
+        ${work.batchText ? `<span class="cwb-batch">${esc(work.batchText)}</span>` : ''}
+        <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
+        <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
       </div>
-      <span class="cwb-name">${esc(work.actorLabel)}</span>
-      <span class="cwb-sep">·</span>
-      ${stepHtml}
-      ${work.batchText ? `<span class="cwb-batch">${esc(work.batchText)}</span>` : ''}
-      <span class="cwb-timer" data-live-timer data-started-at="${work.startedAt}">${esc(elapsedLabel)}</span>
-      <span class="cwb-chevron" aria-hidden="true">${drawerOpen ? '▴' : '▾'}</span>
-    </div>
+    </button>
     <div class="cwb-rail ${work.progressPct != null ? 'is-determinate' : ''}" aria-hidden="true">
       <span class="cwb-rail-fill" ${work.progressPct != null ? `style="width:${work.progressPct}%"` : ''}></span>
     </div>
-  </button>`;
+  </div>`;
 }
 
 let liveWorkClockTimer = null;
@@ -4905,11 +4999,15 @@ function renderDetailPanel(room, bot) {
   let body;
   if (bot && ui.avatarEditing) body = renderAvatarPicker('edit');
   else if (tab === 'members') {
+    const workingIds = roomWorkingBotIds(room);
     body = `<div class="profile-members">${room.members.map(id => {
       const memberBot = botById(id);
       const badge = room.lead_bot_id === id || memberBot?.role_id === 'group-lead' ? '主控'
         : memberBot?.role_id === 'eggbot' ? '孵化' : '';
-      return `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44)}<span>${esc(nameOf(id))}${badge ? ` <em class="member-role-badge">${esc(badge)}</em>` : ''}</span></button>`;
+      const isWorking = workingIds.has(id);
+      const memberKey = `detail-member:${room.id}:${id}`;
+      const liveKey = memberBot && (isWorking || window.SummonAvatars?.has?.(memberKey)) ? memberKey : '';
+      return `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44,liveKey,isWorking ? 'work' : 'idle')}<span>${esc(nameOf(id))}${badge ? ` <em class="member-role-badge">${esc(badge)}</em>` : ''}</span></button>`;
     }).join('')}
       ${isArchivedRoom(room) ? '' : `<button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button>`}</div>`;
   } else if (tab === 'library') {

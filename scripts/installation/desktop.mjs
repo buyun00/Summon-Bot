@@ -1,15 +1,18 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { instanceProof } from '../../web/backend/instance-probe.mjs';
 import { parseArgs, readJson, writeJson } from './files.mjs';
 import { protocolVersion } from '../../capabilities/platform/contract.mjs';
-import { dataFormat } from './installation-state.mjs';
+import { dataFormat, readInstallationState, writeInstallationState } from './installation-state.mjs';
+import { inspectServiceLock } from './service-lock.mjs';
 import { inspectService, serviceRunPath, startSystem, stopSystem } from './system.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -19,6 +22,30 @@ const formalDataRoot = 'D:/Relay-Bot-data';
 export const formalOrigin = 'http://127.0.0.1:8787';
 const defaultProfile = () => join(process.platform === 'win32' ? process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
   : join(homedir(), 'Library', 'Application Support'), 'Relay');
+const samePath = (left, right) => {
+  const norm = value => (process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value));
+  return norm(left) === norm(right);
+};
+
+async function waitForWatchdogExit(dataRoot, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const owner = await inspectServiceLock(dataRoot, 'watchdog').catch(() => null);
+    if (!owner) return;
+    await pause(Math.min(250, deadline - Date.now()));
+  }
+}
+
+function wakeWindowsWatchdogTask() {
+  if (process.platform !== 'win32') return;
+  try {
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command',
+      "$t = Get-ScheduledTask -TaskName 'Summon Bot' -TaskPath '\\' -ErrorAction SilentlyContinue; if ($t -and $t.State -ne 'Running') { Start-ScheduledTask -InputObject $t }",
+    ], { detached: true, windowsHide: true, stdio: 'ignore' });
+    child.unref();
+  } catch {}
+}
 
 export function resolveLocalDataRoot(requested, profileRoot = defaultProfile()) {
   if (requested) return resolve(requested);
@@ -26,10 +53,6 @@ export function resolveLocalDataRoot(requested, profileRoot = defaultProfile()) 
     return formalDataRoot;
   }
   return join(resolve(profileRoot), 'data');
-}
-
-function isExternalFormalRoot(dataRoot) {
-  return process.platform === 'win32' && resolve(dataRoot).toLowerCase() === resolve(formalDataRoot).toLowerCase();
 }
 
 export function releaseBuildId(releaseRoot) {
@@ -50,19 +73,17 @@ export function releaseBuildId(releaseRoot) {
   return null;
 }
 
-export async function stopLocalInstance({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot } = {}) {
+export async function stopLocalInstance({ dataRoot = resolveLocalDataRoot() } = {}) {
   const file = join(resolve(dataRoot), 'config', 'deployment.json');
   if (!existsSync(file)) return false;
   let config;
   try { config = await readJson(file); } catch { return false; }
-  if (isExternalFormalRoot(config.dataRoot)) return false;
-  if (releaseRoot && config.releaseRoot && resolve(config.releaseRoot).toLowerCase() !== resolve(releaseRoot).toLowerCase()) {
-    return false;
-  }
   const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
   const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
-  if (webState.state === 'stopped' && gwState.state === 'stopped') return false;
+  const watchdog = await inspectServiceLock(config.dataRoot, 'watchdog').catch(() => null);
+  if (webState.state === 'stopped' && gwState.state === 'stopped' && !watchdog) return false;
   await stopSystem(config).catch(() => {});
+  if (watchdog) await waitForWatchdogExit(config.dataRoot, 8000);
   return true;
 }
 
@@ -72,7 +93,6 @@ export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(),
   await mkdir(join(dataRoot, 'config'), { recursive: true });
   await mkdir(join(dataRoot, 'workspace', 'scripts'), { recursive: true });
   const token = () => randomBytes(32).toString('base64url');
-  const selfManaged = !isExternalFormalRoot(dataRoot);
   const buildId = releaseBuildId(releaseRoot);
   const config = {
     schemaVersion: 4,
@@ -86,7 +106,7 @@ export async function ensureLocalDeployment({ dataRoot = resolveLocalDataRoot(),
     gatewayToken: token(),
     controlToken: token(),
     gateway: { host: '127.0.0.1', port: 0 },
-    web: { host: '127.0.0.1', port: 8787, autoPort: selfManaged, accessToken: token() },
+    web: { host: '127.0.0.1', port: 8787, autoPort: true, accessToken: token() },
     logs: { maxBytes: 5 * 1024 * 1024, maxFiles: 3 },
   };
   await writeJson(file, config);
@@ -115,29 +135,40 @@ async function probeLocalInstance(origin, accessToken) {
 export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot, onProgress } = {}) {
   onProgress?.({ stage: 'prepare' });
   let config = await ensureLocalDeployment({ dataRoot, releaseRoot });
-  const selfManaged = !isExternalFormalRoot(config.dataRoot);
   const file = join(config.dataRoot, 'config', 'deployment.json');
-  const desiredRelease = selfManaged && existsSync(releaseRoot)
+  const desiredRelease = existsSync(releaseRoot)
     ? resolve(releaseRoot)
     : (existsSync(config.releaseRoot) ? resolve(config.releaseRoot) : resolve(releaseRoot));
-  const desiredBuildId = selfManaged ? releaseBuildId(desiredRelease) : null;
+  const desiredBuildId = releaseBuildId(desiredRelease);
   const buildChanged = Boolean(desiredBuildId && config.installedBuildId !== desiredBuildId);
+  const releaseChanged = !config.releaseRoot || !samePath(config.releaseRoot, desiredRelease);
+  const installState = await readInstallationState(config.dataRoot).catch(() => null);
+  const stateMismatch = Boolean(installState && installState.phase === 'done' && !samePath(installState.release_root, desiredRelease));
+  const installInFlight = Boolean(installState && !['runtime_ready', 'done'].includes(installState.phase));
 
-  if (selfManaged && (resolve(config.releaseRoot) !== desiredRelease || buildChanged || config.web?.autoPort !== true)) {
+  if (!installInFlight && (releaseChanged || buildChanged || stateMismatch)) {
     const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
     const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
-    if (webState.state !== 'stopped' || gwState.state !== 'stopped') {
+    const watchdog = await inspectServiceLock(config.dataRoot, 'watchdog').catch(() => null);
+    if (webState.state !== 'stopped' || gwState.state !== 'stopped' || watchdog) {
       onProgress?.({ stage: 'upgrade' });
       await stopSystem(config).catch(() => {});
+      if (watchdog) await waitForWatchdogExit(config.dataRoot, 8000);
     }
     config = {
       ...config,
       releaseRoot: desiredRelease,
       ...(desiredBuildId ? { installedBuildId: desiredBuildId } : {}),
       runIntent: 'running',
-      web: { ...config.web, autoPort: true },
     };
     await writeJson(file, config);
+    await writeInstallationState(config.dataRoot, {
+      schemaVersion: 1,
+      phase: 'done',
+      target_build: desiredBuildId || 'desktop-runtime',
+      target_format: dataFormat,
+      release_root: desiredRelease,
+    });
   }
 
   let origin = await currentWebOrigin(config);
@@ -145,6 +176,7 @@ export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), re
     return { config, origin };
   }
   await startSystem(config, { onProgress });
+  wakeWindowsWatchdogTask();
   config = await readJson(file);
   origin = await currentWebOrigin(config);
   return { config, origin };

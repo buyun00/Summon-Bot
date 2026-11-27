@@ -1,5 +1,5 @@
 !macro NSIS_HOOK_PREINSTALL
-  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "& { param($$r) $$d = [IO.Path]::GetFullPath($$r).ToLowerInvariant(); Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.ToLowerInvariant().StartsWith($$d) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue } }" "$INSTDIR\summon-runtime"'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "& { param($$r) Stop-ScheduledTask -TaskName ''Summon Bot'' -ErrorAction SilentlyContinue; $$d = [IO.Path]::GetFullPath($$r).ToLowerInvariant(); Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.ToLowerInvariant().StartsWith($$d) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue } }" "$INSTDIR\summon-runtime"'
   Pop $0
   Pop $1
   Sleep 350

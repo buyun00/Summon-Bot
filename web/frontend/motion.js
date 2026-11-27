@@ -215,7 +215,7 @@
     }
     const node = event.target.closest('button,summary');
     if (!node || node.disabled || reduced.matches) return;
-    if (node.matches('.composer-work-band,.message-attachment-open,.prompt-option,[data-no-press-scale]')) return;
+    if (node.matches('.composer-work-band,.cwb-main,.message-attachment-open,.prompt-option,[data-no-press-scale]')) return;
     releasePress();
     const scale = node.matches('.contact-row,.group-tile,summary,.context-menu button') ? '.975' : '.9';
     const animation = node.animate([{ scale: '1' }, { scale }], { duration: 100, easing: 'ease-out', fill: 'forwards' });
