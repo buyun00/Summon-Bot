@@ -17,6 +17,13 @@ private enum ModelBrandLibrary {
         return value
     }()
     static func brand(_ item: SummonJSONValue) -> String {
+        if item["role"].stringValue == "executor" {
+            let hint = "\(item["kind"].stringValue) \(item["id"].stringValue)".lowercased()
+            if hint.contains("agy") || hint.contains("antigravity") { return "gemini" }
+            if hint.contains("codex") { return "codex" }
+            if hint.contains("claude") { return "claudecode" }
+            if hint.contains("grok") { return "grok" }
+        }
         let model = item["model"].stringValue.lowercased()
         for rule in catalog["models"].array ?? [] { let pair = rule.array ?? []; if pair.count == 2, model.range(of: pair[0].stringValue, options: .regularExpression) != nil { return pair[1].stringValue } }
         for key in ["provider", "kind"] { if let id = catalog["aliases"][item[key].stringValue.lowercased()].string { return id } }
@@ -30,6 +37,13 @@ private struct ModelBrandImage: View {
     var size: CGFloat = 24
     var body: some View { Image("AI-\(ModelBrandLibrary.brand(item))").resizable().renderingMode(.template).scaledToFit().foregroundStyle(modelTint).frame(width: size, height: size) }
 }
+private func modelWindowDuration(_ window: SummonJSONValue) -> Int? {
+    if let minutes = window["durationMinutes"].int { return minutes }
+    let name = window["name"].stringValue
+    if name.range(of: "每周|周额|week", options: [.regularExpression, .caseInsensitive]) != nil { return 10080 }
+    if name.range(of: "5\\s*小时|5\\s*hour", options: [.regularExpression, .caseInsensitive]) != nil { return 300 }
+    return nil
+}
 private struct ModelGaugeData {
     var ring: Double?
     var dots: Int?
@@ -37,18 +51,34 @@ private struct ModelGaugeData {
     var loading = false
     var showsBrand = true
     init(_ item: SummonJSONValue) {
+        let executor = item["role"].stringValue == "executor"
         let usage = item["usage"]
-        if item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured" { value = "待配置"; showsBrand = false; return }
+        let awaiting = executor
+            ? (item["enabled"].bool == false || item["configured"].bool == false)
+            : (item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured")
+        if awaiting {
+            let label = item["label"].stringValue
+            value = label.isEmpty ? (executor ? "未启用" : "待配置") : label
+            showsBrand = false
+            return
+        }
+        if usage["unsupported"].bool == true || usage["status"].string == "unsupported" {
+            ring = 100
+            value = "已连接"
+            return
+        }
         if usage.object == nil || usage["status"].string == "loading" { value = "读取中"; loading = true; return }
         let windows = (usage["windows"].array ?? []).filter { $0["remainingPercent"].modelNumber != nil }
-        let primary = windows
-        let main = primary.first { $0["durationMinutes"].int == 10080 } ?? primary.first
-        let short = primary.first { $0["durationMinutes"].int == 300 && $0 != main }
+        let primaryPool = windows.filter { ["primary", "codex"].contains($0["limitId"].stringValue) }
+        let primary = primaryPool.isEmpty ? windows : primaryPool
+        let main = primary.first { modelWindowDuration($0) == 10080 } ?? primary.first
+        let short = primary.first { modelWindowDuration($0) == 300 && $0 != main }
         let money = (usage["balances"].array ?? []) + (usage["balance"].object != nil ? [usage["balance"]] : [])
-        if item["kind"].stringValue == "api" { ring = 100; if let balance = money.first(where: { $0["currency"].stringValue == "CNY" }) ?? money.first { value = modelMoney(balance) }; return }
+        if item["kind"].stringValue == "api" { ring = 100; value = (money.first(where: { $0["currency"].stringValue == "CNY" }) ?? money.first).map(modelMoney) ?? "暂无余额"; return }
         if let main, let remaining = main["remainingPercent"].modelNumber { ring = min(100, max(0, remaining)) }
         if let short, let remaining = short["remainingPercent"].modelNumber { dots = Int(ceil(min(100, max(0, remaining)) / 25)); value = "" }
         else if let ring { value = "\(Int(ring.rounded()))%" }
+        else { value = "暂无额度" }
     }
 }
 struct ModelQuotaSignal: View {
@@ -81,8 +111,17 @@ private struct ModelUsageDetails: View {
     let item: SummonJSONValue
     var body: some View {
         let usage = item["usage"]
+        let isExecutor = item["role"].stringValue == "executor"
+        let enabledEngines = (item["enabledEngines"].array ?? []).compactMap { $0["shortLabel"].string ?? $0["name"].string }.filter { !$0.isEmpty }
+        let subtitle = item["model"].stringValue.isEmpty ? (isExecutor ? item["roleLabel"].stringValue : "") : item["model"].stringValue
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) { ModelBrandImage(item: item, size: 32); VStack(alignment: .leading, spacing: 5) { Text(item["name"].stringValue).summonFont(.headline); Text(item["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary) } }
+            HStack(spacing: 12) {
+                ModelBrandImage(item: item, size: 32)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item["name"].stringValue).summonFont(.headline)
+                    if !subtitle.isEmpty { Text(subtitle).summonFont(.caption).foregroundStyle(.secondary) }
+                }
+            }
             ForEach(Array(((usage["balances"].array ?? []) + (usage["balance"].object != nil ? [usage["balance"]] : [])).enumerated()), id: \.offset) { _, balance in Text(modelMoney(balance)).summonFont(.title2).foregroundStyle(modelTint) }
             ForEach(Array((usage["windows"].array ?? []).enumerated()), id: \.offset) { _, window in
                 VStack(alignment: .leading, spacing: 8) {
@@ -93,12 +132,14 @@ private struct ModelUsageDetails: View {
             }
             if usage["credits"].modelNumber != nil { Text("附加点数 \(usage["credits"].stringValue) credits").summonFont(.caption).foregroundStyle(.secondary) }
             if usage["unlimited"].bool == true { Text("额外额度不设限").foregroundStyle(modelTint) }
-            if usage["status"].stringValue == "not_connected" { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
+            if usage["status"].stringValue == "not_connected" { Text(usage["note"].stringValue.isEmpty ? "未启用" : usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "unconfigured" { Text("选择默认模型后读取额度").summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "loading" { Text("正在读取额度…").summonFont(.caption).foregroundStyle(.secondary) }
-            else if ["shared", "unsupported"].contains(usage["status"].stringValue) { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
-            else if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : usage["error"].stringValue).summonFont(.caption).foregroundStyle(.orange) }
+            else if usage["unsupported"].bool == true || usage["status"].stringValue == "unsupported" { Text(usage["note"].stringValue.isEmpty ? "已连接 · 未提供额度接口" : usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "shared" { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : (usage["error"].stringValue.isEmpty ? "暂时无法读取" : usage["error"].stringValue)).summonFont(.caption).foregroundStyle(.orange) }
             else if (usage["windows"].array ?? []).isEmpty && (usage["balances"].array ?? []).isEmpty && usage["balance"].object == nil { Text("供应商未返回额度数值").summonFont(.caption).foregroundStyle(.secondary) }
+            if isExecutor && enabledEngines.count > 1 { Text("已启用：\(enabledEngines.joined(separator: " · "))").summonFont(.caption).foregroundStyle(.secondary) }
             if let checked = SummonDate.parse(usage["checkedAt"].string) { Text("更新于 \(checked.formatted(date: .abbreviated, time: .shortened))").summonFont(.caption).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -110,7 +151,7 @@ struct ModelQuotaDetailsView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: item); Divider(); NavigationLink("管理模型连接") { ModelSettingsView(embedded: true) }; Spacer(minLength: 0) }.padding(24)
-                .background(SummonTheme.background).navigationTitle("额度").navigationBarTitleDisplayMode(.inline)
+                .background(SummonTheme.background).navigationTitle(item["role"].stringValue == "executor" ? "工作引擎额度" : "聊天模型额度").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
     }
@@ -150,7 +191,10 @@ struct ModelQuotaDetailsView: View {
     private var formContent: some View {
         Form {
             if let error { Section { Text(error).foregroundStyle(.orange) } }
-            Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
+            Section("聊天模型") { ModelUsageDetails(item: store.modelSummary["chat"]) }
+            if store.modelSummary["work"].object != nil {
+                Section("工作引擎") { ModelUsageDetails(item: store.modelSummary["work"]) }
+            }
             Section("默认模型连接") {
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
                     Button { draft = entry; login = .null } label: {

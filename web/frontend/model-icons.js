@@ -57,6 +57,7 @@ globalThis.SummonModelIcons = (() => {
       if (/agy|antigravity/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'gemini';
       if (/codex/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'codex';
       if (/claude/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'claudecode';
+      if (/grok/i.test(`${item.kind || ''} ${item.id || ''}`)) return 'grok';
     }
     const model = String(item.model || '').trim().toLowerCase();
     for (const [pattern, id] of models) if (pattern.test(model)) return id;

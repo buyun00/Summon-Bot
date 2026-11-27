@@ -44,6 +44,13 @@ private fun modelMoney(value: SummonJson): String {
 private class ModelBrandCatalog(context: android.content.Context) {
     private val data = SummonJson.parse(context.assets.open("ai-brands.json").bufferedReader().use { it.readText() })
     fun brand(item: SummonJson): String {
+        if (item["role"].stringValue == "executor") {
+            val hint = "${item["kind"].stringValue} ${item["id"].stringValue}".lowercase()
+            if ("agy" in hint || "antigravity" in hint) return "gemini"
+            if ("codex" in hint) return "codex"
+            if ("claude" in hint) return "claudecode"
+            if ("grok" in hint) return "grok"
+        }
         val model = item["model"].stringValue.lowercase()
         for (rule in data["models"].array.orEmpty()) {
             val pair = rule.array.orEmpty()
@@ -64,18 +71,38 @@ private class ModelBrandCatalog(context: android.content.Context) {
     Image(painterResource(if (resource != 0) resource else R.drawable.ai_ai), null, modifier, colorFilter = ColorFilter.tint(palette.ok))
 }
 private data class ModelGaugeData(val ring: Double?, val dots: Int?, val value: String, val loading: Boolean = false, val showsBrand: Boolean = true)
+private fun modelWindowDuration(window: SummonJson): Int? {
+    window["durationMinutes"].int?.let { return it }
+    val name = window["name"].stringValue
+    if (Regex("每周|周额|week", RegexOption.IGNORE_CASE).containsMatchIn(name)) return 10080
+    if (Regex("5\\s*小时|5\\s*hour", RegexOption.IGNORE_CASE).containsMatchIn(name)) return 300
+    return null
+}
 private fun modelGauge(item: SummonJson): ModelGaugeData {
+    val executor = item["role"].stringValue == "executor"
     val usage = item["usage"]
-    if (item["configured"].bool == false || item["id"].string == null || usage["status"].string == "unconfigured") return ModelGaugeData(null, null, "待配置", showsBrand = false)
+    val awaiting = if (executor) {
+        item["enabled"].bool == false || item["configured"].bool == false
+    } else {
+        item["configured"].bool == false || item["id"].string == null || usage["status"].string == "unconfigured"
+    }
+    if (awaiting) {
+        val label = item["label"].stringValue.ifBlank { if (executor) "未启用" else "待配置" }
+        return ModelGaugeData(null, null, label, showsBrand = false)
+    }
+    if (usage["unsupported"].bool == true || usage["status"].string == "unsupported") {
+        return ModelGaugeData(100.0, null, "已连接")
+    }
     if (usage !is SummonJson.Obj || usage["status"].string == "loading") return ModelGaugeData(null, null, "读取中", loading = true)
     val windows = usage["windows"].array.orEmpty().filter { it["remainingPercent"].modelNumber() != null }
-    val primary = windows
-    val main = primary.firstOrNull { it["durationMinutes"].int == 10080 } ?: primary.firstOrNull()
-    val short = primary.firstOrNull { it["durationMinutes"].int == 300 && it != main }
+    val primaryPool = windows.filter { it["limitId"].stringValue in setOf("primary", "codex") }
+    val primary = primaryPool.ifEmpty { windows }
+    val main = primary.firstOrNull { modelWindowDuration(it) == 10080 } ?: primary.firstOrNull()
+    val short = primary.firstOrNull { modelWindowDuration(it) == 300 && it != main }
     val money = usage["balances"].array.orEmpty() + listOfNotNull(usage["balance"].takeIf { it is SummonJson.Obj })
-    if (item["kind"].stringValue == "api") return ModelGaugeData(100.0, null, money.firstOrNull { it["currency"].stringValue == "CNY" }?.let(::modelMoney) ?: money.firstOrNull()?.let(::modelMoney) ?: "—")
+    if (item["kind"].stringValue == "api") return ModelGaugeData(100.0, null, money.firstOrNull { it["currency"].stringValue == "CNY" }?.let(::modelMoney) ?: money.firstOrNull()?.let(::modelMoney) ?: "暂无余额")
     val percent = main?.get("remainingPercent")?.modelNumber()?.coerceIn(0.0, 100.0)
-    return ModelGaugeData(percent, short?.let { ceil((it["remainingPercent"].modelNumber() ?: 0.0).coerceIn(0.0, 100.0) / 25).toInt() }, if (short != null) "" else percent?.let { "${it.roundToInt()}%" } ?: "—")
+    return ModelGaugeData(percent, short?.let { ceil((it["remainingPercent"].modelNumber() ?: 0.0).coerceIn(0.0, 100.0) / 25).toInt() }, if (short != null) "" else percent?.let { "${it.roundToInt()}%" } ?: "暂无额度")
 }
 @Composable fun ModelQuotaSignal(item: SummonJson, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val palette = LocalSummonPalette.current
@@ -101,9 +128,17 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
 @Composable fun ModelUsageDetails(item: SummonJson) {
     val palette = LocalSummonPalette.current
     val usage = item["usage"]
+    val isExecutor = item["role"].stringValue == "executor"
+    val enabledEngines = item["enabledEngines"].array.orEmpty().mapNotNull { eng ->
+        eng["shortLabel"].string?.takeIf { it.isNotBlank() } ?: eng["name"].string?.takeIf { it.isNotBlank() }
+    }
+    val subtitle = item["model"].stringValue.ifBlank { if (isExecutor) item["roleLabel"].stringValue else "" }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ModelBrand(item, Modifier.size(32.dp))
-        Column { Text(item["name"].stringValue.ifBlank { "模型与用量" }, style = MaterialTheme.typography.titleMedium); Text(item["model"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall) }
+        Column {
+            Text(item["name"].stringValue.ifBlank { if (isExecutor) "工作引擎" else "模型与用量" }, style = MaterialTheme.typography.titleMedium)
+            if (subtitle.isNotBlank()) Text(subtitle, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+        }
     }
     (usage["balances"].array.orEmpty() + listOfNotNull(usage["balance"].takeIf { it is SummonJson.Obj })).forEach { Text(modelMoney(it), style = MaterialTheme.typography.headlineSmall, color = palette.ok) }
     usage["windows"].array.orEmpty().forEach { window ->
@@ -114,12 +149,14 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     }
     if (usage["credits"].modelNumber() != null) Text("附加点数 ${usage["credits"].stringValue} credits", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
     if (usage["unlimited"].bool == true) Text("额外额度不设限", color = palette.ok)
-    if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue.ifBlank { "未启用" }, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
     else if (usage["status"].stringValue == "unconfigured") Text("选择默认模型后读取额度", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
     else if (usage["status"].stringValue == "loading") Text("正在读取额度…", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue in listOf("shared", "unsupported")) Text(usage["note"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = palette.warn)
+    else if (usage["unsupported"].bool == true || usage["status"].stringValue == "unsupported") Text(usage["note"].stringValue.ifBlank { "已连接 · 未提供额度接口" }, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "shared") Text(usage["note"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue.ifBlank { "暂时无法读取" }, color = palette.warn)
     else if (usage["windows"].array.orEmpty().isEmpty() && usage["balances"].array.orEmpty().isEmpty() && usage["balance"] !is SummonJson.Obj) Text("供应商未返回额度数值", color = palette.textSecondary)
+    if (isExecutor && enabledEngines.size > 1) Text("已启用：${enabledEngines.joinToString(" · ")}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
     if (usage["checkedAt"].stringValue.isNotBlank()) Text("更新于 ${usage["checkedAt"].stringValue}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
 }
 
@@ -146,7 +183,16 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
             if (store.modelSummary["chat"].obj != null) {
                 Surface(shape = RoundedCornerShape(18.dp), color = palette.surface) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("聊天模型", style = MaterialTheme.typography.labelMedium, color = palette.textSecondary)
                         ModelUsageDetails(store.modelSummary["chat"])
+                    }
+                }
+            }
+            if (store.modelSummary["work"].obj != null) {
+                Surface(shape = RoundedCornerShape(18.dp), color = palette.surface) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("工作引擎", style = MaterialTheme.typography.labelMedium, color = palette.textSecondary)
+                        ModelUsageDetails(store.modelSummary["work"])
                     }
                 }
             }

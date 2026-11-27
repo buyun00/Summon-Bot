@@ -925,10 +925,18 @@ struct ConversationListView: View {
     }
 
     private var profileMenu: some View {
-        VStack(spacing: 4) {
+        let chat = store.modelSummary["chat"]
+        let work = store.modelSummary["work"]
+        return VStack(spacing: 4) {
             HStack(spacing: 12) {
-                ModelQuotaSignal(item: store.modelSummary["chat"], label: "默认模型") {
-                    selectProfileDestination(.quota(store.modelSummary["chat"]))
+                ModelQuotaSignal(item: chat, label: "聊天模型") {
+                    selectProfileDestination(.quota(chat))
+                }
+                if work.object != nil {
+                    let workLabel = work["roleLabel"].stringValue.isEmpty ? "工作引擎" : work["roleLabel"].stringValue
+                    ModelQuotaSignal(item: work, label: workLabel) {
+                        selectProfileDestination(.quota(work))
+                    }
                 }
             }.padding(.vertical, 6)
             Divider().padding(.vertical, 4)

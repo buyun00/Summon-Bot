@@ -385,6 +385,7 @@ fun ConversationListScreen(
     }
 
     val model = store.modelSummary["chat"]
+    val work = store.modelSummary["work"]
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val topClearance = statusBarTop + 58.dp
@@ -769,7 +770,11 @@ fun ConversationListScreen(
                         HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
                     }
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        ModelQuotaSignal(model, "默认模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
+                        ModelQuotaSignal(model, "聊天模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
+                        if (work.obj != null) {
+                            val workLabel = work["roleLabel"].stringValue.ifBlank { "工作引擎" }
+                            ModelQuotaSignal(work, workLabel, Modifier.weight(1f)) { menu = false; quotaItem = work }
+                        }
                     }
                     HorizontalDivider(Modifier.padding(vertical = 4.dp), color = palette.hairline)
                     DropdownMenuItem(text = { Text("面板") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenPanel() })
