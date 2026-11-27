@@ -30,6 +30,7 @@ export class ModelConnections {
     this.engines = null;
     this.platform = null;
     this.getUsageDb = null;
+    this.connModelsCache = new Map();
     this.autoRecommendInFlight = null;
   }
   attach({ engines = null, platform = null, getUsageDb = null } = {}) {
@@ -233,6 +234,7 @@ export class ModelConnections {
   clearUsage(id) {
     this.pendingUsage.get(id)?.controller.abort();
     this.pendingUsage.delete(id);
+    this.connModelsCache.delete(id);
     delete this.usage[id];
   }
   supportsQuota(entry) {
@@ -244,58 +246,6 @@ export class ModelConnections {
       return entry.provider === 'deepseek' && host === 'api.deepseek.com' || entry.provider === 'openrouter' && host === 'openrouter.ai';
     } catch { return false; }
   }
-  todayChatStats() {
-    try {
-      const db = this.getUsageDb?.();
-      if (!db?.db) return null;
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const rows = db.db.prepare('SELECT data FROM model_usage WHERE started_at >= ?').all(startOfDay.toISOString());
-      if (!rows.length) return { calls: 0, inputTokens: 0, outputTokens: 0, cacheHitRate: null };
-      let inputTokens = 0, outputTokens = 0, cacheHitTokens = 0;
-      for (const row of rows) {
-        const d = JSON.parse(row.data || '{}');
-        inputTokens += Number(d.inputTokens || 0);
-        outputTokens += Number(d.outputTokens || 0);
-        cacheHitTokens += Number(d.cacheHitTokens || 0);
-      }
-      return {
-        calls: rows.length,
-        inputTokens,
-        outputTokens,
-        cacheHitRate: inputTokens > 0 ? Math.round((cacheHitTokens / inputTokens) * 100) : null,
-      };
-    } catch { return null; }
-  }
-  engineSessionStats(engineId) {
-    try {
-      const sessions = this.platform?.store?.list('platform-sessions') || [];
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const startMs = startOfDay.getTime();
-      let todayRuns = 0, completed = 0, failed = 0, running = 0, durSum = 0, durCount = 0;
-      for (const s of sessions) {
-        if (s.engine !== engineId) continue;
-        const createdMs = Date.parse(s.created_at || 0) || 0;
-        const isLive = ['opening', 'running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input'].includes(s.status);
-        if (isLive) running++;
-        if (createdMs < startMs) continue;
-        todayRuns++;
-        if (s.status === 'completed') {
-          completed++;
-          const updatedMs = Date.parse(s.updated_at || 0) || 0;
-          if (updatedMs > createdMs) { durSum += (updatedMs - createdMs) / 1000; durCount++; }
-        } else if (s.status === 'failed') failed++;
-      }
-      return {
-        todayRuns,
-        completed,
-        failed,
-        running,
-        avgSeconds: durCount > 0 ? Math.round(durSum / durCount) : null,
-      };
-    } catch { return null; }
-  }
   resolveWorkEngine(catalog) {
     const enabled = this.engines?.available?.() || [];
     const shortLabels = { agy: 'AGY', codex: 'Codex', 'claude-code': 'Claude', 'grok-build': 'Grok' };
@@ -304,33 +254,25 @@ export class ModelConnections {
         id: 'executor:none',
         engineId: null,
         kind: 'executor',
-        name: '未启用工作引擎',
+        name: '工作引擎',
         model: '',
         enabled: false,
         configured: false,
         role: 'executor',
         roleLabel: '工作引擎',
         label: '未启用',
-        note: '在设置中启用本机工作引擎（如 AGY / Codex）后显示实时状态',
-        usage: { status: 'not_connected', note: '尚未启用任何工作引擎' },
+        usage: { status: 'not_connected', note: '未启用工作引擎' },
         enabledEngines: [],
       };
     }
     const primary = enabled[0];
     const tiers = this.engineTiersFor(catalog, primary.id);
     const defaultModel = tiers.standard?.model || Object.values(tiers)[0]?.model || '';
-    const stats = this.engineSessionStats(primary.id);
-    const enabledEngines = enabled.map(eng => {
-      const engTiers = this.engineTiersFor(catalog, eng.id);
-      return {
-        id: eng.id,
-        name: eng.name,
-        shortLabel: shortLabels[eng.id] || eng.name,
-        model: engTiers.standard?.model || '',
-        tiers: engTiers,
-        stats: this.engineSessionStats(eng.id),
-      };
-    });
+    const enabledEngines = enabled.map(eng => ({
+      id: eng.id,
+      name: eng.name,
+      shortLabel: shortLabels[eng.id] || eng.name,
+    }));
     const roleLabel = shortLabels[primary.id] || '工作引擎';
     if (primary.id === 'codex' && existsSync(localCodexAuthPath())) {
       return {
@@ -339,8 +281,6 @@ export class ModelConnections {
         kind: 'codex',
         name: primary.name,
         model: defaultModel,
-        tiers,
-        stats,
         enabled: true,
         configured: true,
         role: 'executor',
@@ -356,8 +296,6 @@ export class ModelConnections {
         kind: 'grok',
         name: primary.name,
         model: defaultModel,
-        tiers,
-        stats,
         enabled: true,
         configured: true,
         role: 'executor',
@@ -372,18 +310,11 @@ export class ModelConnections {
       kind: primary.id,
       name: primary.name,
       model: defaultModel,
-      tiers,
-      stats,
       enabled: true,
       configured: true,
       role: 'executor',
       roleLabel,
-      usage: {
-        status: 'cli_managed',
-        source: `${primary.name} CLI`,
-        note: '额度由本机 CLI 账号托管（官方 CLI 暂未暴露剩余额度查询接口）',
-        stats,
-      },
+      usage: { status: 'unsupported', unsupported: true, source: primary.name },
       enabledEngines,
     };
   }
@@ -391,30 +322,43 @@ export class ModelConnections {
     try {
       const catalog = this.catalog(), activeId = catalog.activeId ?? null;
       const chatEntry = activeId ? this.publicEntry(this.requireConnection(catalog, activeId), activeId, catalog) : null;
-      const convRoute = catalog.roleRouting?.conversation;
-      const chat = chatEntry
-        ? {
-            ...chatEntry,
-            ...(convRoute?.model ? { model: convRoute.model } : {}),
-            roleRouting: catalog.roleRouting,
-            todayStats: this.todayChatStats(),
-          }
-        : { name: '尚未选择模型', configured: false, usage: { status: 'unconfigured' } };
+      const chat = chatEntry || { name: '尚未选择模型', configured: false, usage: { status: 'unconfigured' } };
       return { activeId, chat, work: this.resolveWorkEngine(catalog) };
     } catch { return { activeId: null, chat: unavailable, work: null }; }
+  }
+  async cachedConnectionModels(entry, { fresh = false } = {}) {
+    const now = Date.now();
+    const cached = !fresh && this.connModelsCache.get(entry.id);
+    if (cached && now - cached.at < 300_000) return cached.models;
+    let models = [];
+    try {
+      const discovered = await Promise.race([
+        this.choices(entry.id, entry.kind === 'api'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+      ]);
+      models = discovered?.models || [];
+    } catch {
+      models = modelChoices(entry.kind, entry.provider);
+    }
+    if (entry.model && !models.some(m => m.id === entry.model)) {
+      models = [{ id: entry.model, name: entry.model }, ...models];
+    }
+    const clean = models.map(({ id, name, thinkingLevels }) => ({ id, name: name || id, ...(thinkingLevels?.length ? { thinkingLevels } : {}) }));
+    this.connModelsCache.set(entry.id, { at: now, models: clean });
+    return clean;
   }
   async snapshot() {
     const catalog = this.catalog(), activeId = catalog.activeId;
     const connections = await Promise.all(catalog.connections.map(async entry => {
       const summary = this.publicEntry(entry, activeId, catalog);
-      try { connectionModel(entry); } catch { this.configured[entry.id] = false; return { ...summary, configured: false }; }
-      if (entry.allowNoKey === true) { this.configured[entry.id] = true; return { ...summary, configured: true }; }
+      let ok = false;
       try {
-        const ok = Boolean(await this.credentials.read(entry.id));
-        this.configured[entry.id] = ok;
-        return { ...summary, configured: ok };
-      }
-      catch { this.configured[entry.id] = false; return { ...summary, configured: false, credentialStatus: 'unavailable' }; }
+        connectionModel(entry);
+        ok = entry.allowNoKey === true ? true : Boolean(await this.credentials.read(entry.id));
+      } catch { ok = false; }
+      this.configured[entry.id] = ok;
+      const availableModels = ok ? await this.cachedConnectionModels(entry).catch(() => []) : [];
+      return { ...summary, configured: ok, availableModels };
     }));
     const summary = this.summary();
     const mapChoice = ({ id, name, contextWindow, maxTokens, thinkingLevels }) => ({ id, name, contextWindow, maxTokens, thinkingLevels });
