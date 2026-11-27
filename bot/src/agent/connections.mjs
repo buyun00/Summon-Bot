@@ -73,9 +73,9 @@ export const engineTiers = Object.freeze(['standard', 'deep', 'fast']);
 
 const DEFAULT_ENGINE_TIERS = Object.freeze({
   agy: {
-    standard: { model: 'gemini-4-hydrogen-high', effort: 'high', when: '常规现场摸底、排障、脚本与中等修改（默认）' },
-    deep: { model: 'gemini-4-neon-xhigh', effort: 'xhigh', when: '复杂多文件开发、深度架构设计与疑难根因攻关' },
-    fast: { model: 'gemini-3.8-flash-high', effort: 'high', when: '极速轻量采样、小脚本或简单文件整理' },
+    standard: { model: 'gemini-4-hydrogen', effort: 'high', when: '常规现场摸底、排障、脚本与中等修改（默认）' },
+    deep: { model: 'gemini-4-neon', effort: 'xhigh', when: '复杂多文件开发、深度架构设计与疑难根因攻关' },
+    fast: { model: 'gemini-3.8-flash', effort: 'low', when: '极速轻量采样、小脚本或简单文件整理' },
   },
   codex: {
     standard: { model: 'gpt-6.2-sol', effort: 'high', when: '常规现场摸底、排障、脚本与中等修改（默认）' },
@@ -113,11 +113,18 @@ function defaultRoleSlot(entry, purpose) {
   return { connection_id: entry.id, model: entry.model, thinking_level: thinking };
 }
 
-function cleanTierEntry(raw, fallbackWhen = '') {
+function cleanTierEntry(raw, fallbackWhen = '', engineId = '') {
   if (!raw || typeof raw !== 'object') return null;
-  const model = typeof raw.model === 'string' ? raw.model.trim() : '';
+  let model = typeof raw.model === 'string' ? raw.model.trim() : '';
   if (!model) return null;
-  const effort = typeof raw.effort === 'string' && raw.effort.trim() ? raw.effort.trim().toLowerCase() : null;
+  let effort = typeof raw.effort === 'string' && raw.effort.trim() ? raw.effort.trim().toLowerCase() : null;
+  if (engineId === 'agy' && !/orchestrator/i.test(model)) {
+    const match = model.match(/-(low|medium|high|xhigh|max)$/i);
+    if (match) {
+      model = model.slice(0, -match[0].length);
+      if (!effort) effort = match[1].toLowerCase();
+    }
+  }
   const when = typeof raw.when === 'string' && raw.when.trim() ? raw.when.trim().slice(0, 120) : fallbackWhen;
   return { model, effort, when };
 }
@@ -155,7 +162,7 @@ export function normalizeModelCatalog(catalog) {
     const cleaned = {};
     const defaults = defaultEngineTiers(engineId);
     for (const tier of engineTiers) {
-      const item = cleanTierEntry(cfg[tier], defaults[tier]?.when || '');
+      const item = cleanTierEntry(cfg[tier], defaults[tier]?.when || '', engineId);
       if (item) cleaned[tier] = item;
     }
     if (Object.keys(cleaned).length) engineRouting[engineId] = cleaned;

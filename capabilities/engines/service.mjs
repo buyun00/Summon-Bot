@@ -115,6 +115,7 @@ function readEngineMeta(dir, fallbackId) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const id = typeof raw.id === 'string' && safeId.test(raw.id.trim()) ? raw.id.trim() : fallbackId;
     const script = typeof raw.script === 'string' && raw.script.trim() ? validateEngineRelPath(raw.script) : 'bridge.mjs';
+    const quotaScript = typeof raw.quota_script === 'string' && raw.quota_script.trim() ? validateEngineRelPath(raw.quota_script) : null;
     const envSlots = Array.isArray(raw.env_slots)
       ? [...new Set(raw.env_slots.filter(v => typeof v === 'string' && envNameRe.test(v)))]
       : [];
@@ -124,6 +125,7 @@ function readEngineMeta(dir, fallbackId) {
       summary: typeof raw.summary === 'string' ? raw.summary.trim() : '',
       command: typeof raw.command === 'string' && raw.command.trim() ? raw.command.trim() : null,
       script,
+      quota_script: quotaScript,
       model_provider: typeof raw.model_provider === 'string' && raw.model_provider.trim() ? raw.model_provider.trim() : null,
       env_slots: envSlots,
     };
@@ -232,6 +234,7 @@ export class EngineManager {
         summary: meta.summary,
         command: meta.command,
         script: meta.script,
+        quota_script: meta.quota_script && this.hasScript(meta.id, meta.quota_script) ? meta.quota_script : null,
         model_provider: meta.model_provider,
         env_slots: meta.env_slots,
         installed: Boolean(detectedPath),
@@ -316,21 +319,32 @@ export class EngineManager {
           windowsHide: true,
           env,
         });
-        const parsed = [];
+        const EFFORT_SUFFIX_RE = /-(low|medium|high|xhigh|max)$/i;
+        const EFFORT_LABEL_RE = /\s*\((low|medium|high|xhigh|max)\)\s*$/i;
+        const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+        const grouped = new Map();
         for (const rawLine of String(stdout || '').split(/\r?\n/)) {
           const line = rawLine.trim();
           if (!line || /^fetching\b/i.test(line)) continue;
           const parts = line.split(/\t+/);
-          const modelId = (parts[0] || '').trim();
-          if (!modelId || !/^[a-z0-9][a-z0-9._:/-]{1,120}$/i.test(modelId)) continue;
-          const label = (parts[1] || modelId).trim();
-          const effortMatch = modelId.match(/-(low|medium|high|xhigh|max)$/i);
-          parsed.push({
-            id: modelId,
-            name: label,
-            ...(effortMatch ? { efforts: [effortMatch[1].toLowerCase()] } : { efforts: ['low', 'medium', 'high', 'xhigh'] }),
-          });
+          const rawId = (parts[0] || '').trim();
+          if (!rawId || !/^[a-z0-9][a-z0-9._:/-]{1,120}$/i.test(rawId)) continue;
+          const rawLabel = (parts[1] || rawId).trim();
+          const isOrch = /orchestrator/i.test(rawId);
+          const suffixMatch = !isOrch ? rawId.match(EFFORT_SUFFIX_RE) : null;
+          const baseId = suffixMatch ? rawId.slice(0, -suffixMatch[0].length) : rawId;
+          const baseName = suffixMatch ? rawLabel.replace(EFFORT_LABEL_RE, '').trim() : rawLabel;
+          const effort = suffixMatch ? suffixMatch[1].toLowerCase() : null;
+          if (!grouped.has(baseId)) {
+            grouped.set(baseId, { id: baseId, name: baseName || baseId, efforts: new Set() });
+          }
+          if (effort) grouped.get(baseId).efforts.add(effort);
         }
+        const parsed = [...grouped.values()].map(item => ({
+          id: item.id,
+          name: item.name,
+          efforts: [...item.efforts].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b)),
+        }));
         if (parsed.length) {
           source = 'cli';
           models = dedupe(parsed);

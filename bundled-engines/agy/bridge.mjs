@@ -10,7 +10,14 @@ const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 function resolveModelArgs(payload) {
   const rawModel = typeof payload.model === 'string' ? payload.model.trim() : '';
   const rawEffort = typeof payload.effort === 'string' ? payload.effort.trim().toLowerCase() : '';
-  const model = rawModel || process.env.SUMMON_AGY_DEFAULT_MODEL || 'gemini-4-hydrogen-high';
+  let model = rawModel || process.env.SUMMON_AGY_DEFAULT_MODEL || 'gemini-4-hydrogen-high';
+  const hasEffortSuffix = EFFORT_SUFFIX_RE.test(model);
+  const isOrchestrator = /orchestrator/i.test(model);
+  if (!hasEffortSuffix && !isOrchestrator && rawEffort && VALID_EFFORTS.has(rawEffort)) {
+    model = `${model}-${rawEffort}`;
+  } else if (!hasEffortSuffix && !isOrchestrator && !rawEffort) {
+    model = `${model}-high`;
+  }
   const args = ['--model', model];
   if (rawEffort && VALID_EFFORTS.has(rawEffort)) {
     const suffixMatch = model.match(EFFORT_SUFFIX_RE);

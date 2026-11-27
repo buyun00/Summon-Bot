@@ -77,8 +77,8 @@ globalThis.SummonModels = (() => {
     const windows = percents(usage), money = balances(usage);
     const unsupported = !awaiting && Boolean(usage?.unsupported || usage?.status === 'unsupported');
     const loading = item.connecting || (!awaiting && !unsupported && (!usage || usage.status === 'loading'));
-    const codexWindows = windows.filter(window => window.limitId === 'codex');
-    const primaryWindows = codexWindows.length ? codexWindows : windows;
+    const primaryPoolWindows = windows.filter(window => window.limitId === 'primary' || window.limitId === 'codex');
+    const primaryWindows = primaryPoolWindows.length ? primaryPoolWindows : windows;
     const isApi = item.kind === 'api';
     const weekly = primaryWindows.find(window => duration(window) === 10080);
     const fiveHours = primaryWindows.find(window => duration(window) === 300);
@@ -310,14 +310,18 @@ globalThis.SummonModels = (() => {
             ? baseModels
             : [{ id: td.model, name: td.model }, ...baseModels];
           const matchedModel = opts.find(m => m.id === td.model);
-          const availEfforts = matchedModel?.efforts?.length
-            ? ['', ...new Set([...matchedModel.efforts, td.effort].filter(Boolean))]
-            : effortOptions;
+          const hasExplicitEfforts = Array.isArray(matchedModel?.efforts);
+          const availEfforts = !td.model
+            ? ['']
+            : hasExplicitEfforts
+              ? (matchedModel.efforts.length ? [...new Set([...matchedModel.efforts, td.effort].filter(Boolean))] : [''])
+              : effortOptions;
+          const effortDisabled = !td.model || (hasExplicitEfforts && !matchedModel.efforts.length);
           return `<div class="models-tier-row">
             <span class="models-role-label">${esc(title)}</span>
             <div class="models-tier-controls">
               <select data-eng-id="${esc(eng.id)}" data-eng-tier="${key}" data-eng-field="model" aria-label="${esc(eng.name)}${esc(title)}模型">${required ? '' : `<option value="" ${!td.model ? 'selected' : ''}>不启用</option>`}${opts.map(m => `<option value="${esc(m.id)}" ${td.model === m.id ? 'selected' : ''}>${esc(m.name && m.name !== m.id ? m.name : m.id)}</option>`).join('')}</select>
-              <select data-eng-id="${esc(eng.id)}" data-eng-tier="${key}" data-eng-field="effort" aria-label="${esc(title)}思考深度">${availEfforts.map(lv => `<option value="${esc(lv)}" ${td.effort === lv ? 'selected' : ''}>${lv || '默认'}</option>`).join('')}</select>
+              <select data-eng-id="${esc(eng.id)}" data-eng-tier="${key}" data-eng-field="effort" aria-label="${esc(title)}思考深度" ${effortDisabled ? 'disabled' : ''}>${availEfforts.map(lv => `<option value="${esc(lv)}" ${td.effort === lv ? 'selected' : ''}>${lv || '默认'}</option>`).join('')}</select>
             </div>
           </div>`;
         }).join('')}
@@ -579,9 +583,18 @@ globalThis.SummonModels = (() => {
         if (!tier) return;
         tier[field] = event.target.value;
         if (field === 'model') {
-          const suffix = tier.model.match(/-(low|medium|high|xhigh|max)$/i);
-          if (suffix) tier.effort = suffix[1].toLowerCase();
-          else if (!tier.model) tier.effort = '';
+          if (!tier.model) {
+            tier.effort = '';
+          } else {
+            const eng = (view.data?.enabledEngines || []).find(e => e.id === engId);
+            const matched = (eng?.models || []).find(m => m.id === tier.model);
+            if (Array.isArray(matched?.efforts)) {
+              if (!matched.efforts.length) tier.effort = '';
+              else if (!matched.efforts.includes(tier.effort)) {
+                tier.effort = matched.efforts.includes('high') ? 'high' : matched.efforts[0];
+              }
+            }
+          }
           bindings?.render?.();
         }
         return;

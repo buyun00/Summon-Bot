@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { idOf, reject } from '../platform/contract.mjs';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError,
@@ -304,6 +305,23 @@ export class ModelConnections {
         enabledEngines,
       };
     }
+    if (primary.quota_script) {
+      const usageId = `executor:${primary.id}`;
+      return {
+        id: usageId,
+        engineId: primary.id,
+        kind: primary.id,
+        name: primary.name,
+        model: defaultModel,
+        enabled: true,
+        configured: true,
+        hasQuotaScript: true,
+        role: 'executor',
+        roleLabel,
+        usage: this.usageFor(usageId),
+        enabledEngines,
+      };
+    }
     return {
       id: `executor:${primary.id}`,
       engineId: primary.id,
@@ -498,9 +516,9 @@ export class ModelConnections {
       const preset = defaultEngineTiers(eng.id);
       let std = null, deep = null, fast = null;
       if (eng.id === 'agy') {
-        std = findRe(/^gemini-4-hydrogen-high$/i) || findRe(/hydrogen-high|neon-medium|sonnet.*high/i) || findRe(/high$/i);
-        deep = findRe(/^gemini-4-neon-xhigh$/i) || findRe(/neon-xhigh|xhigh$|opus.*high/i) || findRe(/neon-high/i);
-        fast = findRe(/^gemini-3\.8-flash-high$/i) || findRe(/flash.*high|flash.*medium|hydrogen-medium/i);
+        std = findRe(/^gemini-4-hydrogen$/i) || findRe(/hydrogen|neon|sonnet/i) || models[0];
+        deep = findRe(/^gemini-4-neon$/i) || findRe(/neon|opus/i) || std;
+        fast = findRe(/^gemini-3\.8-flash$/i) || findRe(/flash/i) || std;
       } else if (eng.id === 'codex') {
         std = findRe(/gpt-6\.2-sol|sol/i) || findRe(/terra/i);
         deep = findRe(/gpt-6\.2-astra|astra/i) || std;
@@ -532,7 +550,7 @@ export class ModelConnections {
       if (fast?.id || preset.fast?.model) {
         tiers.fast = {
           model: fast?.id || preset.fast.model,
-          effort: effortOf(fast, preset.fast?.effort || 'high'),
+          effort: effortOf(fast, preset.fast?.effort || 'low'),
           when: preset.fast?.when || '极速轻量采样、小脚本或简单文件整理',
         };
       }
@@ -611,9 +629,9 @@ export class ModelConnections {
               '   - conversation：群聊主脑，优先平衡对话理解、工具调用与缓存命中率，优先尊重当前 active 连接，thinking_level 建议 "high" 或 "medium"。',
               '   - pi_session：独立轻量 Pi 阅读会话，选稳定推理档（"high" 或 "max"）。',
               '3. 工作引擎分档（engineRouting，按每个已启用引擎的 id 分别配置）：',
-              '   - standard（必填，默认档）：用于日常现场摸底、排障、脚本与常规改代码——**绝不要把最慢的 xhigh/max 档设为 standard**，优先选速度与能力兼顾的中高档（例如 AGY 优先 gemini-4-hydrogen-high 或同级高性价比档）。',
-              '   - deep（可选）：用于复杂多文件工程、架构设计与疑难根因死磕，选最强思考档（例如 AGY 选 gemini-4-neon-xhigh，Codex 选 gpt-6.2-astra xhigh）。',
-              '   - fast（可选）：用于极速轻量采样/简单文件整理，选最快的 flash/mini/haiku/low 档。',
+              '   - standard（必填，默认档）：用于日常现场摸底、排障、脚本与常规改代码——**绝不要把最慢的 xhigh/max 档设为 standard**，优先选速度与能力兼顾的中高档（例如 AGY 选 gemini-4-hydrogen + effort "high"）。',
+              '   - deep（可选）：用于复杂多文件工程、架构设计与疑难根因死磕，选最强思考档（例如 AGY 选 gemini-4-neon + effort "xhigh"，Codex 选 gpt-6.2-astra + effort "xhigh"）。',
+              '   - fast（可选）：用于极速轻量采样/简单文件整理，选最快的 flash/mini/haiku/low 档（例如 AGY 选 gemini-3.8-flash + effort "low"）。',
               '   - 每个档位给一句 8–28 字简洁中文 when 说明适用场景。',
               '4. 仅输出一个合法 JSON 对象，不要输出任何额外解释或 markdown 围栏外文本，格式：',
               '{"roleRouting":{"fast_read":{"connection_id":"","model":"","thinking_level":"off"},"conversation":{"connection_id":"","model":"","thinking_level":"high"},"pi_session":{"connection_id":"","model":"","thinking_level":"high"}},"engineRouting":{"<engineId>":{"standard":{"model":"","effort":"","when":""},"deep":{"model":"","effort":"","when":""},"fast":{"model":"","effort":"","when":""}}},"rationale":"1-2句简洁中文说明分配理由"}',
@@ -971,6 +989,17 @@ export class ModelConnections {
     return { connection: modelConnection({ connectionStore: this.path }, id), credentials: this.credentials };
   }
   async accountUsage(id, signal) {
+    if (id.startsWith('executor:') && !['executor:codex', 'executor:grok'].includes(id)) {
+      const engineId = id.slice('executor:'.length);
+      const engine = this.engines?.get?.(engineId);
+      if (!engine?.quota_script) return { source: engine?.name || engineId, windows: [], unsupported: true };
+      const scriptAbs = this.engines.scriptPath(engineId, engine.quota_script);
+      const mod = await import(`${pathToFileURL(scriptAbs).href}?t=${Date.now()}`);
+      if (typeof mod.readQuota !== 'function') return { source: engine.name, windows: [], unsupported: true };
+      const tiers = this.engineTiers(engineId);
+      const model = tiers.standard?.model || Object.values(tiers)[0]?.model || '';
+      return await mod.readQuota({ engine, model, signal });
+    }
     const { connection, credentials } = this.resolveUsageConnection(id);
     const runtime = connectionRuntime(connection, credentials);
     const resolved = await runtime.models.getAuth(id, { signal });
@@ -1027,7 +1056,7 @@ export class ModelConnections {
     if (!force && Date.now() - Date.parse(previous?.attemptedAt || previous?.checkedAt) < 60000) return Promise.resolve(previous);
     const pending = { controller: new AbortController() };
     pending.promise = this.accountUsage(id, pending.controller.signal).then(value => ({
-      ...value, status: value.unsupported ? 'unsupported' : 'ready', checkedAt: new Date().toISOString(),
+      ...value, status: value.unsupported ? 'unsupported' : 'ready', checkedAt: value.checkedAt || new Date().toISOString(),
     }), error => ({ ...previous, status: 'error', error: modelError(error), attemptedAt: new Date().toISOString(), stale: Boolean(previous?.checkedAt) }))
       .then(usage => {
         if (this.pendingUsage.get(id) !== pending) return null;
@@ -1047,7 +1076,7 @@ export class ModelConnections {
     const ids = new Set();
     if (catalog.activeId) ids.add(catalog.activeId);
     const work = this.resolveWorkEngine(catalog);
-    if (work?.id && ['executor:codex', 'executor:grok'].includes(work.id) && work.configured !== false) ids.add(work.id);
+    if (work?.id && (['executor:codex', 'executor:grok'].includes(work.id) || work.hasQuotaScript) && work.configured !== false) ids.add(work.id);
     if (!ids.size) return this.summary();
     await Promise.allSettled([...ids].map(id => this.refreshOne(id, force)));
     const commit = (this.usageWrite || Promise.resolve()).catch(() => {}).then(() => saveModelJson(this.usagePath, this.usage));
