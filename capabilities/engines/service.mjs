@@ -1,7 +1,13 @@
+import { execFile } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, posix, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
+import { defaultEngineTiers, modelChoices } from '../../bot/src/agent/connections.mjs';
 import { reject } from '../platform/contract.mjs';
+
+const execFileAsync = promisify(execFile);
+const MODEL_CACHE_TTL_MS = 300_000;
 
 export const engineRecords = 'platform-engines';
 const safeId = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
@@ -130,6 +136,7 @@ export class EngineManager {
   constructor({ store, dataRoot, releaseRoot }) {
     Object.assign(this, { store, dataRoot: resolve(dataRoot), releaseRoot: resolve(releaseRoot) });
     this.detectCache = new Map();
+    this.modelCache = new Map(); // engineId -> { at, source, models }
     this.runtimeFaults = new Map(); // engineId -> { message, at }
   }
 
@@ -263,6 +270,99 @@ export class EngineManager {
       updatedAt: new Date().toISOString(),
     });
     return this.get(current.id, { fresh: true });
+  }
+
+  async discoverModels(id, { fresh = false } = {}) {
+    const engine = this.get(id);
+    const now = Date.now();
+    const cached = !fresh && this.modelCache.get(engine.id);
+    if (cached && now - cached.at < MODEL_CACHE_TTL_MS) {
+      return { engine_id: engine.id, source: cached.source, models: cached.models };
+    }
+
+    const dedupe = list => {
+      const seen = new Set();
+      const out = [];
+      for (const item of list) {
+        const modelId = typeof item === 'string' ? item.trim() : String(item?.id || '').trim();
+        if (!modelId || seen.has(modelId)) continue;
+        seen.add(modelId);
+        out.push({
+          id: modelId,
+          name: typeof item === 'object' && item?.name ? String(item.name).trim() : modelId,
+          ...(typeof item === 'object' && Array.isArray(item.efforts) && item.efforts.length ? { efforts: item.efforts } : {}),
+        });
+      }
+      return out;
+    };
+
+    const presetFallback = () => {
+      const tiers = defaultEngineTiers(engine.id);
+      return Object.values(tiers).map(t => ({ id: t.model, name: t.model, ...(t.effort ? { efforts: [t.effort] } : {}) }));
+    };
+
+    let source = 'catalog';
+    let models = [];
+
+    if (engine.id === 'agy' && engine.detected_path) {
+      try {
+        const env = { ...process.env };
+        const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') || 'PATH';
+        const extras = extraToolDirs();
+        if (extras.length) env[pathKey] = [...extras, env[pathKey] || ''].filter(Boolean).join(delimiter);
+        const { stdout } = await execFileAsync(engine.detected_path, ['models'], {
+          timeout: 12_000,
+          maxBuffer: 512_000,
+          windowsHide: true,
+          env,
+        });
+        const parsed = [];
+        for (const rawLine of String(stdout || '').split(/\r?\n/)) {
+          const line = rawLine.trim();
+          if (!line || /^fetching\b/i.test(line)) continue;
+          const parts = line.split(/\t+/);
+          const modelId = (parts[0] || '').trim();
+          if (!modelId || !/^[a-z0-9][a-z0-9._:/-]{1,120}$/i.test(modelId)) continue;
+          const label = (parts[1] || modelId).trim();
+          const effortMatch = modelId.match(/-(low|medium|high|xhigh|max)$/i);
+          parsed.push({
+            id: modelId,
+            name: label,
+            ...(effortMatch ? { efforts: [effortMatch[1].toLowerCase()] } : { efforts: ['low', 'medium', 'high', 'xhigh'] }),
+          });
+        }
+        if (parsed.length) {
+          source = 'cli';
+          models = dedupe(parsed);
+        }
+      } catch {}
+    } else if (engine.id === 'codex') {
+      models = dedupe(modelChoices('codex', 'openai-codex').map(m => ({
+        id: m.id,
+        name: m.name || m.id,
+        efforts: (m.thinkingLevels || ['low', 'medium', 'high', 'xhigh', 'max']).filter(l => l !== 'off'),
+      })));
+    } else if (engine.id === 'grok-build') {
+      models = dedupe(modelChoices('grok', 'xai').map(m => ({
+        id: m.id,
+        name: m.name || m.id,
+        efforts: ['low', 'medium', 'high'],
+      })));
+    } else if (engine.id === 'claude-code') {
+      models = dedupe([
+        ...modelChoices('api', 'anthropic').map(m => ({ id: m.id, name: m.name || m.id, efforts: ['low', 'medium', 'high'] })),
+        { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', efforts: ['low', 'medium', 'high'] },
+        { id: 'claude-opus-4-1', name: 'Claude Opus 4.1', efforts: ['low', 'medium', 'high'] },
+        { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', efforts: ['low', 'medium', 'high'] },
+      ]);
+    }
+
+    if (!models.length) {
+      source = 'preset';
+      models = dedupe(presetFallback());
+    }
+    this.modelCache.set(engine.id, { at: now, source, models });
+    return { engine_id: engine.id, source, models };
   }
 
   listFiles(id) {

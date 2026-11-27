@@ -347,12 +347,18 @@ export class Executions {
       let execInput = args.input;
       if (session.work_engine) {
         const raw = args.input;
-        const payload = typeof raw === 'string'
+        const basePayload = typeof raw === 'string'
           ? { text: raw }
-          : (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { text: String(raw ?? '') });
+          : (raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : { text: String(raw ?? '') });
+        const tiers = this.platform.models?.engineTiers?.(session.work_engine.id) || {};
+        const reqTier = typeof basePayload.tier === 'string' ? basePayload.tier.trim().toLowerCase() : '';
+        const chosenTier = tiers[reqTier] || (!basePayload.model ? (tiers.standard || Object.values(tiers)[0] || null) : null);
+        if (!basePayload.model && chosenTier?.model) basePayload.model = chosenTier.model;
+        if (!basePayload.effort && chosenTier?.effort) basePayload.effort = chosenTier.effort;
+        delete basePayload.tier;
         execInput = {
           engine: session.work_engine.id,
-          payload,
+          payload: basePayload,
         };
       }
       const options = { session, call: this.calls.get(call.id), input: execInput, beforeSubmit, signal: context.signal };

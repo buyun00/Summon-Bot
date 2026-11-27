@@ -544,22 +544,28 @@ export class ExecRunner {
     if (!latest) return {};
     const explicitStream = typeof stream === 'string' && stream.length > 0;
     const resolvedStream = explicitStream ? stream : (latest.protocol === 'summon-jsonl' && modelPage ? 'events' : 'stdout');
+    const latestDone = settled(latest.status);
     if (modelPage && !cursor && !explicitStream && limit === undefined) {
       const facts = this.factsFor(latest);
-      if (facts.output || facts.error || settled(latest.status)) {
+      if (facts.output || facts.error || latestDone) {
         return {
           ...facts,
+          in_progress: !latestDone,
           output_call_id: latest.id,
           next_cursor: keyOf(latest.id, 0, resolvedStream),
         };
       }
       const file = join(this.dataRoot, 'capabilities', 'exec-logs', latest.id, resolvedStream === 'events' ? 'events.jsonl' : `${resolvedStream}.log`);
       const out = await readLogPage(file, 0, 2048);
+      const truncated = Boolean(out?.more);
       return {
         ...facts,
+        in_progress: true,
+        output_truncated: truncated,
+        read_warning: '该后台会话仍在运行中，当前仅返回阶段性不完整/截断事件片段；严禁据此抢跑定论或断言某服务、容器或配置“不存在”，请等会话完结拿到完整回执后再下结论，或另行独立核实。',
         output_page: this.clean(out),
         output_call_id: latest.id,
-        next_cursor: out.more ? keyOf(latest.id, out.next_offset, resolvedStream) : null,
+        next_cursor: truncated ? keyOf(latest.id, out.next_offset, resolvedStream) : null,
       };
     }
     let offset = 0, selected = latest, targetStream = resolvedStream;
@@ -574,11 +580,20 @@ export class ExecRunner {
     const effectiveLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : defaultLimit;
     const file = join(this.dataRoot, 'capabilities', 'exec-logs', selected.id, targetStream === 'events' ? 'events.jsonl' : `${targetStream}.log`);
     const out = await readLogPage(file, offset, Math.max(1024, Math.min(effectiveLimit, modelPage ? 32_768 : 262_144)));
+    const isRunning = !settled(selected.status);
+    const truncated = Boolean(out?.more);
     return {
       ...this.factsFor(latest),
+      in_progress: isRunning,
+      output_truncated: truncated,
+      ...(isRunning
+        ? { read_warning: '该后台会话仍在运行中，当前仅返回阶段性不完整/截断日志片段；严禁据此抢跑定论或断言某服务、容器或配置“不存在”，请等会话完结后再下结论。' }
+        : truncated
+          ? { read_warning: '当前仅返回单页截断输出（尚有后续内容），请带 next_cursor 翻页读完，勿凭单页片段断言某项不存在。' }
+          : {}),
       output_page: this.clean(out),
       output_call_id: selected.id,
-      next_cursor: out.more ? keyOf(selected.id, out.next_offset, targetStream) : null,
+      next_cursor: truncated ? keyOf(selected.id, out.next_offset, targetStream) : null,
     };
   }
 

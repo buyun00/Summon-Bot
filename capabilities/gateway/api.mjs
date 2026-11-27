@@ -147,6 +147,10 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         return { engine_id: id, ...written };
       }
     }
+    if ((match = path.match(/^\/api\/engines\/([^/]+)\/models$/)) && method === 'GET') {
+      const id = decodeURIComponent(match[1]);
+      return platform.engines.discoverModels(id, { fresh: params.get('fresh') === '1' });
+    }
     if ((match = path.match(/^\/api\/engines\/([^/]+)\/check$/)) && method === 'POST') {
       const id = decodeURIComponent(match[1]);
       return platform.checkWorkEngine(id, { roomId: args.room_id || args.roomId || null, wake: args.wake !== false });
@@ -157,6 +161,8 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       if (method === 'PATCH') {
         const updated = platform.engines.setEnabled(id, args.enabled === undefined ? null : args.enabled);
         emit('engine');
+        emit('models.changed');
+        if (updated?.available) models.ensureEngineRouting(id);
         return updated;
       }
     }
@@ -386,8 +392,13 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
       platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.savedId || args?.id || null });
       return result;
     }
-    if (path === preservedModelSettings + '/purposes' && method === 'POST') {
-      const result = await models.savePurposes(args);
+    if (path === preservedModelSettings + '/routing' && method === 'POST') {
+      const result = await models.saveRouting(args);
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: null });
+      return result;
+    }
+    if (path === preservedModelSettings + '/auto-recommend' && method === 'POST') {
+      const result = await models.autoRecommend({ apply: args.apply !== false, reason: 'manual' });
       platform.runtime.resumeRecoveredRuns({ kind: 'model', id: null });
       return result;
     }

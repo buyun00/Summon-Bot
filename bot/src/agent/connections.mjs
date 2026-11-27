@@ -69,100 +69,116 @@ const codexSupplementalModels = Object.freeze([
 ]);
 
 export const modelPurposes = Object.freeze(['fast_read', 'conversation', 'pi_session']);
-export const purposeTemplateCategories = Object.freeze(['deepseek', 'openai', 'codex', 'anthropic', 'grok']);
-export function defaultPurposeDefaults() {
-  return {
-    deepseek: {
-      fast_read: { model: 'deepseek-flash', thinking_level: 'off' },
-      conversation: { model: 'deepseek-flash', thinking_level: 'high' },
-      pi_session: { model: 'deepseek-flash', thinking_level: 'max' },
-    },
-    openai: {
-      fast_read: { model: 'gpt-6.1-terra', thinking_level: 'off' },
-      conversation: { model: 'gpt-6.1-terra', thinking_level: 'high' },
-      pi_session: { model: 'gpt-6.2-sol', thinking_level: 'high' },
-    },
-    codex: {
-      fast_read: { model: 'gpt-6.1-terra', thinking_level: 'off' },
-      conversation: { model: 'gpt-6.1-terra', thinking_level: 'high' },
-      pi_session: { model: 'gpt-6.2-sol', thinking_level: 'high' },
-    },
-    anthropic: {
-      fast_read: { model: 'claude-sonnet-4-5', thinking_level: 'off' },
-      conversation: { model: 'claude-sonnet-4-5', thinking_level: 'high' },
-      pi_session: { model: 'claude-opus-4-1', thinking_level: 'high' },
-    },
-    grok: {
-      fast_read: { model: 'grok-4', thinking_level: 'off' },
-      conversation: { model: 'grok-4', thinking_level: 'high' },
-      pi_session: { model: 'grok-4', thinking_level: 'high' },
-    },
-  };
+export const engineTiers = Object.freeze(['standard', 'deep', 'fast']);
+
+const DEFAULT_ENGINE_TIERS = Object.freeze({
+  agy: {
+    standard: { model: 'gemini-4-hydrogen-high', effort: 'high', when: '常规现场摸底、排障、脚本与中等修改（默认）' },
+    deep: { model: 'gemini-4-neon-xhigh', effort: 'xhigh', when: '复杂多文件开发、深度架构设计与疑难根因攻关' },
+    fast: { model: 'gemini-3.8-flash-high', effort: 'high', when: '极速轻量采样、小脚本或简单文件整理' },
+  },
+  codex: {
+    standard: { model: 'gpt-6.2-sol', effort: 'high', when: '常规现场摸底、排障、脚本与中等修改（默认）' },
+    deep: { model: 'gpt-6.2-astra', effort: 'xhigh', when: '复杂多文件开发、深度架构设计与疑难根因攻关' },
+    fast: { model: 'gpt-6.1-terra', effort: 'low', when: '极速轻量采样或单文件小改' },
+  },
+  'claude-code': {
+    standard: { model: 'claude-sonnet-4-5', effort: 'high', when: '常规现场摸底、排障与日常开发（默认）' },
+    deep: { model: 'claude-opus-4-1', effort: 'high', when: '复杂多文件开发与深度架构攻关' },
+  },
+  'grok-build': {
+    standard: { model: 'grok-4', effort: 'high', when: '常规现场摸底、排障与脚本任务（默认）' },
+  },
+});
+
+export function defaultEngineTiers(engineId) {
+  const preset = DEFAULT_ENGINE_TIERS[engineId];
+  return preset ? structuredClone(preset) : {};
 }
-export function defaultCodexRecommendations() {
-  return [
-    { model: 'gpt-6.2-sol', efforts: ['xhigh', 'max'] },
-    { model: 'gpt-6.2-astra', efforts: ['high', 'xhigh', 'max'] },
-  ];
+
+function defaultRoleSlot(entry, purpose) {
+  if (!entry) return null;
+  let thinking = entry.thinkingLevel ?? null;
+  try {
+    const info = connectionModel(entry);
+    const levels = info.thinkingLevels || [];
+    if (purpose === 'fast_read') thinking = levels.includes('off') ? 'off' : null;
+    else if (purpose === 'conversation') thinking = entry.thinkingLevel ?? (levels.includes('high') ? 'high' : null);
+    else if (purpose === 'pi_session') thinking = levels.includes('high') ? 'high' : (levels.includes('max') ? 'max' : (entry.thinkingLevel ?? null));
+  } catch {
+    if (purpose === 'fast_read') thinking = 'off';
+    else if (purpose === 'conversation' && thinking === null) thinking = 'high';
+    else if (purpose === 'pi_session' && thinking === null) thinking = 'high';
+  }
+  return { connection_id: entry.id, model: entry.model, thinking_level: thinking };
 }
-export function defaultAgyRecommendations() {
-  return [
-    { model: 'gemini-4-neon-xhigh', efforts: ['xhigh'] },
-    { model: 'gemini-4-hydrogen-high', efforts: ['high'] },
-  ];
+
+function cleanTierEntry(raw, fallbackWhen = '') {
+  if (!raw || typeof raw !== 'object') return null;
+  const model = typeof raw.model === 'string' ? raw.model.trim() : '';
+  if (!model) return null;
+  const effort = typeof raw.effort === 'string' && raw.effort.trim() ? raw.effort.trim().toLowerCase() : null;
+  const when = typeof raw.when === 'string' && raw.when.trim() ? raw.when.trim().slice(0, 120) : fallbackWhen;
+  return { model, effort, when };
 }
-export function purposeCategory(connection) {
-  if (!connection) return null;
-  if (connection.kind === 'codex') return 'codex';
-  if (connection.kind === 'grok') return 'grok';
-  if (connection.kind === 'api' && connection.provider === 'deepseek') return 'deepseek';
-  if (connection.kind === 'api' && connection.provider === 'anthropic') return 'anthropic';
-  if (connection.kind === 'api' && connection.provider === 'xai') return 'grok';
-  if (connection.kind === 'api' && connection.provider === 'openai' && (connection.api || 'openai-responses') === 'openai-responses') return 'openai';
-  return null;
-}
-export function templateProbeConnection(category) {
-  if (category === 'deepseek') return { id: 'template-deepseek', name: 'DeepSeek API', kind: 'api', provider: 'deepseek', api: 'openai-completions', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash' };
-  if (category === 'openai') return { id: 'template-openai', name: 'OpenAI API', kind: 'api', provider: 'openai', api: 'openai-responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6.1-terra' };
-  if (category === 'codex') return { id: 'template-codex', name: 'Codex 订阅', kind: 'codex', provider: 'openai-codex', api: 'openai-codex-responses', baseUrl: 'https://chatgpt.com/backend-api', model: 'gpt-6.1-terra' };
-  if (category === 'anthropic') return { id: 'template-anthropic', name: 'Anthropic API', kind: 'api', provider: 'anthropic', api: 'anthropic-messages', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-5' };
-  if (category === 'grok') return { id: 'template-grok', name: 'Grok', kind: 'grok', provider: 'xai', api: 'openai-responses', baseUrl: 'https://cli-chat-proxy.grok.com/v1', model: 'grok-4' };
-  return null;
-}
+
 export function normalizeModelCatalog(catalog) {
-  const defaults = defaultPurposeDefaults();
-  const savedDefaults = catalog?.purposeDefaults && typeof catalog.purposeDefaults === 'object' ? catalog.purposeDefaults : {};
-  const purposeDefaults = {};
-  for (const category of purposeTemplateCategories) {
-    purposeDefaults[category] = {};
-    for (const purpose of modelPurposes) {
-      const entry = savedDefaults[category]?.[purpose];
-      purposeDefaults[category][purpose] = entry?.model
-        ? { model: String(entry.model).trim(), thinking_level: entry.thinking_level ?? null }
-        : { ...defaults[category][purpose] };
+  const connections = Array.isArray(catalog?.connections) ? catalog.connections : [];
+  const connById = new Map(connections.map(c => [c.id, c]));
+  let activeId = catalog?.activeId && connById.has(catalog.activeId) ? catalog.activeId : null;
+  const rawRoles = catalog?.roleRouting && typeof catalog.roleRouting === 'object' && !Array.isArray(catalog.roleRouting)
+    ? catalog.roleRouting : {};
+  const roleRouting = {};
+  for (const purpose of modelPurposes) {
+    const slot = rawRoles[purpose];
+    if (slot && typeof slot === 'object' && slot.connection_id && connById.has(slot.connection_id) && typeof slot.model === 'string' && slot.model.trim()) {
+      roleRouting[purpose] = {
+        connection_id: slot.connection_id,
+        model: slot.model.trim(),
+        thinking_level: slot.thinking_level === '' || slot.thinking_level === undefined ? null : slot.thinking_level,
+      };
+    } else if (activeId) {
+      roleRouting[purpose] = defaultRoleSlot(connById.get(activeId), purpose);
+    } else {
+      roleRouting[purpose] = null;
     }
   }
-  const connectionPurposes = catalog?.connectionPurposes && typeof catalog.connectionPurposes === 'object' && !Array.isArray(catalog.connectionPurposes)
-    ? structuredClone(catalog.connectionPurposes) : {};
-  const normalizeRecommended = (rawList, fallbackFn) => {
-    const cleaned = Array.isArray(rawList) && rawList.length
-      ? rawList.filter(item => typeof item?.model === 'string' && item.model.trim() && Array.isArray(item.efforts) && item.efforts.length)
-        .map(item => ({ model: item.model.trim(), efforts: [...new Set(item.efforts.map(e => String(e).trim()).filter(Boolean))] }))
-      : [];
-    return cleaned.length ? cleaned : fallbackFn();
+  if (!activeId && roleRouting.conversation?.connection_id && connById.has(roleRouting.conversation.connection_id)) {
+    activeId = roleRouting.conversation.connection_id;
+  }
+
+  const engineRouting = {};
+  const rawEngines = catalog?.engineRouting && typeof catalog.engineRouting === 'object' && !Array.isArray(catalog.engineRouting)
+    ? catalog.engineRouting : {};
+  for (const [engineId, cfg] of Object.entries(rawEngines)) {
+    if (!engineId || !cfg || typeof cfg !== 'object' || Array.isArray(cfg)) continue;
+    const cleaned = {};
+    const defaults = defaultEngineTiers(engineId);
+    for (const tier of engineTiers) {
+      const item = cleanTierEntry(cfg[tier], defaults[tier]?.when || '');
+      if (item) cleaned[tier] = item;
+    }
+    if (Object.keys(cleaned).length) engineRouting[engineId] = cleaned;
+  }
+
+  const rawAuto = catalog?.autoConfig && typeof catalog.autoConfig === 'object' ? catalog.autoConfig : {};
+  const autoConfig = {
+    customized: rawAuto.customized === true,
+    updatedAt: typeof rawAuto.updatedAt === 'string' ? rawAuto.updatedAt : null,
+    source: typeof rawAuto.source === 'string' ? rawAuto.source : null,
+    rationale: typeof rawAuto.rationale === 'string' ? rawAuto.rationale.slice(0, 600) : '',
   };
-  const codexRecommended = normalizeRecommended(catalog?.externalEngines?.codex?.recommended, defaultCodexRecommendations);
-  const agyRecommended = normalizeRecommended(catalog?.externalEngines?.agy?.recommended, defaultAgyRecommendations);
-  const { fastId, ...rest } = catalog;
+
+  const { fastId, purposeDefaults, connectionPurposes, externalEngines, ...rest } = catalog || {};
   return {
     ...rest,
-    schemaVersion: 2,
+    schemaVersion: 3,
+    activeId,
+    connections,
     autoGrantPurposeConnections: catalog?.autoGrantPurposeConnections !== false,
-    purposeDefaults,
-    connectionPurposes,
-    externalEngines: { ...(catalog?.externalEngines && typeof catalog.externalEngines === 'object' ? catalog.externalEngines : {}),
-      codex: { recommended: codexRecommended },
-      agy: { recommended: agyRecommended } },
+    roleRouting,
+    engineRouting,
+    autoConfig,
   };
 }
 export function readConnectionCatalog(path) {
@@ -268,38 +284,21 @@ export function validateModelPurpose(connection, modelId, thinkingLevel, field =
   }
   return connectionModel({ ...connection, model: modelId, thinkingLevel: thinkingLevel ?? null });
 }
-export function resolveConnectionPurpose(catalog, connectionId, purpose = 'conversation', visited = new Set()) {
+export function resolveConnectionPurpose(catalog, connectionId, purpose = 'conversation') {
   const normalized = normalizeModelCatalog(catalog);
   const entry = normalized.connections.find(item => item.id === connectionId);
   if (!entry) return null;
-  const override = !visited.has(connectionId) ? normalized.connectionPurposes?.[connectionId]?.[purpose] : null;
-  if (override && (override.model || override.connection_id || override.thinking_level !== undefined)) {
-    const targetId = override.connection_id || connectionId;
-    const target = normalized.connections.find(item => item.id === targetId);
-    if (!target) return null;
-    if (override.model) {
-      return { connection_id: target.id, id: override.model, thinking_level: override.thinking_level ?? null, source: 'connection_override' };
-    }
-    const nextVisited = new Set(visited);
-    nextVisited.add(connectionId);
-    const base = resolveConnectionPurpose(normalized, target.id, purpose, nextVisited);
-    return base ? { ...base, thinking_level: override.thinking_level !== undefined ? override.thinking_level : base.thinking_level, source: 'connection_override' } : null;
-  }
-  const category = purposeCategory(entry);
-  const template = category && normalized.purposeDefaults?.[category]?.[purpose];
-  if (template?.model) {
-    return { connection_id: entry.id, id: template.model, thinking_level: template.thinking_level ?? null, source: `template:${category}` };
-  }
-  const fallback = connectionModel(entry);
-  let thinking = entry.thinkingLevel ?? null;
-  if (purpose === 'fast_read' && fallback.thinkingLevels?.includes('off')) thinking = 'off';
-  else if (purpose === 'pi_session' && fallback.thinkingLevels?.includes('high')) thinking = 'high';
-  return { connection_id: entry.id, id: entry.model, thinking_level: thinking, source: 'connection_default' };
+  const fallback = defaultRoleSlot(entry, purpose);
+  return { connection_id: entry.id, id: fallback.model, thinking_level: fallback.thinking_level ?? null, source: 'connection_default' };
 }
 export function resolveBotModelSelection(catalog, botModel, purpose = 'conversation') {
   if (!botModel) return null;
   const normalized = normalizeModelCatalog(catalog);
   if (botModel.mode === 'follow_default') {
+    const routed = normalized.roleRouting?.[purpose];
+    if (routed && routed.connection_id && routed.model && normalized.connections.some(c => c.id === routed.connection_id)) {
+      return { connection_id: routed.connection_id, id: routed.model, thinking_level: routed.thinking_level ?? null, source: 'role_routing' };
+    }
     return normalized.activeId ? resolveConnectionPurpose(normalized, normalized.activeId, purpose) : null;
   }
   if (botModel.mode === 'follow_connection') {

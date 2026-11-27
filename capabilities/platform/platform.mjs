@@ -390,16 +390,11 @@ export class SummonPlatform {
   listBots() { return this.manager.list(); }
 
   workEngines(options = {}) {
-    let externalEngines = null;
-    try { externalEngines = this.models.catalog()?.externalEngines || null; } catch {}
     return this.engines.available(options).map(engine => {
-      const rec = externalEngines?.[engine.id]?.recommended;
-      const recommended_models = Array.isArray(rec) && rec.length
-        ? rec.map(item => ({ model: item.model, efforts: Array.isArray(item.efforts) ? item.efforts : [] }))
-        : undefined;
+      const tiers = this.models.engineTiers?.(engine.id) || null;
       return {
         ...engine,
-        ...(recommended_models ? { recommended_models } : {}),
+        ...(tiers && Object.keys(tiers).length ? { tiers } : {}),
       };
     });
   }

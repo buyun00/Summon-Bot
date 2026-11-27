@@ -196,6 +196,7 @@ export async function startGateway(options = {}) {
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, exec });
+    models.attach({ engines: platform.engines, platform, getUsageDb: () => runtime.usage });
     platform.initializeDefaults();
     platform.resources.recoverModels();
     platform.recoverCalls();

@@ -1240,10 +1240,10 @@ export class BotRuntime {
     if (workEngines.length) {
       facts.push(textMessage({
         type: 'work_engines',
-        engines: workEngines.map(({ id, name, recommended_models }) => ({
+        engines: workEngines.map(({ id, name, tiers }) => ({
           id,
           name,
-          ...(recommended_models?.length ? { models: recommended_models.map(m => typeof m === 'string' ? m : m?.model).filter(Boolean).slice(0, 3) } : {}),
+          ...(tiers && Object.keys(tiers).length ? { tiers } : {}),
         })),
       }));
     }
