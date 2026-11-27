@@ -95,11 +95,12 @@ export function normalizeRoomMessage(event) {
   };
 }
 
-export function formatRoomMessage(event) {
+export function formatRoomMessage(event, displayName) {
   const msg = normalizeRoomMessage(event);
   const timeStr = formatChatTime(msg.time);
+  const userName = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : '用户';
   const speaker = msg.author?.kind === 'user'
-    ? '宿主'
+    ? userName
     : msg.author?.kind === 'platform'
       ? '系统'
       : msg.sender_name
@@ -150,12 +151,12 @@ export function formatRoomMessage(event) {
   return lines.join('\n');
 }
 
-export function roomChatMessage(event) {
+export function roomChatMessage(event, displayName) {
   const ts = Date.parse(event.time ?? event.createdAt ?? '') || Date.now();
   return {
     role: 'user',
     timestamp: ts,
-    content: [{ type: 'text', text: formatRoomMessage(event) }],
+    content: [{ type: 'text', text: formatRoomMessage(event, displayName) }],
   };
 }
 

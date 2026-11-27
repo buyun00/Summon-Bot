@@ -480,9 +480,10 @@ struct RoomDetailsView: View {
         if id == "user" {
             VStack(spacing: 7) {
                 OwnerAvatarView(
-                    name: store.settings.hubUsername ?? store.settings.userName,
-                    signedIn: store.settings.hubUsername != nil,
-                    size: 48
+                    name: store.userAvatarFallbackName,
+                    signedIn: store.hasOwnerIdentity,
+                    size: 48,
+                    avatarPath: store.userProfile?.normalizedAvatarPath
                 )
                     .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 0.8) }
                 Text(store.name(for: id))

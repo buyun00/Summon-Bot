@@ -129,6 +129,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
         CompositionLocalProvider(
             LocalSummonIsDark provides isDark,
             LocalSummonPalette provides palette,
+            LocalSummonStore provides store,
         ) {
             MaterialTheme(typography = summonTypography, colorScheme = colorScheme) {
                 Surface(Modifier.fillMaxSize(), color = palette.background) {

@@ -80,26 +80,53 @@ struct MemberAvatar: View {
 }
 
 struct OwnerAvatarView: View {
+    @Environment(SummonStore.self) private var store: SummonStore?
     let name: String
     let signedIn: Bool
     var size: CGFloat = 34
+    var avatarPath: String? = nil
+
+    private var resolvedAvatarPath: String? {
+        let candidate = avatarPath ?? store?.userProfile?.normalizedAvatarPath
+        guard let candidate, !candidate.isEmpty else { return nil }
+        return candidate
+    }
+
+    private var loadKey: String {
+        let base = store?.settings.baseURL ?? ""
+        let node = store?.activeNodeID ?? ""
+        let ready = store?.protocolReady == true ? "1" : "0"
+        return "\(base)|\(node)|\(ready)|\(resolvedAvatarPath ?? "")"
+    }
 
     var body: some View {
+        let image = store?.cachedUserAvatarImage(for: resolvedAvatarPath)
         ZStack {
-            Circle()
-                .fill(signedIn ? SummonTheme.ok.opacity(0.18) : SummonTheme.surface)
-            if signedIn, let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first {
-                Text(String(first).uppercased())
-                    .font(.system(size: max(11, size * 0.44), weight: .bold, design: .rounded))
-                    .foregroundStyle(SummonTheme.ok)
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
             } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: max(12, size * 0.46), weight: .medium))
-                    .foregroundStyle(.secondary)
+                Circle()
+                    .fill(signedIn ? SummonTheme.ok.opacity(0.18) : SummonTheme.surface)
+                if signedIn, let first = name.trimmingCharacters(in: .whitespacesAndNewlines).first {
+                    Text(String(first).uppercased())
+                        .font(.system(size: max(11, size * 0.44), weight: .bold, design: .rounded))
+                        .foregroundStyle(SummonTheme.ok)
+                } else {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: max(12, size * 0.46), weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+        .task(id: loadKey) {
+            guard let path = resolvedAvatarPath else { return }
+            _ = await store?.loadUserAvatarImage(for: path)
+        }
     }
 }
 
@@ -132,7 +159,12 @@ struct RoomAvatar: View {
                     let outlineWidth = min(4, child * 0.08)
                     Group {
                         if id == "user" {
-                            OwnerAvatarView(name: "", signedIn: false, size: child * 0.86)
+                            OwnerAvatarView(
+                                name: store?.userAvatarFallbackName ?? "",
+                                signedIn: store?.hasOwnerIdentity ?? false,
+                                size: child * 0.86,
+                                avatarPath: store?.userProfile?.normalizedAvatarPath
+                            )
                                 .overlay {
                                     if showOutline { Circle().stroke(background, lineWidth: outlineWidth) }
                                 }

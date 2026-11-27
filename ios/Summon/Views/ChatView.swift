@@ -412,7 +412,7 @@ struct ChatView: View {
                         let ownerID = step.owner
                         let ownerLabel: String = {
                             guard let ownerID, !ownerID.isEmpty else { return "" }
-                            return ownerID == "user" ? "宿主" : store.name(for: ownerID)
+                            return ownerID == "user" ? store.userDisplayName : store.name(for: ownerID)
                         }()
                         let ownerBot = ownerID.flatMap { $0 == "user" ? nil : store.bot(id: $0) }
                         let matchedLive: ActiveBotItem? = step.status == "in_progress"

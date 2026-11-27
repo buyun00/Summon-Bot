@@ -19,6 +19,7 @@ import { HostResources } from './resources.mjs';
 import { GoalManager } from './goals.mjs';
 import { RoomWork } from './room-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
+import { userDisplayName } from './user-profile.mjs';
 import { SelfUpdateService } from '../services/self-update.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
@@ -266,7 +267,7 @@ export class SummonPlatform {
   }
 
   actorLabel(actorId) {
-    if (!actorId || actorId === 'user') return '宿主';
+    if (!actorId || actorId === 'user') return userDisplayName(this.dataRoot);
     return this.store.get(botRecords, actorId)?.name || actorId;
   }
 

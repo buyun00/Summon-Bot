@@ -104,14 +104,26 @@ fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:
 
 
 
+val LocalSummonStore = staticCompositionLocalOf<SummonStore?> { null }
+
 @Composable
 fun OwnerAvatar(
     name: String,
     signedIn: Boolean,
     size: Dp,
     modifier: Modifier = Modifier,
+    avatarPath: String? = null,
 ) {
     val palette = LocalSummonPalette.current
+    val store = LocalSummonStore.current
+    val resolvedPath = avatarPath?.trim()?.takeIf { it.isNotEmpty() }
+        ?: store?.userProfile?.normalizedAvatarPath
+    val bitmap = store?.cachedUserAvatarBitmap(resolvedPath)
+    LaunchedEffect(resolvedPath, store?.protocolReady, store?.settings?.baseURL, store?.activeNodeID) {
+        if (resolvedPath != null) {
+            store?.loadUserAvatarBitmap(resolvedPath)
+        }
+    }
     val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString()
     Box(
         modifier = modifier
@@ -120,7 +132,14 @@ fun OwnerAvatar(
             .background(if (signedIn) palette.ok.copy(alpha = 0.16f) else palette.surface),
         contentAlignment = Alignment.Center,
     ) {
-        if (signedIn && !initial.isNullOrEmpty()) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
+        } else if (signedIn && !initial.isNullOrEmpty()) {
             Text(
                 text = initial,
                 color = palette.ok,
@@ -148,6 +167,7 @@ fun RoomAvatar(
     showOutline: Boolean = true,
 ) {
     val palette = LocalSummonPalette.current
+    val store = LocalSummonStore.current
     val botsOnly = room.members.filter { id -> bots.any { it.id == id } }
     val members = (if (botsOnly.isNotEmpty()) botsOnly else room.members.filter { it == "user" }).take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -170,10 +190,11 @@ fun RoomAvatar(
                 Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     if (id == "user") {
                         OwnerAvatar(
-                            name = "",
-                            signedIn = false,
+                            name = store?.userAvatarFallbackName.orEmpty(),
+                            signedIn = store?.hasOwnerIdentity == true,
                             size = child * 0.86f,
                             modifier = if (showOutline) Modifier.border(outlineWidth, background, CircleShape) else Modifier,
+                            avatarPath = store?.userProfile?.normalizedAvatarPath,
                         )
                     } else {
                         MemberAvatar(bots.first { it.id == id }, child, groupOutline = if (showOutline) background else null)

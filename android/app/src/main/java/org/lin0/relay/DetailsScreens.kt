@@ -382,10 +382,11 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                                                     verticalArrangement = Arrangement.spacedBy(6.dp),
                                                 ) {
                                                     OwnerAvatar(
-                                                        name = store.settings.hubUsername ?: store.settings.userName,
-                                                        signedIn = store.settings.hubUsername != null,
+                                                        name = store.userAvatarFallbackName,
+                                                        signedIn = store.hasOwnerIdentity,
                                                         size = 48.dp,
                                                         modifier = Modifier.border(0.8.dp, palette.bubbleStroke, CircleShape),
+                                                        avatarPath = store.userProfile?.normalizedAvatarPath,
                                                     )
                                                     Text(store.name(memberId), style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 }

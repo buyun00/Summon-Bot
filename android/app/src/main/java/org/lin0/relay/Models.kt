@@ -536,6 +536,29 @@ data class SummonHubAuthResult(
     val token: String,
 )
 
+data class SummonUserProfile(
+    val displayName: String? = null,
+    val avatarPath: String? = null,
+    val avatarVersion: Int? = null,
+) {
+    val trimmedDisplayName: String?
+        get() = displayName?.trim()?.takeIf { it.isNotEmpty() }
+
+    val normalizedAvatarPath: String?
+        get() = avatarPath?.trim()?.takeIf { it.isNotEmpty() }
+
+    companion object {
+        fun parse(json: SummonJson): SummonUserProfile? {
+            if (json.obj == null) return null
+            return SummonUserProfile(
+                displayName = json["displayName"].string,
+                avatarPath = json["avatarPath"].string,
+                avatarVersion = json["avatarVersion"].int,
+            )
+        }
+    }
+}
+
 data class SummonConnectionSettings(
     val baseURL: String = "",
     val userName: String = "本地账户",

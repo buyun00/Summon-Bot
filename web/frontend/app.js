@@ -147,7 +147,7 @@ function renderSettingsPanelBody(tab) {
   if (tab === 'general') {
     const hostLabel = location.host || location.origin;
     const identity = ownerIdentity();
-    const profile = readLocalProfile();
+    const serverProfile = serverUserProfile();
     return `<div class="settings-section">
       <h3 class="settings-group-label">账户</h3>
       <div class="settings-card">
@@ -155,7 +155,7 @@ function renderSettingsPanelBody(tab) {
           <div class="settings-account-main">
             ${avatar('user', 42)}
             <div class="settings-row-copy">
-              <strong>${esc(identity.signedIn ? identity.name : (profile.name || '本地账户'))}</strong>
+              <strong>${esc(identity.name)}</strong>
               <small><i class="settings-status-dot ${connected ? 'is-ok' : 'is-warn'}" aria-hidden="true"></i>${identity.signedIn ? `@${esc(identity.username || '')} · 云端账号` : '未登录云端账号 · 仅本机使用'} · ${esc(hostLabel)}</small>
             </div>
           </div>
@@ -168,21 +168,21 @@ function renderSettingsPanelBody(tab) {
         </div>
         <div class="settings-row settings-row-stack">
           <div class="settings-row-copy">
-            <strong>本地资料</strong>
-            <small>自定义本机显示的昵称与头像（保存在本机浏览器）</small>
+            <strong>个人资料</strong>
+            <small>设置你的显示名与头像，同步用于所有对话与称呼</small>
           </div>
           <form class="settings-profile-form" id="local-profile-form">
-            <input name="name" type="text" maxlength="32" value="${esc(profile.name || '')}" placeholder="${esc(identity.signedIn ? identity.name : '本地账户')}" autocomplete="off">
-            <button type="submit" class="secondary-button small-button">保存昵称</button>
-            <label class="secondary-button small-button settings-upload-btn">更换头像<input type="file" accept="image/png,image/jpeg,image/webp" data-action="upload-owner-avatar" hidden></label>
-            ${profile.avatar ? '<button type="button" class="text-button" data-action="clear-owner-avatar">恢复默认</button>' : ''}
+            <input name="name" type="text" maxlength="24" value="${esc(serverProfile?.displayName || identity.name || '')}" placeholder="输入你的名字（1–24 字）" autocomplete="off" ${ui.userProfileSaving ? 'disabled' : ''}>
+            <button type="submit" class="secondary-button small-button" ${!ui.protocolReady || ui.userProfileSaving ? 'disabled' : ''}>${ui.userProfileSaving ? '保存中…' : '保存名字'}</button>
+            <label class="secondary-button small-button settings-upload-btn">更换头像<input type="file" accept="image/png,image/jpeg,image/webp" data-action="upload-owner-avatar" ${!ui.protocolReady || ui.userProfileSaving ? 'disabled' : ''} hidden></label>
+            ${identity.hasServerAvatar ? `<button type="button" class="text-button" data-action="clear-owner-avatar" ${!ui.protocolReady || ui.userProfileSaving ? 'disabled' : ''}>恢复默认</button>` : ''}
           </form>
         </div>
       </div>
     </div>
     <div class="settings-section">
       <div class="settings-group-head">
-        <h3 class="settings-group-label">宿主画像</h3>
+        <h3 class="settings-group-label">我的画像</h3>
         <span class="settings-group-badge">全平台 Bot 共享</span>
       </div>
       <div class="settings-card">
@@ -429,8 +429,15 @@ async function loadSettingsTabData(tab) {
   if (!ui.protocolReady) return;
   if (tab === 'general') {
     try {
-      const data = await api('/api/host-profile');
-      state.hostProfile = { content: String(data?.content || ''), updated_at: data?.updated_at || null, loaded: true };
+      const [hostRes, userRes] = await Promise.allSettled([api('/api/host-profile'), api('/api/user-profile')]);
+      if (hostRes.status === 'fulfilled') {
+        const data = hostRes.value;
+        state.hostProfile = { content: String(data?.content || ''), updated_at: data?.updated_at || null, loaded: true };
+      }
+      if (userRes.status === 'fulfilled' && userRes.value) {
+        state.userProfile = userRes.value;
+        ui.lastSidebarHtml = null;
+      }
       refreshOpenSettingsBody();
     } catch {}
   } else if (tab === 'models') {
@@ -552,13 +559,13 @@ const NEW_GROUP_SUGGESTIONS = [
     prompt: '我想建一个专题研究与方案写作群，用来收集资料、推演方案并长期维护专业文档。',
   },
 ];
-const state = { bots: [], archivedBots: [], engines: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [], hostProfile: { content: '', updated_at: null, loaded: false } };
+const state = { bots: [], archivedBots: [], engines: [], roles: [], rooms: [], archivedRooms: [], executions: [], files: [], wakeups: [], workspaces: [], hostProfile: { content: '', updated_at: null, loaded: false }, userProfile: null };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, hostProfileSaving:false, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
+  view:'chat', lastPanelView:'overview', settingsTab:'general', returnToSettingsTab:null, hostProfileSaving:false, userProfileSaving:false, roomId:null, creatingRoom:false, creatingRoomBusy:false, draftWorkspaceId:'', botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomActivities:[], roomGoal:null, roomDrawerMode:'plan', optimisticRoomWork:{}, roomWorkEpoch:{}, roomSuspendedRuns:[], activityTickerIndex:0, mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -1253,7 +1260,7 @@ async function handshake() {
       window.SummonOnboarding?.notifyUpdate?.();
     };
     stream.onmessage = onStream;
-    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace', 'engine']) stream.addEventListener(type, onStream);
+    for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution', 'onboarding', 'workspace', 'engine', 'user_profile']) stream.addEventListener(type, onStream);
     stream.onerror = () => { ui.streamConnected = false; scheduleRefresh(); };
   }
   return true;
@@ -1277,8 +1284,14 @@ async function refresh(force = false) {
     if (force) ui.stateCursor = null;
     const synced = await requestSyncedSnapshot('/api/state', { snapshot:ui.stateSnapshot, cursor:ui.stateCursor });
     if (!synced) return;
+    const prevUserProfile = state.userProfile ? JSON.stringify(state.userProfile) : '';
     ui.stateSnapshot = synced.snapshot; ui.stateCursor = synced.cursor;
     Object.assign(state, synced.snapshot);
+    const nextUserProfile = state.userProfile ? JSON.stringify(state.userProfile) : '';
+    if (prevUserProfile !== nextUserProfile) {
+      ui.lastSidebarHtml = null;
+      ui.lastMainHtml = null;
+    }
     window.SummonHub?.syncActiveSnapshot?.(state);
     if (!Array.isArray(state.workspaces) || !state.workspaces.length) {
       void readList('/api/workspaces').then(list => { if (Array.isArray(list)) state.workspaces = list; }).catch(() => {});
@@ -1798,7 +1811,7 @@ async function stopCurrentRoom() {
 
 function archiveBotConfirm(bot) {
   if (!bot) return;
-  openModal('归档 Bot', bot.name, '<p>归档后将自动移出所有群聊、打断其非共享在途执行，并从常用列表中隐藏。历史消息与私有文件仍对宿主只读保留，可随时恢复。</p>', async () => {
+  openModal('归档 Bot', bot.name, '<p>归档后将自动移出所有群聊、打断其非共享在途执行，并从常用列表中隐藏。历史消息与私有文件仍对你只读保留，可随时恢复。</p>', async () => {
     await api('/api/bots/' + encodeURIComponent(bot.id) + '/archive', 'POST', { revision: bot.revision });
     if (ui.profileBotId === bot.id) ui.profileBotId = null;
   }, '确认归档');
@@ -2543,16 +2556,35 @@ async function act(action, element) {
     window.SummonHub?.openAuthOverlay?.({ mode: 'login', dismissible: window.SummonHub?.state?.mode === 'local' });
     return;
   }
+  if (action === 'edit-user-profile') {
+    ui.menu = null;
+    openSettingsModal('general');
+    setTimeout(() => { $('#local-profile-form input[name="name"]')?.focus(); }, 60);
+    return;
+  }
   if (action === 'clear-owner-avatar') {
-    saveLocalProfile({ avatar: '' });
-    ui.lastSidebarHtml = null;
+    if (ui.userProfileSaving || !ui.protocolReady) return;
+    ui.userProfileSaving = true;
     refreshOpenSettingsBody();
-    render();
-    return toast('已恢复默认头像');
+    try {
+      const saved = await api('/api/user-profile/avatar', 'DELETE', {});
+      state.userProfile = saved;
+      ui.lastSidebarHtml = null;
+      ui.lastMainHtml = null;
+      render();
+      toast('已恢复默认头像');
+    } catch (error) {
+      toast(userProfileErrorMessage(error, '恢复默认头像失败，请稍后重试'), true);
+    } finally {
+      ui.userProfileSaving = false;
+      refreshOpenSettingsBody();
+    }
+    return;
   }
   if (action === 'owner-click') {
     const identity = ownerIdentity();
-    if (!identity.signedIn && !identity.localAccepted && window.SummonHub?.openAuthOverlay) {
+    const hasProfile = Boolean(identity.hasServerAvatar || (identity.name && identity.name !== '用户'));
+    if (!identity.signedIn && !identity.localAccepted && !hasProfile && window.SummonHub?.openAuthOverlay) {
       window.SummonHub.openAuthOverlay({ mode: 'login', dismissible: true });
       return;
     }
@@ -3141,12 +3173,34 @@ document.addEventListener('submit', event => {
   const form = event.target;
   if (form.id === 'local-profile-form') {
     event.preventDefault();
-    const name = String(form.elements.name?.value || '').trim().slice(0, 32);
-    saveLocalProfile({ name, localAccepted: true });
-    ui.lastSidebarHtml = null;
-    refreshOpenSettingsBody();
-    render();
-    toast(name ? '本地昵称已保存' : '已恢复默认名称');
+    if (ui.userProfileSaving) return;
+    const displayName = String(form.elements.name?.value || '').trim();
+    if (displayName.length < 1 || displayName.length > 24) {
+      toast('名字需要 1–24 个字', true);
+      return;
+    }
+    if (!ui.protocolReady) {
+      toast('服务尚未连接，请稍后再试', true);
+      return;
+    }
+    ui.userProfileSaving = true;
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    void api('/api/user-profile', 'PUT', { displayName })
+      .then(saved => {
+        state.userProfile = saved;
+        saveLocalProfile({ localAccepted: true });
+        ui.lastSidebarHtml = null;
+        ui.lastMainHtml = null;
+        render();
+        toast('名字已保存');
+      })
+      .catch(error => toast(userProfileErrorMessage(error, '保存名字失败，请稍后重试'), true))
+      .finally(() => {
+        ui.userProfileSaving = false;
+        if (document.activeElement && form.contains(document.activeElement)) document.activeElement.blur();
+        refreshOpenSettingsBody();
+      });
     return;
   }
   if (form.id === 'host-profile-form') {
@@ -3159,7 +3213,7 @@ document.addEventListener('submit', event => {
     void api('/api/host-profile', 'PUT', { content })
       .then(saved => {
         state.hostProfile = { content: String(saved?.content || ''), updated_at: saved?.updated_at || null, loaded: true };
-        toast(state.hostProfile.content ? '宿主画像已保存' : '宿主画像已清空');
+        toast(state.hostProfile.content ? '我的画像已保存' : '我的画像已清空');
       })
       .catch(error => toast(error.message || '保存失败', true))
       .finally(() => {
@@ -3260,29 +3314,55 @@ function saveLocalProfile(patch) {
   try { localStorage.setItem(localProfileKey, JSON.stringify(next)); } catch {}
   return next;
 }
+function serverUserProfile() {
+  const raw = state.userProfile;
+  if (!raw || typeof raw !== 'object') return null;
+  const displayName = typeof raw.displayName === 'string' ? raw.displayName.trim() : '';
+  const avatarVersion = Number.isSafeInteger(raw.avatarVersion) && raw.avatarVersion > 0 ? raw.avatarVersion : 0;
+  const rawPath = typeof raw.avatarPath === 'string' && raw.avatarPath.startsWith('/api/user-profile/avatar') ? raw.avatarPath : '';
+  const avatarPath = rawPath
+    ? (rawPath.includes('v=') ? rawPath : `${rawPath}${rawPath.includes('?') ? '&' : '?'}v=${avatarVersion}`)
+    : null;
+  return { displayName, avatarPath, avatarVersion };
+}
+function userProfileAvatarUrl(profile = serverUserProfile()) {
+  if (!profile?.avatarPath) return '';
+  return window.SummonHub?.apiPath?.(profile.avatarPath) || profile.avatarPath;
+}
+function userProfileErrorMessage(error, fallback = '操作失败，请稍后重试') {
+  const msg = typeof error?.message === 'string' ? error.message.trim() : '';
+  if (msg && /[\u4e00-\u9fff]/.test(msg)) return msg;
+  return fallback;
+}
 function ownerIdentity() {
   const hubState = window.SummonHub?.state;
   const signedIn = Boolean(hubState?.authenticated && hubState?.user);
   const hubUser = signedIn ? hubState.user : null;
   const profile = readLocalProfile();
+  const serverProfile = serverUserProfile();
   const cloudName = String(hubUser?.displayName || hubUser?.username || '').trim();
-  const name = profile.name || cloudName || state.user?.name || state.owner?.name || (signedIn ? '用户' : '本地账户');
-  const sidebarLabel = signedIn ? (profile.name || cloudName || '用户') : (profile.name || (profile.localAccepted ? '本地账户' : '登录'));
+  const serverName = serverProfile?.displayName || '';
+  const name = serverName || cloudName || state.user?.name || state.owner?.name || '用户';
+  const hasCustomName = Boolean(serverName && serverName !== '用户');
+  const sidebarLabel = hasCustomName
+    ? serverName
+    : (signedIn ? (cloudName || serverName || '用户') : (profile.localAccepted ? (serverName || '用户') : '登录'));
   return {
     signedIn,
     username: hubUser?.username || '',
     name,
     sidebarLabel,
-    customAvatar: profile.avatar,
+    customAvatar: userProfileAvatarUrl(serverProfile),
+    hasServerAvatar: Boolean(serverProfile?.avatarPath),
     localAccepted: profile.localAccepted,
   };
 }
 function renderUserAvatar(size) {
   const identity = ownerIdentity();
   if (identity.customAvatar) {
-    return `<img class="user-avatar" src="${esc(identity.customAvatar)}" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
+    return `<img class="user-avatar" src="${esc(identity.customAvatar)}" width="${size}" height="${size}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover" alt="" aria-hidden="true">`;
   }
-  if (identity.signedIn) {
+  if (identity.signedIn || (identity.name && identity.name !== '用户' && identity.name !== '本地账户')) {
     const ch = [...(identity.name || identity.username || 'U')][0]?.toUpperCase() || 'U';
     const fontSize = Math.max(11, Math.round(size * 0.44));
     return `<span class="user-avatar is-initial" style="width:${size}px;height:${size}px;font-size:${fontSize}px" aria-hidden="true">${esc(ch)}</span>`;
@@ -3655,6 +3735,7 @@ function renderTopbar() {
       ? `<div class="apps-menu-account"><strong>${esc(identity.name)}</strong><small>@${esc(identity.username || '')} · 云端账号</small></div>`
       : `<button class="apps-menu-login" data-action="open-account-login">${icon('link', 17)}<span>登录云端账号</span></button>`}
     <div class="apps-menu-divider"></div>
+    <button data-action="edit-user-profile">${icon('edit', 17)}<span>编辑资料</span></button>
     <button data-action="open-panel">${icon('layers', 18)}<span>面板</span></button>
     <button data-action="open-settings">${icon('settings', 18)}<span>设置</span></button>
     ${identity.signedIn ? `<div class="apps-menu-divider"></div><button data-hub-action="logout">${icon('close', 16)}<span>退出账号</span></button>` : ''}
@@ -4270,7 +4351,7 @@ function renderMessageAcks(message, timeline) {
 
 function renderChatMessage(message, timeline, grouped, isGroup, previous = null, workingBotIds = null, roomId = ui.roomId) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
-  const senderLabel = message.senderName || nameOf(sender);
+  const senderLabel = own ? (serverUserProfile()?.displayName || nameOf(sender)) : (message.senderName || nameOf(sender));
   const rawParent = message.replyTo ? timeline.find(item => item.id === message.replyTo) : null;
   const showReplyQuote = Boolean(message.replyTo && message.replyTo !== previous?.id && !rawParent?.promptResponse);
   const parent = showReplyQuote ? rawParent : null;
@@ -4649,7 +4730,7 @@ function goalStepSnapshot(goal) {
 
 function goalIntentBadge(goal) {
   if (goal?.intent === 'execute') {
-    return { text: '施工执行', cls: 'is-execute', title: '宿主已授权施工执行模式' };
+    return { text: '施工执行', cls: 'is-execute', title: '你已授权施工执行模式' };
   }
   return { text: '调研探讨', cls: 'is-inquiry', title: '只读调研与方案探讨模式（不动线上服务）' };
 }
@@ -4726,7 +4807,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
       : '';
     const stepRows = snap.steps.map((step, idx) => {
       const ownerId = step.owner || null;
-      const ownerLabel = ownerId === 'user' ? '宿主' : (ownerId ? nameOf(ownerId) : '');
+      const ownerLabel = ownerId === 'user' ? '你' : (ownerId ? nameOf(ownerId) : '');
       const ownerIsBot = Boolean(ownerId && ownerId !== 'user' && botById(ownerId));
       const matchedLive = step.status === 'in_progress'
         ? (liveItems.find(it => it.botId === ownerId) || (snap.active?.id === step.id ? liveItems[0] : null))
@@ -5254,7 +5335,7 @@ function renderFiles() {
         `<button type="button" class="${rev.revision === item.revision ? 'primary-button' : 'secondary-button'}" style="padding:3px 10px;font-size:12px" data-action="open-file-revision" data-id="${esc(item.id)}" data-revision="${esc(rev.revision)}">v${esc(rev.revision)}${rev.revision === latestRev ? ' (当前正式版)' : ''}</button>`).join('')}</div>`
     : '';
   const scopeDesc = item?.space
-    ? (item.space.kind === 'bot' ? `私有记忆/资料（仅 ${nameOf(item.space.id)} 与宿主可读）` : item.space.kind === 'room' ? `群共享资料（${refLabel(item.space)}）` : refLabel(item.space))
+    ? (item.space.kind === 'bot' ? `私有记忆/资料（仅 ${nameOf(item.space.id)} 与你可读）` : item.space.kind === 'room' ? `群共享资料（${refLabel(item.space)}）` : refLabel(item.space))
     : '';
   const detail = item ? `<h2>${esc(item.path || item.name)}</h2>
     <p class="subtle">当前查看修订 v${esc(item.revision)}${isHistorical ? `（历史快照 · 最新正式版为 v${esc(latestRev)}）` : '（当前正式版）'}${scopeDesc ? ` · 适用范围：${esc(scopeDesc)}` : ''}</p>
@@ -5389,22 +5470,53 @@ document.addEventListener('change', async event => {
   if (event.target.dataset.action === 'upload-owner-avatar') {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (!file) return;
+    if (!file || ui.userProfileSaving) return;
+    if (!ui.protocolReady) {
+      toast('服务尚未连接，请稍后再试', true);
+      return;
+    }
+    ui.userProfileSaving = true;
+    refreshOpenSettingsBody();
     try {
-      const source = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('无法读取图片。')); reader.readAsDataURL(file); });
-      const img = await new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('无法打开这张图片。')); image.src = source; });
-      const canvas = document.createElement('canvas'), side = Math.min(160, Math.max(img.width, img.height));
-      const ratio = side / Math.max(img.width, img.height);
-      canvas.width = Math.max(1, Math.round(img.width * ratio)); canvas.height = Math.max(1, Math.round(img.height * ratio));
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-      if (dataUrl.length > 260000) throw new Error('图片过大，请选择较小的图片。');
-      saveLocalProfile({ avatar: dataUrl, localAccepted: true });
+      const source = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('无法读取图片，请换一张重试'));
+        reader.readAsDataURL(file);
+      });
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('无法打开这张图片，请换一张重试'));
+        image.src = source;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('浏览器暂不支持图片处理，请换个浏览器重试');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 160, 160);
+      const cropSize = Math.min(img.width, img.height);
+      const sx = Math.floor((img.width - cropSize) / 2);
+      const sy = Math.floor((img.height - cropSize) / 2);
+      ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, 160, 160);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      if (!dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('图片格式转换失败，请换一张图片');
+      if (dataUrl.length > 100000) throw new Error('头像太大了，换一张');
+      const saved = await api('/api/user-profile/avatar', 'PUT', { dataUrl });
+      state.userProfile = saved;
+      saveLocalProfile({ localAccepted: true });
       ui.lastSidebarHtml = null;
-      refreshOpenSettingsBody();
+      ui.lastMainHtml = null;
       render();
       toast('头像已更新');
-    } catch (error) { toast(error.message, true); }
+    } catch (error) {
+      toast(userProfileErrorMessage(error, '头像上传失败，请换一张图片重试'), true);
+    } finally {
+      ui.userProfileSaving = false;
+      refreshOpenSettingsBody();
+    }
     return;
   }
   if (event.target.dataset.hubSelect === 'active-node') {

@@ -309,12 +309,29 @@ struct SummonReceipt: Decodable, Sendable {
     var deliveries: [SummonDelivery]
 }
 
+struct SummonUserProfile: Codable, Equatable, Sendable {
+    var displayName: String?
+    var avatarPath: String?
+    var avatarVersion: Int?
+
+    var trimmedDisplayName: String? {
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var normalizedAvatarPath: String? {
+        let trimmed = avatarPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 struct SummonState: Decodable, Sendable {
     var historyEpoch: String?
     var bots: [SummonBot]
     var rooms: [SummonRoom]
     var archivedRooms: [SummonRoom]?
     var modelSettings: SummonJSONValue?
+    var userProfile: SummonUserProfile?
 }
 
 struct SummonRoomSnapshot: Decodable, Sendable {

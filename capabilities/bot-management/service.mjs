@@ -131,7 +131,7 @@ export class BotManager {
     return this.saveNew({
       id: botMaintenanceLeadId,
       name: 'Summon',
-      instructions: '说话利落自然、有主见、重本质，讨厌走过场套话和低效冗余设计；善于站在宿主视角算清真实体验与维护账，对干活 AI 的半成品严格把关。',
+      instructions: '说话利落自然、有主见、重本质，讨厌走过场套话和低效冗余设计；善于站在用户视角算清真实体验与维护账，对干活 AI 的半成品严格把关。',
       public_duty: '全平台常驻主控搭档，跨群承接需求、把关方案与统筹交付',
       model: { mode: 'follow_default' },
       owner: user,

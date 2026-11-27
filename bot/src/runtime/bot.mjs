@@ -10,6 +10,7 @@ import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sessionRecords } from '../../../capabilities/platform/executions.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { workGroup } from '../../../capabilities/platform/session-work.mjs';
+import { userDisplayName } from '../../../capabilities/platform/user-profile.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -1249,8 +1250,8 @@ export class BotRuntime {
         },
         ...(activeRoomGoal.status === 'awaiting_user' ? {
           note: activeRoomGoal.user_replied_at
-            ? '宿主已在此旧目标 awaiting_user 后发出新消息。若本轮需要继续推进或改换计划，请调用 update_goal 更新；若旧目标已结束或换题且不再需要跟踪，可直接调 update_goal(clear:true) 清除（未更新时本轮结束后平台也会自动清理）。'
-            : '当前群目标处于 awaiting_user。若本轮宿主消息已回应确认、切到了新问题或旧任务已结束，务必调用 update_goal 更新步骤、标记 completed 或 clear:true，避免旧目标长期滞留；若仍需宿主确认，务必在对应步骤 note 中写清具体需要确认什么。',
+            ? '用户已在此旧目标 awaiting_user 后发出新消息。若本轮需要继续推进或改换计划，请调用 update_goal 更新；若旧目标已结束或换题且不再需要跟踪，可直接调 update_goal(clear:true) 清除（未更新时本轮结束后平台也会自动清理）。'
+            : '当前群目标处于 awaiting_user。若本轮用户消息已回应确认、切到了新问题或旧任务已结束，务必调用 update_goal 更新步骤、标记 completed 或 clear:true，避免旧目标长期滞留；若仍需用户确认，务必在对应步骤 note 中写清具体需要确认什么。',
         } : {}),
       }));
     }
@@ -1280,8 +1281,8 @@ export class BotRuntime {
           needs_room_title: true,
           ...(existingGroupNames.length ? { existing_group_names: existingGroupNames } : {}),
           instruction: [
-            `当前新建群聊尚未完成 AI 总结命名。请在调用 send 回复宿主前，结合宿主消息的核心目标与主题（严禁机械截取用户原话前几个字），调用 configure_room({ room: "${roomRecord.id}", revision: ${roomRecord.revision}, title: "<2-12字简洁总结群名>" }) 更新群名（避开已有群名）；`,
-            '仅当宿主首条消息是完全没有主题的纯寒暄且未绑定明确目录时，可先问清目标待下轮再命名。',
+            `当前新建群聊尚未完成 AI 总结命名。请在调用 send 回复用户前，结合用户消息的核心目标与主题（严禁机械截取用户原话前几个字），调用 configure_room({ room: "${roomRecord.id}", revision: ${roomRecord.revision}, title: "<2-12字简洁总结群名>" }) 更新群名（避开已有群名）；`,
+            '仅当用户首条消息是完全没有主题的纯寒暄且未绑定明确目录时，可先问清目标待下轮再命名。',
           ].join(' '),
         }));
       }
@@ -1372,7 +1373,7 @@ export class BotRuntime {
           can_continue: Boolean(session.can_continue),
         } : {}),
         ...(isRoomMainReceipt ? {
-          desk_review_gate: '工位审卷（群里不可见）：先对照宿主真实诉求、host_profile 与已知家底核查 steps_taken 及未查盲区——若交回的只是源码/文档纸面推演、漏查本机或远端真实运行态与网络连通、或方案撞宿主红线，群里保持静默（勿调 send），直接用 send_input/open_session 打回补查；准备调 send 前必对照群内刚发过的消息严格去重，同伴刚说过的结论绝不复读，只发新增硬事实、反驳点、跨岗位 @交接或关键追问。',
+          desk_review_gate: '工位审卷（群里不可见）：先对照用户真实诉求、host_profile 与已知家底核查 steps_taken 及未查盲区——若交回的只是源码/文档纸面推演、漏查本机或远端真实运行态与网络连通、或方案撞用户红线，群里保持静默（勿调 send），直接用 send_input/open_session 打回补查；准备调 send 前必对照群内刚发过的消息严格去重，同伴刚说过的结论绝不复读，只发新增硬事实、反驳点、跨岗位 @交接或关键追问。',
         } : {}),
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
@@ -1776,7 +1777,7 @@ export class BotRuntime {
         const allMsgs = this.platform.room.roomMessages.all(rid).map(r => JSON.parse(r.data));
         recentRoomMessages = allMsgs.slice(-16).map(m => ({
           id: m.id,
-          sender: m.senderId === 'user' ? '宿主' : (m.senderName || this.platform.actorLabel(m.senderId)),
+          sender: m.senderId === 'user' ? userDisplayName(this.dataRoot) : (m.senderName || this.platform.actorLabel(m.senderId)),
           text: String(m.content || '').slice(0, 600),
           ...(m.promptResponse ? { prompt_response: m.promptResponse } : {}),
           time: m.createdAt,

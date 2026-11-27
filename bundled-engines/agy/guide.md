@@ -11,6 +11,6 @@
 - 自检与自愈：
   1. 用 `open_session({ engine: "exec", input: { shell: "agy --version; agy models" } })` 检查本机安装、登录状态与可用模型清单；
   2. 再用 `open_session({ engine: "agy", workspace: "ws-summon-home", work_summary: "验证 AGY 桥接连通性", input: { text: "只回复 OK，不修改任何文件。", tier: "fast" } })` 端到端验证；
-  3. 若报 `authentication required`，提示宿主在终端执行一次交互式 `agy` 完成账号登录；
+  3. 若报 `authentication required`，提示用户在终端执行一次交互式 `agy` 完成账号登录；
   4. 若上游 `agy` 参数或 `stream-json` 协议变更，直接通过 `read` / `save_file`（`{ kind: "engine", id: "agy" }`）更新 `bridge.mjs` 与本指南。
 - 上游文档：`https://antigravity.google/docs/cli/headless`

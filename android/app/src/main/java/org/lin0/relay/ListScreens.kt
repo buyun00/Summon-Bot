@@ -2,7 +2,15 @@ package org.lin0.relay
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ImageDecoder
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -135,9 +143,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -726,15 +737,16 @@ fun ConversationListScreen(
                     border = BorderStroke(0.8.dp, palette.bubbleStroke),
                     shadowElevation = 2.dp,
                     modifier = Modifier.size(40.dp).clip(CircleShape).clickable { menu = true }.semantics {
-                        contentDescription = "${store.settings.userName}，菜单，${if (store.isConnected) "已连接" else "正在连接"}"
+                        contentDescription = "${store.userDisplayName}，菜单，${if (store.isConnected) "已连接" else "正在连接"}"
                     },
                 ) {
                     Box(Modifier.fillMaxSize()) {
                         OwnerAvatar(
-                            name = store.settings.hubUsername ?: store.settings.userName,
-                            signedIn = store.settings.hubUsername != null,
+                            name = store.userAvatarFallbackName,
+                            signedIn = store.hasOwnerIdentity,
                             size = 34.dp,
                             modifier = Modifier.align(Alignment.Center),
+                            avatarPath = store.userProfile?.normalizedAvatarPath,
                         )
                         Box(
                             Modifier.align(Alignment.BottomEnd).padding(2.dp).size(9.dp).clip(CircleShape)
@@ -1450,13 +1462,42 @@ private fun SettingsSheet(
     onDismiss: () -> Unit,
 ) {
     val palette = LocalSummonPalette.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val display = LocalSummonDisplay.current
-    var baseURL by remember { mutableStateOf(store.settings.baseURL) }
-    var token by remember { mutableStateOf(store.savedToken) }
-    var userName by remember { mutableStateOf(store.settings.userName) }
-    var saving by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var userName by remember { mutableStateOf(store.editableDisplayName) }
+    var didEditName by remember { mutableStateOf(false) }
+    var savingName by remember { mutableStateOf(false) }
+    var updatingAvatar by remember { mutableStateOf(false) }
+    var profileError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(store.activeNodeID) {
+        didEditName = false
+        userName = store.editableDisplayName
+        profileError = null
+    }
+    LaunchedEffect(store.activeNodeID, store.protocolReady) {
+        if (!didEditName) userName = store.editableDisplayName
+        if (store.protocolReady) {
+            runCatching { store.fetchUserProfile() }.getOrNull()?.let { fetched ->
+                if (!didEditName) userName = fetched.trimmedDisplayName.orEmpty()
+            }
+        }
+    }
+    val avatarPicker = rememberPhotoPicker { uri ->
+        if (updatingAvatar) return@rememberPhotoPicker
+        scope.launch {
+            updatingAvatar = true
+            profileError = null
+            try {
+                val dataUrl = encodeUserAvatarDataUrl(context, uri)
+                store.uploadUserAvatar(dataUrl)
+            } catch (failure: Exception) {
+                profileError = failure.localizedMessage?.takeIf { it.isNotBlank() } ?: "更新头像失败。"
+            } finally {
+                updatingAvatar = false
+            }
+        }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = palette.surfaceElevated) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1468,11 +1509,91 @@ private fun SettingsSheet(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("通用", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
-            OutlinedTextField(userName, { userName = it }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
-            TextButton(enabled = userName != store.settings.userName, onClick = {
-                store.setUserName(userName); userName = store.settings.userName
-            }) { Text("保存显示名称") }
+            Text("个人资料", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+            Spacer(Modifier.height(10.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                OwnerAvatar(
+                    name = store.userAvatarFallbackName,
+                    signedIn = store.hasOwnerIdentity,
+                    size = 56.dp,
+                    modifier = Modifier.border(1.dp, palette.bubbleStroke, CircleShape),
+                    avatarPath = store.userProfile?.normalizedAvatarPath,
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(store.userDisplayName, style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            enabled = !updatingAvatar && store.protocolReady,
+                            onClick = { avatarPicker.launch(photoRequest()) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text(if (store.userProfile?.normalizedAvatarPath == null) "设置头像" else "更换头像")
+                        }
+                        if (store.userProfile?.normalizedAvatarPath != null) {
+                            TextButton(
+                                enabled = !updatingAvatar && store.protocolReady,
+                                onClick = {
+                                    if (updatingAvatar) return@TextButton
+                                    scope.launch {
+                                        updatingAvatar = true
+                                        profileError = null
+                                        try {
+                                            store.deleteUserAvatar()
+                                        } catch (failure: Exception) {
+                                            profileError = failure.localizedMessage?.takeIf { it.isNotBlank() } ?: "移除头像失败。"
+                                        } finally {
+                                            updatingAvatar = false
+                                        }
+                                    }
+                                },
+                            ) { Text("移除头像", color = palette.warn) }
+                        }
+                    }
+                    if (updatingAvatar) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Text("正在更新头像…", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                    } else if (!store.protocolReady) {
+                        Text("连接在线电脑后可修改头像与显示名称", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            val trimmedName = userName.trim()
+            OutlinedTextField(
+                value = userName,
+                onValueChange = { userName = it; didEditName = true },
+                label = { Text("显示名称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (trimmedName.length > 24) {
+                Text("名字需要 1–24 个字", color = palette.warn, style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(
+                enabled = !savingName && store.protocolReady && trimmedName.isNotEmpty() && trimmedName.length <= 24 && trimmedName != store.editableDisplayName,
+                onClick = {
+                    if (savingName) return@TextButton
+                    scope.launch {
+                        savingName = true
+                        profileError = null
+                        try {
+                            val updated = store.updateUserDisplayName(trimmedName)
+                            userName = updated.trimmedDisplayName.orEmpty()
+                            didEditName = false
+                        } catch (failure: Exception) {
+                            profileError = failure.localizedMessage?.takeIf { it.isNotBlank() } ?: "保存显示名称失败。"
+                        } finally {
+                            savingName = false
+                        }
+                    }
+                },
+            ) { Text(if (savingName) "正在保存…" else "保存显示名称") }
+            profileError?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }
             Spacer(Modifier.height(10.dp))
             Text("显示与外观", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
             DisplaySettingsControls()
@@ -1492,7 +1613,7 @@ private fun SettingsSheet(
             HorizontalDivider(Modifier.padding(vertical = 12.dp), color = palette.hairline)
             Text("账号与已绑定电脑（${store.onlineNodes.size} 台在线）", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
             Spacer(Modifier.height(6.dp))
-            Text("账号：${store.settings.hubUsername ?: store.settings.userName}", style = MaterialTheme.typography.bodyMedium)
+            Text("账号：${store.settings.hubUsername ?: store.userDisplayName}", style = MaterialTheme.typography.bodyMedium)
             Text("中枢：${store.settings.baseURL.ifEmpty { SummonApiClient.DEFAULT_HUB_URL }}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
             Text("实时连接：${if (store.isConnected) "已连接" else "重连中"}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
@@ -1938,3 +2059,89 @@ fun rememberPhotoPicker(onPicked: (Uri) -> Unit) = rememberLauncherForActivityRe
 }
 
 fun photoRequest() = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+
+private suspend fun encodeUserAvatarDataUrl(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
+    val targetSide = 160
+    val source: Bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val imageSource = ImageDecoder.createSource(context.contentResolver, uri)
+        ImageDecoder.decodeBitmap(imageSource) { decoder, info, _ ->
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            val w = info.size.width.coerceAtLeast(1)
+            val h = info.size.height.coerceAtLeast(1)
+            val scale = maxOf(targetSide.toFloat() / w, targetSide.toFloat() / h).coerceAtMost(1f)
+            decoder.setTargetSize(
+                (w * scale).toInt().coerceAtLeast(1),
+                (h * scale).toInt().coerceAtLeast(1),
+            )
+        }
+    } else {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw SummonApiException("无法读取所选图片，请换一张。")
+        var sample = 1
+        while (minOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetSide) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+            ?: throw SummonApiException("无法读取所选图片，请换一张。")
+        val orientation = runCatching {
+            context.contentResolver.openInputStream(uri)?.use {
+                ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            }
+        }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+        val transform = Matrix().apply {
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> postRotate(270f)
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> postScale(-1f, 1f)
+                ExifInterface.ORIENTATION_FLIP_VERTICAL -> postScale(1f, -1f)
+                ExifInterface.ORIENTATION_TRANSPOSE -> {
+                    postRotate(90f)
+                    postScale(-1f, 1f)
+                }
+                ExifInterface.ORIENTATION_TRANSVERSE -> {
+                    postRotate(270f)
+                    postScale(-1f, 1f)
+                }
+            }
+        }
+        if (!transform.isIdentity) {
+            val oriented = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, transform, true)
+            if (oriented !== decoded) decoded.recycle()
+            oriented
+        } else {
+            decoded
+        }
+    }
+    val outputBitmap = Bitmap.createBitmap(targetSide, targetSide, Bitmap.Config.ARGB_8888)
+    try {
+        val canvas = Canvas(outputBitmap)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        val srcW = source.width.toFloat().coerceAtLeast(1f)
+        val srcH = source.height.toFloat().coerceAtLeast(1f)
+        val scale = maxOf(targetSide / srcW, targetSide / srcH)
+        val dx = (targetSide - srcW * scale) / 2f
+        val dy = (targetSide - srcH * scale) / 2f
+        val matrix = Matrix().apply {
+            postScale(scale, scale)
+            postTranslate(dx, dy)
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(source, matrix, paint)
+        val jpegBytes = ByteArrayOutputStream().use { out ->
+            if (!outputBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)) {
+                throw SummonApiException("无法压缩所选图片，请换一张。")
+            }
+            out.toByteArray()
+        }
+        val encoded = android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP)
+        val dataUrl = "data:image/jpeg;base64,$encoded"
+        if (jpegBytes.size > 48 * 1024 || dataUrl.length > 100_000) {
+            throw SummonApiException("头像太大了，换一张", 413)
+        }
+        dataUrl
+    } finally {
+        if (source !== outputBitmap && !source.isRecycled) source.recycle()
+        if (!outputBitmap.isRecycled) outputBitmap.recycle()
+    }
+}

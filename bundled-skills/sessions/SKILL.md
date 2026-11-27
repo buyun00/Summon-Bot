@@ -13,4 +13,4 @@ env_slots: []
   - `engine: "exec"`：运行确定性的单条本机命令（Windows 下为 PowerShell 5.1，顶层用 `;` 分隔勿用 `&&`）或自身 `scripts/*.mjs`；
   - `engine: "pi"`：轻量文本阅读与无外部工作引擎时的兜底。
 - **工作引擎**：会话启动于授权工作区目录，进程环境变量中自动提供 `SUMMON_CAPABILITIES_DIR`（平台能力目录）、`SUMMON_KNOWLEDGE_DIR`（团队共享知识库）、`SUMMON_HOST_PROFILE_FILE`、`SUMMON_BOT_DIR` 以及调用方通过 `env` 显式注入的环境变量。
-- **中断恢复**：若因后台更新或重启收到 `interrupted_by_restart`，由发起 Bot 按 `can_continue` 与任务幂等性决定续跑、重跑或同步宿主。
+- **中断恢复**：若因后台更新或重启收到 `interrupted_by_restart`，由发起 Bot 按 `can_continue` 与任务幂等性决定续跑、重跑或同步用户。

@@ -204,6 +204,14 @@ struct SummonAPIClient: Sendable {
         return data
     }
 
+    func data(path: String) async throws -> Data {
+        var request = try makeRequest(path: path)
+        request.setValue("image/*, */*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        return data
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw SummonAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {

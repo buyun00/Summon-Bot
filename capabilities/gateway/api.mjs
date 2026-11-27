@@ -1,8 +1,11 @@
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
 import { listBotFolderFiles, listBotMemoryItems, readBotFolderFile, readHostProfile, writeBotFolderFile, writeHostProfile } from '../bot-management/folders.mjs';
 import { roleCatalog } from '../bot-management/roles.mjs';
 import { assertRevision, page, protocolVersion, reject, user, validateTool } from '../platform/contract.mjs';
+import { readUserProfile, writeUserProfile } from '../platform/user-profile.mjs';
 
 const routeRef = (kind, id) => ({ kind, id: decodeURIComponent(id) });
 const preservedModelSettings = '/api/model-settings';
@@ -92,9 +95,94 @@ export function createApi({ platform, room, attachments, models, exec, secrets, 
         archivedRooms: allRooms.filter(item => Boolean(item.archived_at)),
         modelSettings: models.summary(),
         onboarding: platform.onboardingState(),
+        userProfile: readUserProfile(platform.dataRoot),
         historyEpoch, protocolVersion,
       };
       return snapshot('state', state, params);
+    }
+    if (method === 'GET' && path === '/api/user-profile') {
+      return readUserProfile(platform.dataRoot);
+    }
+    if (method === 'PUT' && path === '/api/user-profile') {
+      if (typeof args.displayName !== 'string') {
+        reject('invalid_display_name', '名字需要 1–24 个字', 400);
+      }
+      const displayName = args.displayName.trim();
+      if (displayName.length < 1 || displayName.length > 24) {
+        reject('invalid_display_name', '名字需要 1–24 个字', 400);
+      }
+      const saved = writeUserProfile(platform.dataRoot, { displayName });
+      emit('user_profile');
+      return saved;
+    }
+    if (method === 'PUT' && path === '/api/user-profile/avatar') {
+      const prefix = 'data:image/jpeg;base64,';
+      if (typeof args.dataUrl !== 'string' || !args.dataUrl.startsWith(prefix)) {
+        reject('invalid_avatar', '头像格式无效，请上传 JPG 图片', 400);
+      }
+      if (args.dataUrl.length > 100000) {
+        reject('avatar_too_large', '头像太大了，换一张', 413);
+      }
+      const rawBase64 = args.dataUrl.slice(prefix.length);
+      if (!rawBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(rawBase64)) {
+        reject('invalid_avatar', '头像图片数据无效，请换一张图片', 400);
+      }
+      const buf = Buffer.from(rawBase64, 'base64');
+      if (buf.length > 48 * 1024) {
+        reject('avatar_too_large', '头像太大了，换一张', 413);
+      }
+      if (buf.length < 3 || buf[0] !== 0xff || buf[1] !== 0xd8 || buf[2] !== 0xff) {
+        reject('invalid_avatar', '头像不是有效的 JPEG 图片，请换一张', 400);
+      }
+      const avatarFile = join(resolve(platform.dataRoot), 'config', 'user-avatar.jpg');
+      mkdirSync(dirname(avatarFile), { recursive: true });
+      const tmp = `${avatarFile}.${process.pid}.tmp`;
+      writeFileSync(tmp, buf);
+      try {
+        renameSync(tmp, avatarFile);
+      } catch {
+        try {
+          rmSync(avatarFile, { force: true });
+          renameSync(tmp, avatarFile);
+        } catch (error) {
+          try { rmSync(tmp, { force: true }); } catch {}
+          throw error;
+        }
+      }
+      const current = readUserProfile(platform.dataRoot);
+      const saved = writeUserProfile(platform.dataRoot, { avatarVersion: current.avatarVersion + 1 });
+      emit('user_profile');
+      return saved;
+    }
+    if (method === 'DELETE' && path === '/api/user-profile/avatar') {
+      const avatarFile = join(resolve(platform.dataRoot), 'config', 'user-avatar.jpg');
+      try {
+        rmSync(avatarFile, { force: true });
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      const current = readUserProfile(platform.dataRoot);
+      const saved = writeUserProfile(platform.dataRoot, { avatarVersion: current.avatarVersion + 1 });
+      emit('user_profile');
+      return saved;
+    }
+    if (['GET', 'HEAD'].includes(method) && path === '/api/user-profile/avatar') {
+      const avatarFile = join(resolve(platform.dataRoot), 'config', 'user-avatar.jpg');
+      let buf;
+      try {
+        buf = readFileSync(avatarFile);
+      } catch (error) {
+        if (error?.code === 'ENOENT') reject('avatar_not_found', '尚未设置头像', 404);
+        throw error;
+      }
+      return {
+        bytes: buf,
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'private, max-age=31536000, immutable',
+          'Content-Length': String(buf.length),
+        },
+      };
     }
     if (method === 'GET' && path === '/api/usage') return getUsage(params, userContext);
     if (path === '/api/push/status' && method === 'GET') return push.status();

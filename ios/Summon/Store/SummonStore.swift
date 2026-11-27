@@ -1,11 +1,14 @@
 import Foundation
 import Observation
+import UIKit
 import UniformTypeIdentifiers
 
 @MainActor
 @Observable
 final class SummonStore {
     private(set) var settings = SummonConnectionSettings()
+    private(set) var userProfile: SummonUserProfile?
+    private(set) var userAvatarImages: [String: UIImage] = [:]
     private(set) var hubNodes: [SummonHubNode] = []
     private(set) var activeNodeID: String?
     var filterNodeID: String?
@@ -49,6 +52,7 @@ final class SummonStore {
     @ObservationIgnored private var activeRoomRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var recoveryTask: Task<Void, Never>?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var avatarFetchTasks: [String: Task<UIImage?, Never>] = [:]
     @ObservationIgnored private var roomReads: Set<String> = []
     @ObservationIgnored private var latestReadsWaiting: Set<String> = []
     @ObservationIgnored private var olderReadsWaiting: Set<String> = []
@@ -64,6 +68,28 @@ final class SummonStore {
 
     var isConfigured: Bool { client != nil }
     var savedToken: String { SummonKeychain.token(for: settings.baseURL) }
+    var userDisplayName: String {
+        if let profile = userProfile {
+            return profile.trimmedDisplayName ?? "用户"
+        }
+        let cached = settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cached.isEmpty || cached == "本地账户" ? "用户" : cached
+    }
+    var editableDisplayName: String {
+        if let profile = userProfile {
+            return profile.trimmedDisplayName ?? ""
+        }
+        let cached = settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cached == "本地账户" ? "" : cached
+    }
+    var userAvatarFallbackName: String {
+        userProfile?.trimmedDisplayName
+            ?? settings.hubUsername?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? settings.userName
+    }
+    var hasOwnerIdentity: Bool {
+        settings.hubUsername != nil || userProfile?.trimmedDisplayName != nil
+    }
     var onlineNodes: [SummonHubNode] { hubNodes.filter(\.online) }
     var offlineNodes: [SummonHubNode] { hubNodes.filter { !$0.online } }
     var activeNode: SummonHubNode? { hubNodes.first { $0.id == activeNodeID } }
@@ -147,6 +173,8 @@ final class SummonStore {
         refreshTask?.cancel(); refreshTask = nil
         activeRoomRefreshTask?.cancel(); activeRoomRefreshTask = nil
         recoveryTask?.cancel(); recoveryTask = nil
+        for task in avatarFetchTasks.values { task.cancel() }
+        avatarFetchTasks.removeAll()
         roomReads.removeAll()
         latestReadsWaiting.removeAll()
         olderReadsWaiting.removeAll()
@@ -236,6 +264,9 @@ final class SummonStore {
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
         client = baseClient.forNode(nodeID)
         historyEpoch = nil
+        userProfile = nil
+        for task in avatarFetchTasks.values { task.cancel() }
+        avatarFetchTasks.removeAll()
         messageHistory = [:]
         deliveries = [:]
         messageSummaries = [:]
@@ -296,9 +327,111 @@ final class SummonStore {
         if room(id: id) == nil { rooms.append(snapshot.room) }
     }
 
-    func setUserName(_ name: String) {
-        settings.userName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "本地账户"
-        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+    private func applyUserProfile(_ profile: SummonUserProfile) {
+        userProfile = profile
+        let prefix = "\(settings.baseURL)|\(activeNodeID ?? "")|"
+        let currentKey = profile.normalizedAvatarPath.map { avatarCacheKey(for: $0) }
+        for key in userAvatarImages.keys.filter({ $0.hasPrefix(prefix) && $0 != currentKey }) { userAvatarImages.removeValue(forKey: key) }
+        for key in avatarFetchTasks.keys.filter({ $0.hasPrefix(prefix) && $0 != currentKey }) { avatarFetchTasks.removeValue(forKey: key)?.cancel() }
+        let resolved = profile.trimmedDisplayName ?? "用户"
+        if settings.userName != resolved {
+            settings.userName = resolved
+            if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        }
+    }
+
+    @discardableResult
+    func fetchUserProfile() async throws -> SummonUserProfile {
+        let profile = try await business(SummonUserProfile.self, "/api/user-profile", "GET", nil)
+        applyUserProfile(profile)
+        return profile
+    }
+
+    @discardableResult
+    func updateUserDisplayName(_ name: String) async throws -> SummonUserProfile {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profile = try await business(
+            SummonUserProfile.self,
+            "/api/user-profile",
+            "PUT",
+            .object(["displayName": .string(trimmed)])
+        )
+        applyUserProfile(profile)
+        return profile
+    }
+
+    @discardableResult
+    func uploadUserAvatar(dataUrl: String) async throws -> SummonUserProfile {
+        do {
+            let profile = try await business(
+                SummonUserProfile.self,
+                "/api/user-profile/avatar",
+                "PUT",
+                .object(["dataUrl": .string(dataUrl)])
+            )
+            applyUserProfile(profile)
+            if let path = profile.normalizedAvatarPath {
+                _ = await loadUserAvatarImage(for: path)
+            }
+            return profile
+        } catch SummonAPIError.http(413, _, _) {
+            throw SummonAPIError.http(413, "头像太大了，换一张")
+        }
+    }
+
+    @discardableResult
+    func deleteUserAvatar() async throws -> SummonUserProfile {
+        let profile = try await business(SummonUserProfile.self, "/api/user-profile/avatar", "DELETE", nil)
+        userAvatarImages.removeAll()
+        applyUserProfile(profile)
+        return profile
+    }
+
+    func avatarCacheKey(for path: String) -> String {
+        "\(settings.baseURL)|\(activeNodeID ?? "")|\(path)"
+    }
+
+    func cachedUserAvatarImage(for path: String?) -> UIImage? {
+        guard let path, !path.isEmpty else { return nil }
+        return userAvatarImages[avatarCacheKey(for: path)]
+    }
+
+    func loadUserAvatarImage(for path: String?) async -> UIImage? {
+        guard let path, !path.isEmpty, protocolReady, let client else { return nil }
+        let key = avatarCacheKey(for: path)
+        if let cached = userAvatarImages[key] { return cached }
+        let connection = connectionGeneration
+        let requestNodeID = activeNodeID
+        let task: Task<UIImage?, Never>
+        if let existing = avatarFetchTasks[key] {
+            task = existing
+        } else {
+            let created = Task<UIImage?, Never> { [weak self] in
+                let image: UIImage?
+                do {
+                    let bytes = try await client.data(path: path)
+                    image = await Task.detached(priority: .userInitiated) {
+                        UIImage(data: bytes)
+                    }.value
+                } catch {
+                    image = nil
+                }
+                guard let self else { return image }
+                if !Task.isCancelled {
+                    if let image {
+                        if self.userAvatarImages.count >= 8 { self.userAvatarImages.removeAll() }
+                        self.userAvatarImages[key] = image
+                    }
+                    self.avatarFetchTasks.removeValue(forKey: key)
+                }
+                return image
+            }
+            avatarFetchTasks[key] = created
+            task = created
+        }
+        let image = await task.value
+        guard connection == connectionGeneration, requestNodeID == activeNodeID else { return nil }
+        return image
     }
 
     func refresh() async {
@@ -365,6 +498,13 @@ final class SummonStore {
             archivedRooms = state.archivedRooms ?? []
             roomGoals = Dictionary(uniqueKeysWithValues: (rooms + archivedRooms).compactMap { r in r.goal.map { (r.id, $0) } })
             if let model = state.modelSettings { modelSummary = model }
+            if let profile = state.userProfile {
+                applyUserProfile(profile)
+            } else if userProfile == nil,
+                      let fetched = try? await activeClient.request(SummonUserProfile.self, path: "/api/user-profile") {
+                guard connection == connectionGeneration, !Task.isCancelled else { return }
+                applyUserProfile(fetched)
+            }
             if let aid = activeNodeID {
                 remoteNodeRooms[aid] = state.rooms
                 remoteNodeBots[aid] = state.bots
@@ -448,7 +588,7 @@ final class SummonStore {
     func room(id: String) -> SummonRoom? { rooms.first { $0.id == id } ?? archivedRooms.first { $0.id == id } }
     func name(for id: String) -> String {
         switch id {
-        case "user": settings.userName
+        case "user": userDisplayName
         case "system", "platform": "Summon 平台"
         default: bot(id: id)?.name ?? id
         }
@@ -1121,6 +1261,9 @@ final class SummonStore {
     }
 
     private func clearServerState() {
+        for task in avatarFetchTasks.values { task.cancel() }
+        avatarFetchTasks.removeAll()
+        userProfile = nil; userAvatarImages = [:]
         bots = []; rooms = []; archivedRooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
         roomActivities = [:]; roomGoals = [:]; optimisticRoomWork = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]

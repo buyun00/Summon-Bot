@@ -607,7 +607,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                                     val ownerId = step.owner
                                     val ownerLabel = when {
                                         ownerId.isNullOrBlank() -> ""
-                                        ownerId == "user" -> "宿主"
+                                        ownerId == "user" -> store.userDisplayName
                                         else -> store.name(ownerId)
                                     }
                                     val ownerBot = ownerId?.takeIf { it != "user" }?.let { store.bot(it) }

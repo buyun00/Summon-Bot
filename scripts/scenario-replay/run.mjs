@@ -14,9 +14,11 @@ import { activeControl } from '../../capabilities/bot-management/service.mjs';
 import { listBotMemoryItems } from '../../capabilities/bot-management/folders.mjs';
 import { keyOf, identity, user } from '../../capabilities/platform/contract.mjs';
 import { runtimeRecords as R } from '../../bot/src/storage/runtime-records.mjs';
+import { userDisplayName } from '../../capabilities/platform/user-profile.mjs';
 
 const releaseRoot = fileURLToPath(new URL('../../', import.meta.url));
 const hostRoot = resolve(process.env.SUMMON_DATA_ROOT || join(releaseRoot, '../Relay-Bot-data'));
+const userName = userDisplayName(hostRoot);
 
 const { values: opts, positionals } = parseArgs({
   allowPositionals: true,
@@ -234,7 +236,7 @@ async function runCase(suite, testCase) {
     // Seed historical messages directly (no delivery triggered for pre-trigger history)
     const authorById = new Map();
     for (const m of seed.messages) {
-      const senderName = m.author_id === 'user' ? '宿主' : platform.getBot(m.author_id).name;
+      const senderName = m.author_id === 'user' ? userName : platform.getBot(m.author_id).name;
       store.save('messages', {
         id: m.id, kind: 'message', roomId: opsRoomId, senderId: m.author_id, senderName,
         author: identity(m.author_id), content: m.text, attachments: [], references: [],
@@ -317,7 +319,7 @@ async function runCase(suite, testCase) {
         sent_message_id: sent.message.id,
         settled,
         new_messages: newMsgs.map(m => ({
-          id: m.id, senderId: m.senderId, senderName: m.senderName || (m.senderId === 'user' ? '宿主' : platform.store.get('platform-bots', m.senderId)?.name),
+          id: m.id, senderId: m.senderId, senderName: m.senderId === 'user' ? userName : (m.senderName || platform.store.get('platform-bots', m.senderId)?.name),
           content: m.content, mentions: m.mentions, prompt: m.prompt || null,
         })),
       });
@@ -333,7 +335,7 @@ async function runCase(suite, testCase) {
       members: r.members,
       messages: room.messages(r.id, 'user').map(m => ({
         id: m.id, senderId: m.senderId,
-        senderName: m.senderName || (m.senderId === 'user' ? '宿主' : platform.store.get('platform-bots', m.senderId)?.name),
+        senderName: m.senderId === 'user' ? userName : (m.senderName || platform.store.get('platform-bots', m.senderId)?.name),
         content: m.content, mentions: m.mentions, references: m.references, prompt: m.prompt || null,
       })),
     }));

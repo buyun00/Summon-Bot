@@ -1,6 +1,8 @@
 package org.lin0.relay
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.AtomicFile
 import androidx.compose.runtime.getValue
@@ -8,12 +10,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -24,6 +28,10 @@ import java.util.UUID
 
 class SummonStore(private val app: Context) {
     var settings by mutableStateOf(SummonConnectionSettings(baseURL = ""))
+        private set
+    var userProfile by mutableStateOf<SummonUserProfile?>(null)
+        private set
+    var userAvatarBitmaps by mutableStateOf<Map<String, Bitmap>>(emptyMap())
         private set
     var hubNodes by mutableStateOf<List<SummonHubNode>>(emptyList())
         private set
@@ -94,6 +102,7 @@ class SummonStore(private val app: Context) {
     private var activeRoomRefreshJob: Job? = null
     private var recoveryJob: Job? = null
     private var persistenceJob: Job? = null
+    private val avatarFetchInFlight = mutableMapOf<String, Deferred<Bitmap?>>()
     private val roomReads = mutableSetOf<String>()
     private val latestReadsWaiting = mutableSetOf<String>()
     private val olderReadsWaiting = mutableSetOf<String>()
@@ -107,6 +116,24 @@ class SummonStore(private val app: Context) {
 
     val isConfigured: Boolean get() = client != null
     val savedToken: String get() = SummonKeystore.token(app, settings.baseURL)
+    val userDisplayName: String
+        get() {
+            userProfile?.let { return it.trimmedDisplayName ?: "用户" }
+            val cached = settings.userName.trim()
+            return if (cached.isEmpty() || cached == "本地账户") "用户" else cached
+        }
+    val editableDisplayName: String
+        get() {
+            userProfile?.let { return it.trimmedDisplayName.orEmpty() }
+            val cached = settings.userName.trim()
+            return if (cached == "本地账户") "" else cached
+        }
+    val userAvatarFallbackName: String
+        get() = userProfile?.trimmedDisplayName
+            ?: settings.hubUsername?.trim()?.takeIf { it.isNotEmpty() }
+            ?: settings.userName
+    val hasOwnerIdentity: Boolean
+        get() = settings.hubUsername != null || userProfile?.trimmedDisplayName != null
     val onlineNodes: List<SummonHubNode> get() = hubNodes.filter { it.online }
     val offlineNodes: List<SummonHubNode> get() = hubNodes.filterNot { it.online }
     val mixedGroupRooms: List<Triple<String, String, SummonRoom>>
@@ -173,6 +200,8 @@ class SummonStore(private val app: Context) {
         refreshJob?.cancel(); refreshJob = null
         activeRoomRefreshJob?.cancel(); activeRoomRefreshJob = null
         recoveryJob?.cancel(); recoveryJob = null
+        avatarFetchInFlight.values.forEach { it.cancel() }
+        avatarFetchInFlight.clear()
         roomReads.clear()
         latestReadsWaiting.clear()
         olderReadsWaiting.clear()
@@ -248,6 +277,9 @@ class SummonStore(private val app: Context) {
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
         client = api.forNode(nodeID)
         historyEpoch = null
+        userProfile = null
+        avatarFetchInFlight.values.forEach { it.cancel() }
+        avatarFetchInFlight.clear()
         messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap()
         roomActivities = emptyMap(); roomGoals = emptyMap(); optimisticRoomWork = emptyMap(); cursors = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         remoteNodeRooms[nodeID]?.let { rooms = it }
@@ -282,9 +314,113 @@ class SummonStore(private val app: Context) {
         if (startup != null) start() else scope.launch { start() }
     }
 
-    fun setUserName(name: String) {
-        settings = settings.copy(userName = name.trim().ifEmpty { "本地账户" })
-        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+    private fun applyUserProfile(profile: SummonUserProfile) {
+        userProfile = profile
+        val prefix = "${settings.baseURL}|${activeNodeID.orEmpty()}|"
+        val currentKey = profile.normalizedAvatarPath?.let(::avatarCacheKey)
+        val nextBitmaps = userAvatarBitmaps.filterKeys { !it.startsWith(prefix) || it == currentKey }
+        if (nextBitmaps.size != userAvatarBitmaps.size) userAvatarBitmaps = nextBitmaps
+        avatarFetchInFlight.keys.filter { it.startsWith(prefix) && it != currentKey }.forEach { avatarFetchInFlight.remove(it)?.cancel() }
+        val resolved = profile.trimmedDisplayName ?: "用户"
+        if (settings.userName != resolved) {
+            settings = settings.copy(userName = resolved)
+            prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        }
+    }
+
+    suspend fun fetchUserProfile(): SummonUserProfile {
+        val json = request("/api/user-profile", "GET")
+        val profile = SummonUserProfile.parse(json) ?: throw SummonApiException.invalidResponse
+        applyUserProfile(profile)
+        return profile
+    }
+
+    suspend fun updateUserDisplayName(name: String): SummonUserProfile {
+        val trimmed = name.trim()
+        val json = request(
+            "/api/user-profile",
+            "PUT",
+            SummonJson.obj("displayName" to SummonJson.Str(trimmed)),
+        )
+        val profile = SummonUserProfile.parse(json) ?: throw SummonApiException.invalidResponse
+        applyUserProfile(profile)
+        return profile
+    }
+
+    suspend fun uploadUserAvatar(dataUrl: String): SummonUserProfile {
+        try {
+            val json = request(
+                "/api/user-profile/avatar",
+                "PUT",
+                SummonJson.obj("dataUrl" to SummonJson.Str(dataUrl)),
+            )
+            val profile = SummonUserProfile.parse(json) ?: throw SummonApiException.invalidResponse
+            applyUserProfile(profile)
+            profile.normalizedAvatarPath?.let { loadUserAvatarBitmap(it) }
+            return profile
+        } catch (error: SummonApiException) {
+            if (error.status == 413) throw SummonApiException("头像太大了，换一张", 413, error.code)
+            throw error
+        }
+    }
+
+    suspend fun deleteUserAvatar(): SummonUserProfile {
+        val json = request("/api/user-profile/avatar", "DELETE", null)
+        val profile = SummonUserProfile.parse(json) ?: throw SummonApiException.invalidResponse
+        userAvatarBitmaps = emptyMap()
+        applyUserProfile(profile)
+        return profile
+    }
+
+    fun avatarCacheKey(path: String): String = "${settings.baseURL}|${activeNodeID.orEmpty()}|$path"
+
+    fun cachedUserAvatarBitmap(path: String?): Bitmap? {
+        if (path.isNullOrBlank()) return null
+        return userAvatarBitmaps[avatarCacheKey(path)]
+    }
+
+    suspend fun loadUserAvatarBitmap(path: String?): Bitmap? {
+        if (path.isNullOrBlank() || !protocolReady) return null
+        val api = client ?: return null
+        val key = avatarCacheKey(path)
+        userAvatarBitmaps[key]?.let { return it }
+        val connection = connectionGeneration
+        val requestNodeID = activeNodeID
+        val deferred = avatarFetchInFlight[key] ?: run {
+            var created: Deferred<Bitmap?>? = null
+            val job = scope.async {
+                try {
+                    val bitmap = withContext(Dispatchers.IO) {
+                        try {
+                            val bytes = api.bytes(path)
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                    if (bitmap != null && isActive) {
+                        val base = if (userAvatarBitmaps.size >= 8) emptyMap() else userAvatarBitmaps
+                        userAvatarBitmaps = base + (key to bitmap)
+                    }
+                    bitmap
+                } finally {
+                    if (avatarFetchInFlight[key] === created) avatarFetchInFlight.remove(key)
+                }
+            }
+            created = job
+            if (job.isActive) avatarFetchInFlight[key] = job
+            job
+        }
+        val bitmap = try {
+            deferred.await()
+        } catch (error: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw error
+            null
+        }
+        if (connection != connectionGeneration || requestNodeID != activeNodeID) return null
+        return bitmap
     }
 
     suspend fun refresh() {
@@ -331,6 +467,16 @@ class SummonStore(private val app: Context) {
             archivedRooms = state["archivedRooms"].array.orEmpty().map { SummonRoom.parse(it) }
             roomGoals = (rooms + archivedRooms).mapNotNull { r -> r.goal?.let { r.id to it } }.toMap()
             if (state["modelSettings"].obj != null) modelSummary = state["modelSettings"]
+            val stateProfile = SummonUserProfile.parse(state["userProfile"])
+            if (stateProfile != null) {
+                applyUserProfile(stateProfile)
+            } else if (userProfile == null) {
+                val fetched = runCatching {
+                    SummonUserProfile.parse(withContext(Dispatchers.IO) { activeApi.requestJson("/api/user-profile") })
+                }.getOrNull()
+                if (connection != connectionGeneration) return
+                if (fetched != null) applyUserProfile(fetched)
+            }
             val nextRemoteRooms = remoteNodeRooms.toMutableMap()
             val nextRemoteBots = remoteNodeBots.toMutableMap()
             activeNodeID?.let { aid -> nextRemoteRooms[aid] = rooms; nextRemoteBots[aid] = bots }
@@ -415,7 +561,7 @@ class SummonStore(private val app: Context) {
     fun room(id: String): SummonRoom? = rooms.firstOrNull { it.id == id } ?: archivedRooms.firstOrNull { it.id == id }
     fun bot(id: String): SummonBot? = bots.firstOrNull { it.id == id }
     fun name(id: String): String = when (id) {
-        "user" -> settings.userName
+        "user" -> userDisplayName
         "system", "platform" -> "Summon 平台"
         else -> bot(id)?.name ?: id
     }
@@ -1061,6 +1207,9 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearServerState() {
+        avatarFetchInFlight.values.forEach { it.cancel() }
+        avatarFetchInFlight.clear()
+        userProfile = null; userAvatarBitmaps = emptyMap()
         bots = emptyList(); rooms = emptyList(); archivedRooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
         roomActivities = emptyMap(); roomGoals = emptyMap(); optimisticRoomWork = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()

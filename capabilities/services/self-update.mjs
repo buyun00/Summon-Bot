@@ -510,7 +510,7 @@ export class SelfUpdateService {
 
   async install(args = {}, context = {}) {
     if (context.session) {
-      reject('update_forbidden', '工作引擎子会话不可直接触发宿主自更新，请返回结果交由主对话 Bot 发起', 403);
+      reject('update_forbidden', '工作引擎子会话不可直接触发本机自更新，请返回结果交由主对话 Bot 发起', 403);
     }
     if (this.installScheduled) {
       reject('update_already_scheduled', '本机自更新已安排执行，请等待重启完成', 409);
@@ -603,7 +603,7 @@ export class SelfUpdateService {
       source: downloaded.source,
       roomId,
       drainTimeoutMs,
-      guidance: '独立更新进程已启动，将在本回合结束并排空后自动静默安装并重启 Summon Bot（预计 20–30 秒）。请立刻简短回复宿主即将重启更新并结束本回合，重启上线后系统会自动往本房间回传升级结果。',
+      guidance: '独立更新进程已启动，将在本回合结束并排空后自动静默安装并重启 Summon Bot（预计 20–30 秒）。请立刻简短回复用户即将重启更新并结束本回合，重启上线后系统会自动往本房间回传升级结果。',
     };
   }
 

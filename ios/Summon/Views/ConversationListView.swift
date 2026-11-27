@@ -466,9 +466,10 @@ struct ConversationListView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showProfileMenu.toggle() } label: {
                         OwnerAvatarView(
-                            name: store.settings.hubUsername ?? store.settings.userName,
-                            signedIn: store.settings.hubUsername != nil,
-                            size: 34
+                            name: store.userAvatarFallbackName,
+                            signedIn: store.hasOwnerIdentity,
+                            size: 34,
+                            avatarPath: store.userProfile?.normalizedAvatarPath
                         )
                             .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 1) }
                             .overlay(alignment: .bottomTrailing) {
@@ -479,7 +480,7 @@ struct ConversationListView: View {
                             }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(store.settings.userName)，菜单，\(store.isConnected ? "已连接" : "正在连接")")
+                    .accessibilityLabel("\(store.userDisplayName)，菜单，\(store.isConnected ? "已连接" : "正在连接")")
                     .popover(isPresented: $showProfileMenu, arrowEdge: .top) {
                         profileMenu
                             .presentationCompactAdaptation(.popover)

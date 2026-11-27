@@ -537,7 +537,7 @@ export class GoalManager {
             done_criteria: goal.done_criteria || '',
             current_step: currentStep,
             steps,
-            guidance: '该群目标在连续自动续推后仍无实际工具进展，已触发防空转熔断。请立刻向宿主坦诚复盘当前真实卡点、说明是否值得继续及可选思路，与宿主重新对齐方向（并调用 update_goal 标记 awaiting_user / completed / stopped）。',
+            guidance: '该群目标在连续自动续推后仍无实际工具进展，已触发防空转熔断。请立刻向用户坦诚复盘当前真实卡点、说明是否值得继续及可选思路，与用户重新对齐方向（并调用 update_goal 标记 awaiting_user / completed / stopped）。',
           });
           this.platform.deliveries.enqueue(
             leadBot.id,
@@ -562,8 +562,8 @@ export class GoalManager {
       });
 
       const continueGuidance = goalIntent === 'inquiry'
-        ? `当前群目标「${goal.title}」（意图：调研探讨 inquiry）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请注意：当前属于只读调研/方案探讨阶段，严禁修改或停启线上/远端生产服务、改动系统配置，也严禁私自注册周期性 set_wakeup 定时任务。请：1) 若本步是只读查证或方案评估且尚未查完，立即调工具/open_session 补齐事实并更新 update_goal；2) 若底细与方案利弊已经讲清、正等宿主决定要不要做或选哪套路线，切勿自行施工，直接标记 awaiting_user 静等宿主拍板；3) 若宿主的询问已完整答复且无需后续动作，调用 update_goal 标记 completed 收口；4) 仅在宿主近期消息已明确下达实施授权时，才将 intent 改为 "execute" 并推进施工。绝不能只口头回复“待会儿去查”而不发起真实动作。`
-        : `当前群目标「${goal.title}」（意图：施工执行 execute）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请围绕宿主已明确批准的交付计划推进：1) 若本步可在授权范围内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若执行中发现原方案存在根本硬伤、前提失效或投入产出比严重失衡，不要硬凑绕路或原地空转，直接向宿主坦诚复盘并重新商量方向（必要时标记 stopped 或改回 intent:"inquiry"）；3) 若遇到超出当前授权范围、需宿主做关键取舍或涉及破坏性/高风险生产变更，先用人话讲清利弊再用 send.prompt 请宿主拍板并标记 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向宿主交付。绝不能只口头回复“下一步会做”而不发起真实动作。`;
+        ? `当前群目标「${goal.title}」（意图：调研探讨 inquiry）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请注意：当前属于只读调研/方案探讨阶段，严禁修改或停启线上/远端生产服务、改动系统配置，也严禁私自注册周期性 set_wakeup 定时任务。请：1) 若本步是只读查证或方案评估且尚未查完，立即调工具/open_session 补齐事实并更新 update_goal；2) 若底细与方案利弊已经讲清、正等用户决定要不要做或选哪套路线，切勿自行施工，直接标记 awaiting_user 静等用户拍板；3) 若用户的询问已完整答复且无需后续动作，调用 update_goal 标记 completed 收口；4) 仅在用户近期消息已明确下达实施授权时，才将 intent 改为 "execute" 并推进施工。绝不能只口头回复“待会儿去查”而不发起真实动作。`
+        : `当前群目标「${goal.title}」（意图：施工执行 execute）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请围绕用户已明确批准的交付计划推进：1) 若本步可在授权范围内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若执行中发现原方案存在根本硬伤、前提失效或投入产出比严重失衡，不要硬凑绕路或原地空转，直接向用户坦诚复盘并重新商量方向（必要时标记 stopped 或改回 intent:"inquiry"）；3) 若遇到超出当前授权范围、需用户做关键取舍或涉及破坏性/高风险生产变更，先用人话讲清利弊再用 send.prompt 请用户拍板并标记 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向用户交付。绝不能只口头回复“下一步会做”而不发起真实动作。`;
 
       const event = this.platform.store.save('platform-events', {
         id: keyOf('goal.continue', room.id, goal.revision, nextCount, nowMs),

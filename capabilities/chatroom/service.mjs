@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
+import { userDisplayName } from '../platform/user-profile.mjs';
 import { botMaintenanceRoomId, groupLeadRole } from '../bot-management/roles.mjs';
 
 function list(value, label, maximum = 100) {
@@ -257,13 +258,16 @@ const refKey = ref => ref?.kind === 'workspace_file'
   : JSON.stringify([ref?.kind, ref?.id]);
 const directMembers = members => members.length === 2 && members.includes('user');
 const roomActivity = "(kind='messages' OR (kind='platform-events' AND json_extract(data,'$.type')='work.tool'))";
-function rowMessage(row) {
+function rowMessage(row, userName) {
   if (!row) return null;
   const message = JSON.parse(row.data);
   const { id, roomId, senderId, senderName, content, createdAt, clientId, replyTo, replyAuthorId, callId,
     forSessionId, originMessageId, awaitingReply, prompt, promptResponse, promptAnswer } = message;
   const author = message.author ?? message.source ?? identity(senderId);
-  return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, ...(senderName ? { senderName } : {}), content, createdAt, sequence: row.sequence,
+  const resolvedSenderName = senderId === 'user'
+    ? (typeof userName === 'string' && userName.trim() ? userName.trim() : '用户')
+    : senderName;
+  return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}), content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
     ...(forSessionId ? { forSessionId } : {}),
     ...(originMessageId ? { originMessageId } : {}),
@@ -355,7 +359,11 @@ export class ChatroomService {
     return room;
   }
 
-  projectRoom(room) {
+  currentUserName() {
+    return userDisplayName(this.platform?.dataRoot);
+  }
+
+  projectRoom(room, userName = this.currentUserName()) {
     const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id, archivedAt, auto_title_pending, origin_room } = room;
     return { id, ref: { kind: 'room', id }, name, members, mode, pins,
       deletable: mode === 'group' && id !== botMaintenanceRoomId,
@@ -365,11 +373,11 @@ export class ChatroomService {
       ...(origin_room ? { origin_room } : {}),
       ...(auto_title_pending ? { auto_title_pending: true } : {}),
       workspace: room.workspace ?? null, revision, createdAt, updatedAt,
-      lastMessage: rowMessage(this.latestMessage.get(id)) };
+      lastMessage: rowMessage(this.latestMessage.get(id), userName) };
   }
 
-  projectMessage(row) {
-    const message = rowMessage(row);
+  projectMessage(row, userName = this.currentUserName()) {
+    const message = rowMessage(row, userName);
     if (!message) return null;
     if (!message.senderName && message.senderId && message.senderId !== 'user' && message.senderId !== 'system') {
       const live = this.store.get('platform-bots', message.senderId);
@@ -389,31 +397,35 @@ export class ChatroomService {
 
   rooms(actor) {
     actor = identity(actor).id;
+    const userName = this.currentUserName();
     return this.store.list('rooms')
       .filter(room => room.members.includes(actor))
-      .map(room => this.projectRoom(room));
+      .map(room => this.projectRoom(room, userName));
   }
 
   readableRooms(actor, { includeCrossRoomGroups = false } = {}) {
     actor = identity(actor).id;
+    const userName = this.currentUserName();
     return this.store.list('rooms')
       .filter(room => room.members.includes(actor) || (includeCrossRoomGroups && actor !== 'user' && room.mode === 'group' && !room.archivedAt))
-      .map(room => ({ ...this.projectRoom(room), joined: room.members.includes(actor) }));
+      .map(room => ({ ...this.projectRoom(room, userName), joined: room.members.includes(actor) }));
   }
 
   messages(id, actor, options = {}) {
     const room = this.room(id, actor, options);
-    return this.roomMessages.all(room.id).map(rowMessage);
+    const userName = this.currentUserName();
+    return this.roomMessages.all(room.id).map(row => rowMessage(row, userName));
   }
 
   replyBy(roomId, senderId, eventId) {
-    return rowMessage(this.sentReply.get(roomId, senderId, eventId));
+    return rowMessage(this.sentReply.get(roomId, senderId, eventId), this.currentUserName());
   }
 
   repliesTo(roomId, eventId) {
+    const userName = this.currentUserName();
     return this.store.db.prepare(`SELECT rowid AS sequence,data FROM records WHERE kind='messages'
       AND json_extract(data,'$.roomId')=? AND (json_extract(data,'$.replyTo')=? OR json_extract(data,'$.originMessageId')=?)
-      ORDER BY rowid`).all(roomId, eventId, eventId).map(rowMessage);
+      ORDER BY rowid`).all(roomId, eventId, eventId).map(row => rowMessage(row, userName));
   }
 
   latestSequence(roomId) {
@@ -428,13 +440,15 @@ export class ChatroomService {
     this.room(id, actor);
     const stored = this.store.get('room-public-history', id);
     const summary = stored && stored.sequence <= end ? stored : null;
-    const messages = this.publicMessages.all(id, summary?.sequence ?? 0, end).map(rowMessage);
+    const userName = this.currentUserName();
+    const messages = this.publicMessages.all(id, summary?.sequence ?? 0, end).map(row => rowMessage(row, userName));
     return { summary, messages, end };
   }
 
   publicMessagesRange(id, actor, afterSequence = 0, end = this.observationEnd(id, actor)) {
     this.room(id, actor);
-    const messages = end > afterSequence ? this.publicMessages.all(id, afterSequence, end).map(rowMessage) : [];
+    const userName = this.currentUserName();
+    const messages = end > afterSequence ? this.publicMessages.all(id, afterSequence, end).map(row => rowMessage(row, userName)) : [];
     return { messages, end };
   }
 
@@ -505,14 +519,15 @@ export class ChatroomService {
 
   countedMessage(roomId, botId, after, count) {
     this.room(roomId, botId);
-    return rowMessage(this.countMessage.get(roomId, after, botId, count - 1));
+    return rowMessage(this.countMessage.get(roomId, after, botId, count - 1), this.currentUserName());
   }
 
   observationPage(roomId, context, after, until, workStart, limit = 64) {
     this.room(roomId, context.actor);
+    const userName = this.currentUserName();
     const events = [];
     for (const row of this.activityRange.iterate(roomId, after, until, workStart)) {
-      const event = row.kind === 'messages' ? messageEvent(rowMessage(row)) : { ...JSON.parse(row.data), sequence: row.sequence };
+      const event = row.kind === 'messages' ? messageEvent(rowMessage(row, userName)) : { ...JSON.parse(row.data), sequence: row.sequence };
       if (!this.platform.canReadEvent(event, context)) continue;
       if (events.length === limit) return { events, more: true };
       events.push(event);
@@ -540,8 +555,9 @@ export class ChatroomService {
     const before = cursor == null ? null : this.messageRow.get(identifier(cursor, '消息游标'));
     if (cursor != null && (!before || rowMessage(before).roomId !== room.id)) fail('消息游标已失效', 409);
     const rows = this.messagePage.all(room.id, before?.sequence ?? null, before?.created_at ?? null, before?.sequence ?? null, limit + 1);
-    const messages = rows.slice(0, limit).map(row => this.projectMessage(row)).reverse();
-    return { room: this.projectRoom(room), messages, cursor: rows.length > limit ? messages[0].id : null };
+    const userName = this.currentUserName();
+    const messages = rows.slice(0, limit).map(row => this.projectMessage(row, userName)).reverse();
+    return { room: this.projectRoom(room, userName), messages, cursor: rows.length > limit ? messages[0].id : null };
   }
 
   validateMembers(members, actor) {
@@ -725,7 +741,7 @@ export class ChatroomService {
             url: sharedFile.url || `/api/files/${encodeURIComponent(ref.id)}/download`,
           };
         });
-        const senderName = actor === 'user' ? '宿主' : this.store.get('platform-bots', actor)?.name || null;
+        const senderName = actor === 'user' ? null : this.store.get('platform-bots', actor)?.name || null;
         const openId = randomUUID();
         this.store.save('messages', {
           id: openId,
@@ -740,10 +756,11 @@ export class ChatroomService {
           mentions: openingMentions,
           replyTo: null,
         });
-        const savedOpening = rowMessage(this.messageRow.get(openId));
+        const userName = this.currentUserName();
+        const savedOpening = rowMessage(this.messageRow.get(openId), userName);
         this.platform.recordRoomMessageActivity?.(savedOpening);
         this.platform.queueMessage(savedOpening);
-        openingMessage = this.projectMessage(this.messageRow.get(openId));
+        openingMessage = this.projectMessage(this.messageRow.get(openId), userName);
       } else if (isStandardGroup && leadBotId && !skip_welcome) {
         const leadRecord = this.store.get('platform-bots', leadBotId);
         const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
@@ -779,7 +796,7 @@ export class ChatroomService {
     actor = identity(actor).id;
     const add = new Set(list(input.add_members, '添加成员').map(member => identity(member).id));
     const remove = new Set(list(input.remove_members, '移除成员').map(member => identity(member).id));
-    if (remove.has('user')) fail('不能移除宿主用户', 403);
+    if (remove.has('user')) fail('不能移除当前用户', 403);
     if ([...add].some(member => remove.has(member))) fail('同一成员不能同时添加和移除');
     const pinAdd = references(input.pin_add, '添加置顶');
     const pinRemove = new Set(references(input.pin_remove, '移除置顶').map(refKey));
@@ -826,7 +843,7 @@ export class ChatroomService {
 
   archiveRoom(id, revision, actor) {
     id = idOf(id, 'room');
-    if (identity(actor).kind !== 'user') fail('只有宿主能归档群聊', 403);
+    if (identity(actor).kind !== 'user') fail('只有用户本人能归档群聊', 403);
     const saved = this.store.transaction(() => {
       const room = this.room(id, actor);
       if (room.mode !== 'group' || id === botMaintenanceRoomId) fail('此会话不能归档', 403);
@@ -841,7 +858,7 @@ export class ChatroomService {
 
   restoreRoom(id, revision, actor) {
     id = idOf(id, 'room');
-    if (identity(actor).kind !== 'user') fail('只有宿主能恢复群聊', 403);
+    if (identity(actor).kind !== 'user') fail('只有用户本人能恢复群聊', 403);
     const saved = this.store.transaction(() => {
       const room = this.room(id, actor);
       if (revision !== undefined) assertRevision(room.revision, revision);
@@ -854,7 +871,7 @@ export class ChatroomService {
   }
 
   deleteGroup(id, revision, actor) {
-    if (identity(actor).kind !== 'user') fail('只有宿主能删除群聊', 403);
+    if (identity(actor).kind !== 'user') fail('只有用户本人能删除群聊', 403);
     if (!Number.isSafeInteger(revision)) fail('删除群聊需要当前群版本', 400);
     return this.store.transaction(() => {
       const removed = this.store.get('deleted-rooms', id);
@@ -875,7 +892,7 @@ export class ChatroomService {
 
   assertShareable(ref, room, actor, members = room.members) {
     if (ref.kind === 'event') {
-      const message = rowMessage(this.messageRow.get(ref.id));
+      const message = rowMessage(this.messageRow.get(ref.id), this.currentUserName());
       if (message?.roomId === room.id) return message;
     }
     return this.platform.assertShareable(ref, { actor, room, members });
@@ -904,20 +921,21 @@ export class ChatroomService {
     const result = this.store.transaction(() => {
       const room = this.room(id, actor);
       if (room.archivedAt) fail('该群聊已归档，请先移出归档后再发送消息', 409);
+      const userName = this.currentUserName();
       const eventId = options.eventId || callId || randomUUID();
-      const existing = rowMessage(this.messageRow.get(eventId));
+      const existing = rowMessage(this.messageRow.get(eventId), userName);
       if (existing) {
         if (existing.roomId !== id || existing.senderId !== actor || existing.callId !== callId) fail('发送身份已被占用', 409);
         return this.messageReceipt(existing);
       }
       if (clientId) {
-        const previous = rowMessage(this.messageByClient.get(id, actor, clientId));
+        const previous = rowMessage(this.messageByClient.get(id, actor, clientId), userName);
         if (previous) return this.messageReceipt(previous);
       }
       const content = input.text === undefined ? '' : input.text;
       if (typeof content !== 'string' || content.length > 16000) fail('消息正文须为不超过 16000 个字符的文本');
       const prompt = normalizePrompt(input.prompt);
-      const promptRes = normalizePromptResponse(input.prompt_response, room, msgId => rowMessage(this.messageRow.get(msgId)));
+      const promptRes = normalizePromptResponse(input.prompt_response, room, msgId => rowMessage(this.messageRow.get(msgId), userName));
       const rawMentions = list(input.mentions, '@成员').map(member => identity(member).id);
       if (promptRes && promptRes.promptMsg.senderId !== 'user' && promptRes.promptMsg.senderId !== 'system' &&
           room.members.includes(promptRes.promptMsg.senderId) && !rawMentions.includes(promptRes.promptMsg.senderId)) {
@@ -929,7 +947,7 @@ export class ChatroomService {
       const [reply] = replyTarget === undefined ? [] : references([replyTarget], '回复', 'event');
       let parent;
       if (reply) {
-        parent = rowMessage(this.messageRow.get(reply.id));
+        parent = rowMessage(this.messageRow.get(reply.id), userName);
         if (parent?.roomId !== id) fail('回复对象必须是同一会话的消息');
       }
       const refs = references(input.references, '消息引用');
@@ -961,7 +979,7 @@ export class ChatroomService {
         if (latestSeq > options.expectedSequence) {
           const ownCalls = options.ownRunCallIds instanceof Set ? options.ownRunCallIds : new Set();
           const newer = this.publicMessages.all(id, options.expectedSequence, latestSeq)
-            .map(rowMessage)
+            .map(row => rowMessage(row, userName))
             .filter(msg => !(msg.senderId === actor && msg.callId && ownCalls.has(msg.callId)));
           if (newer.length) {
             return {
@@ -984,7 +1002,7 @@ export class ChatroomService {
           }
         }
       }
-      const senderName = actor === 'user' ? '宿主' : this.store.get('platform-bots', actor)?.name || null;
+      const senderName = actor === 'user' ? null : this.store.get('platform-bots', actor)?.name || null;
       const message = this.store.save('messages', {
         id: eventId, kind: 'message', roomId: id, senderId: actor, ...(senderName ? { senderName } : {}), author: identity(actor), content, attachments, references: refs, mentions,
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
@@ -1007,9 +1025,9 @@ export class ChatroomService {
             answers: promptRes.value.answers,
           },
         });
-        updatedPromptMessage = this.projectMessage(this.messageRow.get(promptRes.promptMsg.id));
+        updatedPromptMessage = this.projectMessage(this.messageRow.get(promptRes.promptMsg.id), userName);
       }
-      const saved = rowMessage(this.messageRow.get(message.id));
+      const saved = rowMessage(this.messageRow.get(message.id), userName);
       this.platform.recordRoomMessageActivity?.(saved);
       if (!options.skipDelivery) this.platform.queueMessage(saved);
       inserted = true;

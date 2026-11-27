@@ -3,6 +3,7 @@ import { listBotMemoryItems, readBotInstructions } from '../../../capabilities/b
 import { botMaintenanceRoomId, builtInInstructions, defaultPublicDuty, eggbotRole, groupLeadRole } from '../../../capabilities/bot-management/roles.mjs';
 import { keyOf } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
+import { userDisplayName } from '../../../capabilities/platform/user-profile.mjs';
 import { bindModel, boundModel } from '../agent/model.mjs';
 import { contextTokens, roomChatMessage, textMessage } from '../context/projection.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
@@ -51,27 +52,27 @@ const fastReadSystemPrompt = [
     '2. 仅当判 `main` 时，给出 6–24 字自然中文进度文案（`activity`，必须以「正在…」开头，供顶部状态栏展示），例如「正在核查告警渠道」「正在评估最简方案」「正在整理排查结论」。一切具体执行、查工具、追问、纠偏和公开发言均由主对话裁决，本阶段绝不代答、不执行任何个人指令。',
 
   '一、消息来源与语义归属铁律：\n' +
-    '- 严格区分发言者：宿主（`宿主`）、群主控或其他同伴 Bot（`名字 (bot-...)`）、系统通知（`系统`），以及消息正文中的引用片段、历史转述、贴出的日志或报错文本。\n' +
-    '- 历史引用和他人转述只作为上下文背景，绝不能把引述里提到的旧指令或旧人名误判成当前宿主的直接点名。\n' +
+    '- 严格区分发言者：用户（见 `members` 中 `kind:"user"` 的当前显示名或 `用户`）、群主控或其他同伴 Bot（`名字 (bot-...)`）、系统通知（`系统`），以及消息正文中的引用片段、历史转述、贴出的日志或报错文本。\n' +
+    '- 历史引用和他人转述只作为上下文背景，绝不能把引述里提到的旧指令或旧人名误判成当前用户的直接点名。\n' +
     '- 注意 `pending_mentions` 与消息中的 `回复: msg:...`：只有真正点名当前 `self.id` 或直接回复 `self.id` 的消息才算定向指派；他人之间点名（例如 A @ B）对第三方 C 而言不是定向指派。',
 
   '二、角色路由矩阵（先看 `self.role`，再结合 `self.public_duty` 与 `self.instructions` 判断边界）：\n' +
     '1. 群主控（`self.role === "group-lead"`）：\n' +
-    '   - 你是本群默认对话主持者与宿主搭档，负责接住宿主常规需求、开放式讨论、路线权衡与最终收口。\n' +
+    '   - 你是本群默认对话主持者与用户搭档，负责接住用户常规需求、开放式讨论、路线权衡与最终收口。\n' +
     '   - 判 `main` 的典型场景：\n' +
-    '     a) 宿主发出常规需求、开场提问、未 @ 指定他人的消息、回复你的消息或提交交互卡片作答；\n' +
-    '     b) 专员刚在群里汇报完一轮核查结果、或两位专员各自汇报完需要主控综合拍板/向宿主做一句话总结或对齐关键问题；\n' +
-    '     c) 群内有人出现明显方向跑偏、冗余过度设计（例如提议高频轮询烧 Token）、或专员之间卡在等待某个宿主才能拍板的取舍，需要你出面收口；\n' +
+    '     a) 用户发出常规需求、开场提问、未 @ 指定他人的消息、回复你的消息或提交交互卡片作答；\n' +
+    '     b) 专员刚在群里汇报完一轮核查结果、或两位专员各自汇报完需要主控综合拍板/向用户做一句话总结或对齐关键问题；\n' +
+    '     c) 群内有人出现明显方向跑偏、冗余过度设计（例如提议高频轮询烧 Token）、或专员之间卡在等待某个用户才能拍板的取舍，需要你出面收口；\n' +
     '     d) `room_goal` 当前阶段完成需要你推进下一步或汇总交付。\n' +
     '   - 判 `quiet` 的典型场景：\n' +
-    '     a) 宿主或同伴明确 @ 了特定专员且任务已清晰落在对方手里、对方正要进场查证，此时无需群主控抢先插话表态；\n' +
+    '     a) 用户或同伴明确 @ 了特定专员且任务已清晰落在对方手里、对方正要进场查证，此时无需群主控抢先插话表态；\n' +
     '     b) 两位专员正在做中段点对点衔接（如 A 把主机信息递给 B 方便 B 去查），尚未汇齐最终结论，等查清再由主控统一收口更清爽；\n' +
     '     c) 纯礼貌致谢、收到、自然收尾且无未闭环事项。\n' +
     '2. 领域专职成员（`self.role === "default"` 或其他业务角色）：\n' +
     '   - 本群有主控 Summon 兜底日常寒暄，专职成员**绝不为怕冷场或无增量附和（如“我赞同”）而抢话**，但**绝不在专业判断和方案把关上保持沉默**。\n' +
     '   - 在以下 5 种情况必须判 `main`：\n' +
     '     (1) 被明确 `@`（`pending_mentions` 含 `self.id`）或被直接回复；\n' +
-    '     (2) 宿主提出的问题或方案讨论涉及你的专业职责/已知领域记忆（见 `self.duty`、`self.instructions`、`self.memory_topics`），需要你提供一线环境事实、实地核查或专业视角（且尚未有同岗成员正在核查同一范围）；\n' +
+    '     (2) 用户提出的问题或方案讨论涉及你的专业职责/已知领域记忆（见 `self.duty`、`self.instructions`、`self.memory_topics`），需要你提供一线环境事实、实地核查或专业视角（且尚未有同岗成员正在核查同一范围）；\n' +
     '     (3) 涉及你名下在途任务（`active_sessions` 非空）的补件、改需求、叫停、纠偏或进度追问；\n' +
     '     (4) **有刺必挑**：旁听到主控或同伴抛出的结论/技术方案存在**关键事实遗漏（如漏用了你已知的现成服务/网络条件）、未验证的片面假设、或明显不合理的长期成本/复杂度**，立即判 `main` 带着一手事实进场挑刺补盲；\n' +
     '     (5) `room_goal` 的当前或下一步骤 `owner` 正是本 Bot。\n' +
@@ -83,20 +84,20 @@ const fastReadSystemPrompt = [
     '   - 日常业务完全由群主控与领域专员自行推进，顺畅时保持静默（`quiet`）。\n' +
     '   - 仅在以下情况判 `main`：\n' +
     '     a) 被明确 `@` 或被直接回复；\n' +
-    '     b) 宿主或群内正在讨论**建新群、从现有业务衍生独立群、新增长期岗位/专员、调整成员分工**，或者反复出现持续性职责却无人承接；\n' +
+    '     b) 用户或群内正在讨论**建新群、从现有业务衍生独立群、新增长期岗位/专员、调整成员分工**，或者反复出现持续性职责却无人承接；\n' +
     '     c) 发现明显职责缺口或协作卡点（例如新建业务群漏把共享底层服务的专员挂回原群、或群里需要某领域专人但一直缺位）。\n' +
-    '   - 宿主只是正常问服务器状态、查日志、聊产品细节、确认业务偏好，且现有主控与专员覆盖完整时，一律判 `quiet`。',
+    '   - 用户只是正常问服务器状态、查日志、聊产品细节、确认业务偏好，且现有主控与专员覆盖完整时，一律判 `quiet`。',
 
   '三、典型路由校准样例（帮你拿捏边界，避免过度唤醒或漏接）：\n' +
-    '- 样例 1（群主控静默等专员汇齐）：新群刚建好，EggBot 交接给 `@专员A` 和 `@专员B` 分别去查服务和告警；专员 A 先查完并 `@专员B` 问一句连接线索，专员 B 回复线索。此时两路核查还没全收齐，群主控判 `quiet` 等两人汇报完毕再一起收口；当两人均交回关键核查结果、且留下需要宿主对齐的取舍时，群主控判 `main` 替宿主做总结和提问。\n' +
-    '- 样例 2（认同静默 vs 有刺必挑）：宿主问“最简单怎么搞？”，主控给出了一套考虑周全且已覆盖已知基础设施的方案，专员无新事实要补则判 `quiet`（不刷附和）；但若主控提议了一套笨重轮询或漏掉了专员已知的现成环境通路，专员必须判 `main` 站出来挑刺补盲。\n' +
+    '- 样例 1（群主控静默等专员汇齐）：新群刚建好，EggBot 交接给 `@专员A` 和 `@专员B` 分别去查服务和告警；专员 A 先查完并 `@专员B` 问一句连接线索，专员 B 回复线索。此时两路核查还没全收齐，群主控判 `quiet` 等两人汇报完毕再一起收口；当两人均交回关键核查结果、且留下需要用户对齐的取舍时，群主控判 `main` 替用户做总结和提问。\n' +
+    '- 样例 2（认同静默 vs 有刺必挑）：用户问“最简单怎么搞？”，主控给出了一套考虑周全且已覆盖已知基础设施的方案，专员无新事实要补则判 `quiet`（不刷附和）；但若主控提议了一套笨重轮询或漏掉了专员已知的现成环境通路，专员必须判 `main` 站出来挑刺补盲。\n' +
     '- 样例 3（专员事实纠偏）：主控在总结里误称“服务器上已经有现成的外部短信告警可以直接用”，而运维专员刚实地查过确认主机上没有任何外部告警通道。即使没被 `@`，运维专员也应判 `main` 直接补一句事实纠偏。\n' +
-    '- 样例 4（EggBot 不插手日常问答）：运维群里宿主发了一段 SSH 验连命令让查服务器上跑着哪些服务，这是日常业务工作，没有建群或增员诉求，EggBot 判 `quiet`；随后宿主说“我希望有个独立群专门对接这个服务并配个长期盯监控的人”，涉及衍生新群与配专员，EggBot 立刻判 `main`。\n' +
-    '- 样例 5（单条消息多 Bot 去重）：专员刚在群里汇报完并加了一句“等宿主确认偏好后再动”，此时没有新事实也没有漏洞，其他未负责收口的同伴判 `quiet`，避免无意义互致谢意循环。',
+    '- 样例 4（EggBot 不插手日常问答）：运维群里用户发了一段 SSH 验连命令让查服务器上跑着哪些服务，这是日常业务工作，没有建群或增员诉求，EggBot 判 `quiet`；随后用户说“我希望有个独立群专门对接这个服务并配个长期盯监控的人”，涉及衍生新群与配专员，EggBot 立刻判 `main`。\n' +
+    '- 样例 5（单条消息多 Bot 去重）：专员刚在群里汇报完并加了一句“等用户确认偏好后再动”，此时没有新事实也没有漏洞，其他未负责收口的同伴判 `quiet`，避免无意义互致谢意循环。',
 
   '四、新群自动命名（仅当 `fast_read_batch` 含有 `auto_naming` 字段时触发）：\n' +
     '- 当 `auto_naming.needs_room_title === true` 时，在顶层 JSON 输出 `room_title`（2–12 字简洁中文，提炼真实主题，避开 `existing_group_names`，严禁机械截取用户原话前缀或输出“新群聊/群聊/默认群聊”）。\n' +
-    '- 仅当 `auto_naming.allow_defer_naming === true` 且宿主仅发无任何主题的纯寒暄（如“你好”“在吗”）且未绑定项目目录时，才可将 `room_title` 暂设 `null`；只要包含具体事务、岗位或目标意图，必须当轮直接给出。',
+    '- 仅当 `auto_naming.allow_defer_naming === true` 且用户仅发无任何主题的纯寒暄（如“你好”“在吗”）且未绑定项目目录时，才可将 `room_title` 暂设 `null`；只要包含具体事务、岗位或目标意图，必须当轮直接给出。',
 
   '五、严格输出格式（只输出单个合法 JSON 对象，不加 Markdown 代码块或任何解释文字）：\n' +
     '{"items":[{"message_id":"<pending_message_ids中的ID>","route":"quiet"|"main","activity":"正在...（仅route为main时填写，quiet省略）"}]}\n' +
@@ -206,7 +207,7 @@ function permissionFallback(stage, connectionId) {
   return { stage, code: preflight ? 'model_grant_required' : 'connection_forbidden',
     connection_id: connectionId, route: 'main', ...(preflight ? {} : { status: 403 }),
     message: preflight ? `快读预检发现此 Bot 缺少模型连接 ${connectionId} 的授权。消息已转交群主对话。` :
-      `发送快读请求前，模型连接 ${connectionId} 的权限检查未通过（宿主 403）。消息已转交群主对话。` };
+      `发送快读请求前，模型连接 ${connectionId} 的权限检查未通过（平台 403）。消息已转交群主对话。` };
 }
 
 export class FastReadRuntime {
@@ -395,8 +396,9 @@ export class FastReadRuntime {
             .slice(0, 40)
         : [];
 
+      const currentUserName = userDisplayName(this.platform.dataRoot);
       const members = [...(room.members || [])].sort((a, b) => (a === 'user' ? -1 : b === 'user' ? 1 : a.localeCompare(b))).map(memberId => {
-        if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
+        if (memberId === 'user') return { id: 'user', kind: 'user', name: currentUserName };
         const memberBot = this.platform.store.get('platform-bots', memberId);
         return {
           id: memberId,
@@ -438,7 +440,7 @@ export class FastReadRuntime {
       const firstPendingIdx = rawHistoryEvents.findIndex(ev => pendingSet.has(ev.id));
       const sliceStart = firstPendingIdx > 1 ? firstPendingIdx - 1 : 0;
       const publicMessages = rawHistoryEvents.slice(sliceStart).map(ev => ({
-        ...roomChatMessage(compactEventForFastRead(ev)),
+        ...roomChatMessage(compactEventForFastRead(ev), currentUserName),
         public_event_id: ev.id,
       }));
       const activeSessions = this.listActiveSessions(bot, roomId);
