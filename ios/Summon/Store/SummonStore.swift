@@ -92,10 +92,23 @@ final class SummonStore {
 
     init() {
         if let data = defaults.data(forKey: settingsKey),
-           let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) {
+           var saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) {
+            var shouldPersist = false
+            if saved.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                .lowercased() == "https://bot.lin0.org" {
+                let oldEndpoint = saved.baseURL
+                let oldToken = SummonKeychain.token(for: oldEndpoint)
+                if !oldToken.isEmpty {
+                    try? SummonKeychain.save(token: oldToken, for: SummonAPIClient.defaultHubURL)
+                    try? SummonKeychain.save(token: "", for: oldEndpoint)
+                }
+                saved.baseURL = SummonAPIClient.defaultHubURL
+                shouldPersist = true
+            }
             settings = saved
-            if let previous = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               previous.keys.contains("workspaceID"), let updated = try? JSONEncoder().encode(saved) {
+            if shouldPersist || ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?.keys.contains("workspaceID") == true),
+               let updated = try? JSONEncoder().encode(saved) {
                 defaults.set(updated, forKey: settingsKey)
             }
         }

@@ -188,7 +188,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val nodeID: S
 
     companion object {
         const val PROTOCOL_VERSION = 3
-        const val DEFAULT_HUB_URL = "https://bot.lin0.org"
+        const val DEFAULT_HUB_URL = "https://8.163.53.156"
 
         fun normalized(value: String): URI {
             val cleaned = value.trim()

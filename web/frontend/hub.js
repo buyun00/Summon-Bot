@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const DEFAULT_HUB_URL = 'https://bot.lin0.org';
+  const DEFAULT_HUB_URL = 'https://8.163.53.156';
   const PROTOCOL_VERSION = 3;
   const LAST_NODE_KEY = 'summon:hub:active-node:v1';
 

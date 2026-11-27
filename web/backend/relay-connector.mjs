@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-export const DEFAULT_HUB_URL = 'https://bot.lin0.org';
+export const DEFAULT_HUB_URL = 'https://8.163.53.156';
 const CHUNK_REQ = 1;
 const CHUNK_RES = 2;
 const CHUNK_SIZE = 64 * 1024;
@@ -28,7 +28,7 @@ export function normalizeHubUrl(raw) {
   const value = String(raw || DEFAULT_HUB_URL).trim();
   let url;
   try { url = new URL(value); } catch {
-    throw Object.assign(new Error('请输入有效的中枢地址，例如 https://bot.lin0.org'), { status: 400, code: 'invalid_hub_url' });
+    throw Object.assign(new Error('请输入有效的中枢地址，例如 https://8.163.53.156'), { status: 400, code: 'invalid_hub_url' });
   }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw Object.assign(new Error('中枢地址格式无效'), { status: 400, code: 'invalid_hub_url' });
@@ -95,8 +95,10 @@ export class RelayConnector {
     try {
       const saved = JSON.parse(await readFile(this.configPath, 'utf8'));
       if (saved && typeof saved === 'object') {
+        const rawHubUrl = typeof saved.hubUrl === 'string' ? saved.hubUrl.trim().replace(/\/+$/, '') : '';
+        const migratedHub = rawHubUrl.toLowerCase() === 'https://bot.lin0.org';
         this.state = {
-          hubUrl: saved.hubUrl || DEFAULT_HUB_URL,
+          hubUrl: (!rawHubUrl || migratedHub) ? DEFAULT_HUB_URL : saved.hubUrl,
           localNodeId: saved.localNodeId || saved.nodeId || randomUUID(),
           nodeId: saved.nodeId || null,
           nodeSecret: saved.nodeSecret || null,
@@ -104,6 +106,7 @@ export class RelayConnector {
           userToken: saved.userToken || null,
           user: saved.user || null,
         };
+        if (migratedHub) await this.saveConfig().catch(() => {});
       }
     } catch (error) {
       if (error.code !== 'ENOENT') console.warn('Failed to read relay.json:', error.message);

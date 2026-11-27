@@ -125,9 +125,24 @@ class SummonStore(private val app: Context) {
         val saved = prefs.getString(SETTINGS_KEY, null)
         if (saved != null) runCatching {
             val previous = SummonJson.parse(saved)
-            settings = SummonConnectionSettings.parse(previous)
-            if (previous.obj?.containsKey("workspaceID") == true)
+            var parsed = SummonConnectionSettings.parse(previous)
+            var shouldPersist = previous.obj?.containsKey("workspaceID") == true
+            if (parsed.baseURL.trim().trimEnd('/').equals("https://bot.lin0.org", ignoreCase = true)) {
+                val oldEndpoint = parsed.baseURL
+                val oldToken = SummonKeystore.token(app, oldEndpoint)
+                if (oldToken.isNotEmpty()) {
+                    runCatching {
+                        SummonKeystore.save(app, oldToken, SummonApiClient.DEFAULT_HUB_URL)
+                        SummonKeystore.save(app, "", oldEndpoint)
+                    }
+                }
+                parsed = parsed.copy(baseURL = SummonApiClient.DEFAULT_HUB_URL)
+                shouldPersist = true
+            }
+            settings = parsed
+            if (shouldPersist) {
                 prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+            }
         }
         activeNodeID = settings.activeNodeID
         client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, activeNodeID) }.getOrNull()

@@ -46,7 +46,7 @@ final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
 
 struct SummonAPIClient: Sendable {
     static let protocolVersion = 3
-    static let defaultHubURL = "https://bot.lin0.org"
+    static let defaultHubURL = "https://8.163.53.156"
     let baseURL: URL
     let nodeID: String?
     private let token: String

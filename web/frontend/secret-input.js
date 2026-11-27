@@ -187,7 +187,7 @@
             ${sub === 'register' ? renderSecretField({ id: 'secret-hub-inv', label: '邀请码', name: 'inviteCode', isSecret: false, required: true }) : ''}
             ${renderSecretField({ id: 'secret-hub-user', label: '用户名', name: 'username', isSecret: false, required: true, defaultValue: hubState.user?.username || '', autocomplete: 'username' })}
             ${renderSecretField({ id: 'secret-hub-pass', label: '密码', name: 'password', isSecret: true, required: true, autocomplete: sub === 'register' ? 'new-password' : 'current-password' })}
-            ${renderSecretField({ id: 'secret-hub-url', label: '中枢地址', name: 'hubUrl', isSecret: false, required: false, defaultValue: hubState.hubUrl || 'https://bot.lin0.org' })}
+            ${renderSecretField({ id: 'secret-hub-url', label: '中枢地址', name: 'hubUrl', isSecret: false, required: false, defaultValue: hubState.hubUrl || 'https://8.163.53.156' })}
           `}
           <div id="secret-modal-error" class="secret-error" hidden></div>
         </form>`;
