@@ -123,6 +123,7 @@ export async function startGateway(options = {}) {
       if (client.writableLength > 65536) client.destroy();
       else client.write(line);
     }
+    if (type === 'message') void push?.tick();
   }
   function applyWindow(state) {
     if (!state || !['prepared', 'draining'].includes(state.phase)) return;
@@ -201,7 +202,7 @@ export async function startGateway(options = {}) {
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();
-    push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch,
+    push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch, redact: clean,
       onNotify: item => emit('push.notify', item) }).initialize();
     const api = createApi({ platform, room, attachments, models, exec, secrets, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
@@ -315,6 +316,9 @@ export async function startGateway(options = {}) {
     usageTimer.unref();
     warmUsage();
     queueTick();
+    setTimeout(() => {
+      if (!closing) void platform.selfUpdate?.finalizeAfterStartup().catch(() => {});
+    }, 6000).unref();
     return { url, token, platform, close, installationDrain };
   } catch (error) {
     await close();

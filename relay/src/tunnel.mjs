@@ -134,7 +134,11 @@ class NodeTunnel {
         nodeId: this.node.id,
         nodeName: this.node.name,
         roomId: msg.roomId,
+        roomName: typeof msg.roomName === 'string' ? msg.roomName : '',
+        roomMode: msg.roomMode === 'direct' ? 'direct' : 'group',
+        senderName: typeof msg.senderName === 'string' ? msg.senderName : '',
         messageId: msg.messageId,
+        preview: typeof msg.preview === 'string' ? msg.preview : '',
         notificationId: msg.notificationId,
         createdAt: msg.createdAt,
       });

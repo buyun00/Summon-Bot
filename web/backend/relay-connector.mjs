@@ -194,7 +194,12 @@ export class RelayConnector {
               this.sendTunnelJson({
                 type: 'push.notify',
                 roomId: event.roomId,
+                roomName: event.roomName,
+                roomMode: event.roomMode,
+                senderId: event.senderId,
+                senderName: event.senderName,
                 messageId: event.messageId,
+                preview: event.preview,
                 notificationId: event.notificationId,
                 createdAt: event.createdAt,
               });

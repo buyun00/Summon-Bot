@@ -127,7 +127,7 @@ gh workflow run ios-testflight.yml --repo buyun00/Summon-Bot --ref main -f actio
 1. Ensure the iPhone runs iOS 26+ with **TestFlight** installed, and accept the internal tester invite with the matching Apple Account.
 2. Open **Summon Bot** in TestFlight, confirm the version and full build number match the Actions summary, and tap Install.
 3. Launch the app, enter the formal URL (`https://bot.lin0.org`) and access token, allow notifications when prompted, and verify **Settings → Notifications** shows push enabled.
-4. Push banners hide private message bodies by default (displaying a generic new-message notice and loading content once opened) and notify only for Bot messages in rooms the user participates in. Background SSE keepalive is unnecessary.
+4. Push banners show the room/group title and the redacted plain-text message preview (prefixed with the sender Bot name in groups, plus node name as subtitle when multiple PCs are paired), notifying only for Bot replies in rooms the user participates in. Background SSE keepalive is unnecessary.
 
 ## 10. Troubleshooting
 

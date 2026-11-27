@@ -8,16 +8,88 @@ import { reject } from '../platform/contract.mjs';
 const uuid = /^[a-f0-9-]{36}$/i;
 const topic = 'org.lin0.summon';
 const ttl = 24 * 60 * 60 * 1000;
+const maxApnsPayloadBytes = 3800;
+
+function truncateCodePoints(text, maxChars) {
+  const chars = Array.from(String(text || ''));
+  if (chars.length <= maxChars) return chars.join('');
+  return `${chars.slice(0, Math.max(1, maxChars - 1)).join('').trimEnd()}…`;
+}
+
+function cleanMarkdownPreview(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code) => ` ${String(code || '').trim()} `)
+    .replace(/```[a-zA-Z0-9_-]*/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, (_, alt) => (alt.trim() ? `[图片: ${alt.trim()}]` : '[图片]'))
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+    .replace(/^[ \t]*[-*+][ \t]+/gm, '')
+    .replace(/(\*\*|__|~~)(.*?)\1/g, '$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatMessagePreview(message, redact) {
+  const safe = text => (typeof redact === 'function' && text ? String(redact(text)) : String(text || ''));
+  const cleaned = cleanMarkdownPreview(safe(message?.content || ''));
+  if (cleaned) return truncateCodePoints(cleaned, 240);
+
+  if (message?.prompt && typeof message.prompt === 'object') {
+    const label = cleanMarkdownPreview(safe(
+      message.prompt.title || message.prompt.description || message.prompt.questions?.[0]?.label || '',
+    ));
+    const prefix = message.prompt.kind === 'permission' ? '[需要授权]'
+      : message.prompt.kind === 'confirm' ? '[需要确认]'
+      : message.prompt.kind === 'secret' ? '[需要输入凭据]'
+      : '[等待回复]';
+    return truncateCodePoints(label ? `${prefix} ${label}` : prefix, 240);
+  }
+
+  if (Array.isArray(message?.attachments) && message.attachments.length) {
+    const allImages = message.attachments.every(file => typeof file?.mimeType === 'string' && file.mimeType.startsWith('image/'));
+    if (allImages) return message.attachments.length === 1 ? '[图片]' : `[${message.attachments.length} 张图片]`;
+    const names = message.attachments.map(file => file?.name).filter(Boolean).join('、');
+    return truncateCodePoints(names ? `[附件] ${names}` : '[附件]', 240);
+  }
+
+  if (Array.isArray(message?.references) && message.references.length) return '[共享了引用]';
+  return '';
+}
+
+function buildApnsPayload({ title, subtitle = '', body, threadId, extra }) {
+  let bodyText = String(body || '');
+  const make = currentBody => JSON.stringify({
+    aps: {
+      alert: { title, ...(subtitle ? { subtitle } : {}), body: currentBody },
+      sound: 'default',
+      'thread-id': threadId,
+    },
+    ...extra,
+  });
+  let payload = make(bodyText);
+  let limit = Array.from(bodyText).length;
+  while (Buffer.byteLength(payload, 'utf8') > maxApnsPayloadBytes && limit > 16) {
+    limit = Math.max(16, Math.floor(limit * 0.75));
+    bodyText = truncateCodePoints(bodyText, limit);
+    payload = make(bodyText);
+  }
+  return payload;
+}
 
 /** One owner's workspace, matching the gateway's existing controller authorization.
  * Device tokens stay in its private database, never in snapshots or events.
  * Persisted queue + message cursor survives gateway and capability restarts.
  */
 export class PushService {
-  constructor({ openStore, messages, dataRoot, historyEpoch, onNotify }) {
-    Object.assign(this, { openStore, messages, dataRoot, historyEpoch, onNotify });
+  constructor({ openStore, messages, dataRoot, historyEpoch, redact, onNotify }) {
+    Object.assign(this, { openStore, messages, dataRoot, historyEpoch, redact, onNotify });
     this.closed = false;
     this.inflight = null;
+    this.dirty = false;
     this.config = null;
     this.configurationStatus = 'unconfigured';
     this.connections = new Set();
@@ -111,16 +183,43 @@ export class PushService {
         let reason; try { reason = JSON.parse(body).reason; } catch {}
         finish({ status, reason });
       });
-      request.end(JSON.stringify({ aps: { alert: { title: 'Summon Bot', body: 'Bot 发来一条新消息' }, sound: 'default',
-        'thread-id': job.roomId }, roomId: job.roomId, messageId: job.messageId, deviceId: device.id }));
+      const roomName = truncateCodePoints(String(job.roomName || '').trim(), 60);
+      const senderName = truncateCodePoints(String(job.senderName || '').trim(), 48);
+      const preview = truncateCodePoints(String(job.preview || '').trim(), 240);
+      const title = roomName || senderName || 'Summon Bot';
+      let alertBody;
+      if (preview) {
+        alertBody = job.roomMode !== 'direct' && senderName && senderName !== title
+          ? `${senderName}：${preview}`
+          : preview;
+      } else {
+        alertBody = senderName ? `${senderName} 发来一条新消息` : 'Bot 发来一条新消息';
+      }
+      request.end(buildApnsPayload({
+        title,
+        body: alertBody,
+        threadId: job.roomId,
+        extra: { roomId: job.roomId, messageId: job.messageId, deviceId: device.id },
+      }));
     });
   }
   tick() {
-    if (this.closed || this.inflight) return this.inflight;
+    if (this.closed || !this.store) return this.inflight;
+    if (this.inflight) {
+      this.dirty = true;
+      return this.inflight;
+    }
+    this.dirty = false;
     this.inflight = this.drain().catch(() => {
       // No token, key, message text, or response body is emitted to logs.
       console.error('APNs queue operation failed; pending notifications will retry');
-    }).finally(() => { this.inflight = null; });
+    }).finally(() => {
+      this.inflight = null;
+      if (this.dirty && !this.closed) {
+        this.dirty = false;
+        void this.tick();
+      }
+    });
     return this.inflight;
   }
   async drain() {
@@ -134,11 +233,18 @@ export class PushService {
         if (message.senderId && !['user', 'system'].includes(message.senderId) && room?.members?.includes('user')
             && Date.now() - Date.parse(message.createdAt) < ttl) {
           const notificationId = randomUUID();
-          notified.push({ roomId: message.roomId, messageId: message.id, notificationId, createdAt: message.createdAt });
+          const roomName = truncateCodePoints(String(room?.name || '').trim(), 60);
+          const roomMode = room?.mode === 'direct' ? 'direct' : 'group';
+          const senderBot = this.messages.get('platform-bots', message.senderId) || this.messages.get('deleted-bots', message.senderId);
+          const senderName = truncateCodePoints(String(message.senderName || senderBot?.name || '').trim(), 48);
+          const preview = formatMessagePreview(message, this.redact);
+          notified.push({ roomId: message.roomId, roomName, roomMode, senderId: message.senderId, senderName,
+            messageId: message.id, preview, notificationId, createdAt: message.createdAt });
           for (const device of devices) {
             if (Date.parse(device.createdAt) > Date.parse(message.createdAt)) continue;
             this.store.save('push-queue', { id: `${message.id}:${device.id}`, messageId: message.id,
-              roomId: message.roomId, deviceId: device.id, notificationId, createdAt: message.createdAt, attempts: 0, nextAt: 0 });
+              roomId: message.roomId, roomName, roomMode, senderId: message.senderId, senderName, preview,
+              deviceId: device.id, notificationId, createdAt: message.createdAt, attempts: 0, nextAt: 0 });
           }
         }
       }

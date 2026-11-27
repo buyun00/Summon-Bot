@@ -6,6 +6,33 @@ import { join } from 'node:path';
 const uuidRe = /^[a-f0-9-]{36}$/i;
 const defaultBundleId = 'org.lin0.summon';
 const ttlMs = 24 * 60 * 60 * 1000;
+const maxApnsPayloadBytes = 3800;
+
+function truncateCodePoints(text, maxChars) {
+  const chars = Array.from(String(text || ''));
+  if (chars.length <= maxChars) return chars.join('');
+  return `${chars.slice(0, Math.max(1, maxChars - 1)).join('').trimEnd()}…`;
+}
+
+function buildApnsPayload({ title, subtitle = '', body, threadId, extra }) {
+  let bodyText = String(body || '');
+  const make = currentBody => JSON.stringify({
+    aps: {
+      alert: { title, ...(subtitle ? { subtitle } : {}), body: currentBody },
+      sound: 'default',
+      'thread-id': threadId,
+    },
+    ...extra,
+  });
+  let payload = make(bodyText);
+  let limit = Array.from(bodyText).length;
+  while (Buffer.byteLength(payload, 'utf8') > maxApnsPayloadBytes && limit > 16) {
+    limit = Math.max(16, Math.floor(limit * 0.75));
+    bodyText = truncateCodePoints(bodyText, limit);
+    payload = make(bodyText);
+  }
+  return payload;
+}
 
 export class HubPushService {
   constructor({ store, configDir }) {
@@ -15,6 +42,7 @@ export class HubPushService {
     this.configurationStatus = 'unconfigured';
     this.closed = false;
     this.inflight = null;
+    this.dirty = false;
     this.connections = new Set();
     this.authorization = null;
   }
@@ -72,10 +100,10 @@ export class HubPushService {
     return { removed: true };
   }
 
-  notify({ userId, nodeId, nodeName, roomId, messageId, notificationId, createdAt }) {
+  notify({ userId, nodeId, nodeName, roomId, roomName = '', roomMode = 'group', senderName = '', messageId, preview = '', notificationId, createdAt }) {
     if (!userId || !nodeId || !roomId || !messageId) return;
     if (createdAt && Date.now() - Date.parse(createdAt) > ttlMs) return;
-    this.store.enqueuePush({ userId, nodeId, nodeName, roomId, messageId, notificationId, createdAt });
+    this.store.enqueuePush({ userId, nodeId, nodeName, roomId, roomName, roomMode, senderName, messageId, preview, notificationId, createdAt });
     void this.tick();
   }
 
@@ -89,7 +117,7 @@ export class HubPushService {
     return this.authorization.value;
   }
 
-  send(device, job) {
+  send(device, job, { multiNode = false } = {}) {
     return new Promise(resolve => {
       const session = connect('https://api.push.apple.com');
       this.connections.add(session);
@@ -125,31 +153,59 @@ export class HubPushService {
         try { reason = JSON.parse(body).reason; } catch {}
         finish({ status, reason });
       });
-      const bodyText = job.node_name ? `${job.node_name} 发来一条新消息` : 'Bot 发来一条新消息';
-      request.end(JSON.stringify({
-        aps: {
-          alert: { title: 'Summon Bot', body: bodyText },
-          sound: 'default',
-          'thread-id': `${job.node_id}:${job.room_id}`,
+      const roomName = truncateCodePoints(String(job.room_name || '').trim(), 60);
+      const senderName = truncateCodePoints(String(job.sender_name || '').trim(), 48);
+      const preview = truncateCodePoints(String(job.preview || '').trim(), 240);
+      const nodeName = truncateCodePoints(String(job.node_name || '').trim(), 48);
+      const title = roomName || senderName || 'Summon Bot';
+      const subtitle = multiNode && nodeName && nodeName !== title ? nodeName : '';
+      let bodyText;
+      if (preview) {
+        bodyText = job.room_mode !== 'direct' && senderName && senderName !== title
+          ? `${senderName}：${preview}`
+          : preview;
+      } else {
+        bodyText = senderName
+          ? `${senderName} 发来一条新消息`
+          : (nodeName ? `${nodeName} 发来一条新消息` : 'Bot 发来一条新消息');
+      }
+      request.end(buildApnsPayload({
+        title,
+        subtitle,
+        body: bodyText,
+        threadId: `${job.node_id}:${job.room_id}`,
+        extra: {
+          nodeId: job.node_id,
+          roomId: job.room_id,
+          messageId: job.message_id,
+          deviceId: device.deviceId,
         },
-        nodeId: job.node_id,
-        roomId: job.room_id,
-        messageId: job.message_id,
-        deviceId: device.deviceId,
       }));
     });
   }
 
   tick() {
-    if (this.closed || this.inflight || !this.config) return this.inflight;
+    if (this.closed || !this.config) return this.inflight;
+    if (this.inflight) {
+      this.dirty = true;
+      return this.inflight;
+    }
+    this.dirty = false;
     this.inflight = this.drain().catch(() => {
       console.error('Hub APNs drain failed; pending jobs will retry');
-    }).finally(() => { this.inflight = null; });
+    }).finally(() => {
+      this.inflight = null;
+      if (this.dirty && !this.closed) {
+        this.dirty = false;
+        void this.tick();
+      }
+    });
     return this.inflight;
   }
 
   async drain() {
     const jobs = this.store.listDuePushJobs(Date.now());
+    const multiNodeByUser = new Map();
     for (const job of jobs) {
       if (this.closed) return;
       const device = this.store.getPushDevice(job.device_id);
@@ -157,7 +213,12 @@ export class HubPushService {
         this.store.removePushJob(job.id);
         continue;
       }
-      const result = await this.send(device, job);
+      let multiNode = multiNodeByUser.get(job.user_id);
+      if (multiNode === undefined) {
+        multiNode = this.store.countNodes(job.user_id) > 1;
+        multiNodeByUser.set(job.user_id, multiNode);
+      }
+      const result = await this.send(device, job, { multiNode });
       if (this.closed) return;
       if (result.status === 200) {
         this.store.removePushJob(job.id);

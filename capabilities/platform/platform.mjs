@@ -19,6 +19,7 @@ import { HostResources } from './resources.mjs';
 import { GoalManager } from './goals.mjs';
 import { RoomWork } from './room-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
+import { SelfUpdateService } from '../services/self-update.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
 const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'model_binding_changed']);
@@ -70,6 +71,7 @@ export class SummonPlatform {
     this.executions = new Executions({ store, platform: this, calls: this.calls, resources: this.resources });
     this.roomWork = new RoomWork(this);
     this.goals = new GoalManager(this);
+    this.selfUpdate = new SelfUpdateService({ dataRoot, releaseRoot, platform: this });
     this.workspaces = workspaces;
   }
 
@@ -1157,6 +1159,12 @@ export class SummonPlatform {
         if (trackedActivity) trackedActivity.status = 'completed';
         return { result, call_id: record.id };
       }
+      if (name === 'manage_update') {
+        const result = await this.selfUpdate.execute(args, context);
+        this.calls.finish(record.id, 'completed', result);
+        if (trackedActivity) trackedActivity.status = 'completed';
+        return { result, call_id: record.id };
+      }
       if (name === 'open_session' || name === 'send_input' || name === 'stop_session') {
         const result = name === 'open_session' ? await this.executions.open(args, context, record)
           : name === 'send_input' ? await this.executions.submit(args, context, record) : await this.executions.stop(args, context, record);
@@ -2150,6 +2158,7 @@ export class SummonPlatform {
   }
 
   async tick({ observations = true, deliveries = true } = {}) {
+    this.selfUpdate?.onTick();
     if (!this.draining && observations) {
       this.deliveries.tickTime();
       this.checkUnansweredFallbacks();

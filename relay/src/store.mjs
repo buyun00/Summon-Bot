@@ -101,7 +101,11 @@ export class RelayStore {
         node_id TEXT NOT NULL,
         node_name TEXT NOT NULL,
         room_id TEXT NOT NULL,
+        room_name TEXT NOT NULL DEFAULT '',
+        room_mode TEXT NOT NULL DEFAULT 'group',
+        sender_name TEXT NOT NULL DEFAULT '',
         message_id TEXT NOT NULL,
+        preview TEXT NOT NULL DEFAULT '',
         device_id TEXT NOT NULL,
         notification_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
@@ -109,6 +113,11 @@ export class RelayStore {
         next_at INTEGER NOT NULL DEFAULT 0
       );
     `);
+    const pushCols = new Set(this.db.prepare('PRAGMA table_info(push_queue)').all().map(col => col.name));
+    if (!pushCols.has('room_name')) this.db.exec("ALTER TABLE push_queue ADD COLUMN room_name TEXT NOT NULL DEFAULT ''");
+    if (!pushCols.has('room_mode')) this.db.exec("ALTER TABLE push_queue ADD COLUMN room_mode TEXT NOT NULL DEFAULT 'group'");
+    if (!pushCols.has('sender_name')) this.db.exec("ALTER TABLE push_queue ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''");
+    if (!pushCols.has('preview')) this.db.exec("ALTER TABLE push_queue ADD COLUMN preview TEXT NOT NULL DEFAULT ''");
   }
 
   close() {
@@ -352,6 +361,10 @@ export class RelayStore {
     return this.db.prepare('SELECT id, user_id AS userId, name, platform, hostname, last_seen_at AS lastSeenAt, created_at AS createdAt FROM nodes WHERE user_id = ? ORDER BY created_at ASC').all(userId);
   }
 
+  countNodes(userId) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE user_id = ?').get(userId)?.n || 0;
+  }
+
   renameNode(userId, nodeId, name) {
     const clean = String(name || '').trim().slice(0, 48);
     if (!clean) throw Object.assign(new Error('节点名称不能为空'), { status: 400, code: 'invalid_name' });
@@ -395,14 +408,18 @@ export class RelayStore {
     return this.db.prepare('SELECT device_id AS deviceId, user_id AS userId, token, bundle_id AS bundleId, environment, created_at AS createdAt FROM push_devices WHERE user_id = ?').all(userId);
   }
 
-  enqueuePush({ userId, nodeId, nodeName, roomId, messageId, notificationId, createdAt }) {
+  enqueuePush({ userId, nodeId, nodeName, roomId, roomName = '', roomMode = 'group', senderName = '', messageId, preview = '', notificationId, createdAt }) {
     const devices = this.listPushDevices(userId);
+    const cleanRoomName = String(roomName || '').trim().slice(0, 120);
+    const cleanRoomMode = roomMode === 'direct' ? 'direct' : 'group';
+    const cleanSenderName = String(senderName || '').trim().slice(0, 80);
+    const cleanPreview = String(preview || '').trim().slice(0, 800);
     for (const device of devices) {
       const id = `${nodeId}:${messageId}:${device.deviceId}`;
       this.db.prepare(`
-        INSERT OR IGNORE INTO push_queue (id, user_id, node_id, node_name, room_id, message_id, device_id, notification_id, created_at, attempts, next_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-      `).run(id, userId, nodeId, nodeName || 'PC', roomId, messageId, device.deviceId, notificationId || randomUUID(), createdAt || new Date().toISOString());
+        INSERT OR IGNORE INTO push_queue (id, user_id, node_id, node_name, room_id, room_name, room_mode, sender_name, message_id, preview, device_id, notification_id, created_at, attempts, next_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+      `).run(id, userId, nodeId, nodeName || 'PC', roomId, cleanRoomName, cleanRoomMode, cleanSenderName, messageId, cleanPreview, device.deviceId, notificationId || randomUUID(), createdAt || new Date().toISOString());
     }
   }
 

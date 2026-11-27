@@ -272,6 +272,8 @@ const definitions = [
     object({ id: text, revision: integer, name: text, path: text, write: flag, remove: flag })],
   ['manage_hub', 'Inspect or manage this computer’s connection to the Summon Cloud Relay Hub.',
     object({ action: oneOf('status', 'login', 'register', 'disconnect', 'rename_node', 'delete_node'), username: text, password: text, invite_code: text, display_name: text, node_name: text, hub_url: text, node_id: text }, ['action'])],
+  ['manage_update', 'Check, download, or schedule an unattended self-update of Summon Bot on this computer (Windows / macOS). Use action:"status" for current version & last update result, "check" (optional expected_commit) to query local releases & GitHub Releases, "download" to fetch the latest installer in background, and "install" to schedule a detached silent update after the current turn drains (restarting automatically and posting the result back to the room). Call "install" directly when the host explicitly asked to update; otherwise ask via send.prompt(kind:"permission") first.',
+    object({ action: oneOf('status', 'check', 'download', 'install'), source: oneOf('auto', 'local', 'github'), expected_commit: text, room: roomOrId, force: flag, drain_timeout_ms: integer }, ['action'])],
 ];
 
 export const tools = Object.freeze(definitions.map(([name, description, inputSchema, toPlatformArgs]) =>

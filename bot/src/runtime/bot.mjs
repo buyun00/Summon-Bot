@@ -179,6 +179,13 @@ function describeToolActivity(name, args = {}, platform = null) {
       if (args.action === 'rename_node') return '正在修改本机名称';
       return '正在管理云端中枢';
     }
+    case 'manage_update': {
+      if (args.action === 'status') return '正在查看本机更新状态';
+      if (args.action === 'check') return '正在检查 Summon Bot 新版本';
+      if (args.action === 'download') return '正在后台下载新版安装包';
+      if (args.action === 'install') return '正在安排本机自更新';
+      return '正在处理本机更新';
+    }
     case 'send':
       return args.prompt ? '正在发送确认卡片' : '正在整理并回复';
     default:
