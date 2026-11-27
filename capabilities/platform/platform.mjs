@@ -290,7 +290,9 @@ export class SummonPlatform {
     log.push(saved);
     if (log.length > 32) log.splice(0, log.length - 32);
     this.roomActivityLog.set(roomId, log);
-    this.runtime?.notifyRoomActivity?.(roomId, saved);
+    if (saved.tool === 'send') {
+      this.runtime?.notifyRoomActivity?.(roomId, saved);
+    }
     return saved;
   }
 
@@ -1403,7 +1405,7 @@ export class SummonPlatform {
         if (actor.kind === 'user') this.goals.onUserMessage(id);
         else if (args.prompt || args.awaiting_reply === true) {
           const reason = args.prompt?.title || args.prompt?.questions?.[0]?.label || '';
-          this.goals.onAwaitingUser(id, reason);
+          this.goals.onAwaitingUser(id, reason, { hasPrompt: Boolean(args.prompt) });
         }
         else this.goals.onRoomActivity(id, 'bot_message');
       }

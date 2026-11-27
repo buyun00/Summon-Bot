@@ -10,6 +10,11 @@ const STEP_STATUSES = new Set(['pending', 'in_progress', 'awaiting_user', 'done'
 const LIVE_SESSION_STATUSES = new Set(['opening', 'running', 'waiting', 'awaiting_input', 'needs_input', 'stopping']);
 const GOAL_IDLE_DEBOUNCE_MS = 12_000;
 const DEFAULT_MAX_CONTINUATIONS = 3;
+const COMPLETED_CLEAR_MS = 2 * 60_000;
+const REPLIED_AWAITING_CLEAR_MS = 5_000;
+const AWAITING_PLAIN_CLEAR_MS = 5 * 60_000;
+const AWAITING_PROMPT_CLEAR_MS = 15 * 60_000;
+const STALLED_CLEAR_MS = 10 * 60_000;
 
 function normalizeIntent(value, fallback = 'inquiry') {
   return GOAL_INTENTS.has(value) ? value : fallback;
@@ -227,6 +232,10 @@ export class GoalManager {
       stall_reason: substantiveChange ? null : (existing?.stall_reason ?? null),
       last_progress_at: substantiveChange ? nowIso : (existing?.last_progress_at || nowIso),
       last_continued_at: substantiveChange ? null : (existing?.last_continued_at ?? null),
+      user_replied_at: null,
+      has_prompt: status === 'awaiting_user'
+        ? Boolean(!isReplacing && existing?.status === 'awaiting_user' && existing?.has_prompt)
+        : false,
       revision: (existing?.revision ?? 0) + 1,
       created_at: base?.created_at || nowIso,
       updated_at: nowIso,
@@ -250,23 +259,29 @@ export class GoalManager {
     const nowIso = new Date().toISOString();
     // Do not blindly flip awaiting_user steps or goal.status on arbitrary user messages:
     // the awakened Bot must read the host's actual message and explicitly call update_goal if approved or replanned.
+    // Record user_replied_at so the UI immediately stops showing stale "awaiting confirmation" prompts
+    // and tick() auto-clears the old goal once the room settles if no Bot updates it.
     this.platform.store.save(goalRecords, {
       id: roomId,
       continuation_count: 0,
       stalled: false,
       stall_reason: null,
+      ...(goal.status === 'awaiting_user' ? { user_replied_at: nowIso } : {}),
       last_progress_at: nowIso,
       updated_at: nowIso,
     });
     this.platform.emit('room', { id: roomId });
+    if (goal.status === 'awaiting_user') this.platform.emit('execution', { room_id: roomId });
   }
 
-  onAwaitingUser(roomId, reason = '') {
+  onAwaitingUser(roomId, reason = '', { hasPrompt = false } = {}) {
     const goal = this.get(roomId);
-    if (!goal || goal.status !== 'active') return;
+    if (!goal || !['active', 'awaiting_user'].includes(goal.status)) return;
     const nowIso = new Date().toISOString();
     const steps = (goal.steps || []).map(s => ({ ...s }));
-    const active = steps.find(s => s.status === 'in_progress') || steps.find(s => s.status === 'pending');
+    const active = steps.find(s => s.status === 'in_progress')
+      || steps.find(s => s.status === 'pending')
+      || steps.find(s => s.status === 'awaiting_user');
     const note = cleanText(reason, 260);
     if (active) {
       active.status = 'awaiting_user';
@@ -280,6 +295,8 @@ export class GoalManager {
       continuation_count: 0,
       stalled: false,
       stall_reason: null,
+      user_replied_at: null,
+      has_prompt: Boolean(hasPrompt),
       last_progress_at: nowIso,
       updated_at: nowIso,
     });
@@ -340,6 +357,8 @@ export class GoalManager {
       continuation_count: 0,
       stalled: false,
       stall_reason: null,
+      user_replied_at: null,
+      has_prompt: false,
       last_progress_at: new Date(Date.now() - GOAL_IDLE_DEBOUNCE_MS).toISOString(),
       last_continued_at: null,
       updated_at: nowIso,
@@ -429,9 +448,36 @@ export class GoalManager {
     const nowIso = new Date(nowMs).toISOString();
 
     for (const goal of this.platform.store.list(goalRecords)) {
-      if (goal.status !== 'active' || goal.stalled) continue;
       const room = this.platform.store.get('rooms', goal.room_id);
       if (!room || room.mode !== 'group' || room.archivedAt) continue;
+
+      if (goal.status !== 'active' || goal.stalled) {
+        if (this.roomHasLiveSessions(room.id)) continue;
+        if (this.roomHasPendingDeliveries(room.id)) continue;
+        if (this.platform.runtime.roomHasActiveWork?.(room.id)) continue;
+        const latestMsg = this.platform.room.latestMessage.get(room.id);
+        const latestMsgMs = latestMsg ? (Date.parse(JSON.parse(latestMsg.data).createdAt || 0) || 0) : 0;
+        const lastActivityMs = Math.max(
+          Date.parse(goal.user_replied_at || 0) || 0,
+          Date.parse(goal.last_progress_at || 0) || 0,
+          Date.parse(goal.updated_at || 0) || 0,
+          latestMsgMs,
+          this.latestRoomSessionFinishMs(room.id),
+        );
+        const clearAfterMs = (goal.status === 'awaiting_user' && goal.user_replied_at)
+          ? REPLIED_AWAITING_CLEAR_MS
+          : (goal.status === 'completed' || goal.status === 'stopped')
+            ? COMPLETED_CLEAR_MS
+            : goal.status === 'awaiting_user'
+              ? (goal.has_prompt ? AWAITING_PROMPT_CLEAR_MS : AWAITING_PLAIN_CLEAR_MS)
+              : goal.stalled
+                ? STALLED_CLEAR_MS
+                : null;
+        if (clearAfterMs != null && nowMs - lastActivityMs >= clearAfterMs) {
+          this.remove(room.id);
+        }
+        continue;
+      }
       if (this.platform.deliveries.roomChainState(room.id)?.paused) continue;
 
       const steps = Array.isArray(goal.steps) ? goal.steps : [];

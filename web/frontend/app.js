@@ -808,6 +808,16 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
     if (activeGoal && ['completed', 'stopped'].includes(activeGoal.status)) {
       if (ui.roomGoal?.room_id === entry.roomId) ui.roomGoal = null;
       if (currentRoom) currentRoom.goal = null;
+      const cached = ui.messageCache.get(entry.roomId);
+      if (cached?.snapshot) cached.snapshot.goal = null;
+      if (ui.openRoomExecution === entry.roomId && ui.roomDrawerMode !== 'executions') ui.openRoomExecution = null;
+    } else if (activeGoal && activeGoal.status === 'awaiting_user') {
+      const repliedAt = new Date().toISOString();
+      const updatedGoal = { ...activeGoal, user_replied_at: repliedAt };
+      if (ui.roomGoal?.room_id === entry.roomId) ui.roomGoal = updatedGoal;
+      if (currentRoom?.goal) currentRoom.goal = updatedGoal;
+      const cached = ui.messageCache.get(entry.roomId);
+      if (cached?.snapshot?.goal) cached.snapshot.goal = updatedGoal;
       if (ui.openRoomExecution === entry.roomId && ui.roomDrawerMode !== 'executions') ui.openRoomExecution = null;
     }
     const targetBotId = preferredWorkingBotId(entry.roomId, receipt.deliveries, message.mentions);
@@ -4615,8 +4625,10 @@ function summarizeRoomWork(room, items) {
 
 function currentRoomGoal(room) {
   if (!room?.id) return null;
-  if (ui.roomGoal && ui.roomGoal.room_id === room.id) return ui.roomGoal;
-  return room.goal || null;
+  const goal = (ui.roomGoal && ui.roomGoal.room_id === room.id) ? ui.roomGoal : (room.goal || null);
+  if (!goal) return null;
+  if (goal.status === 'awaiting_user' && goal.user_replied_at) return null;
+  return goal;
 }
 
 function goalStepSnapshot(goal) {
@@ -4811,11 +4823,12 @@ function renderRoomExecutionDrawer(room, liveItems) {
 
 function renderUnifiedWorkBand(room, items, work, drawerOpen) {
   const goal = currentRoomGoal(room);
-  if (goal) {
+  const isRunning = Boolean(work && items.length);
+  const showGoalBand = Boolean(goal && !(isRunning && (goal.status !== 'active' || goal.stalled)));
+  if (showGoalBand) {
     const snap = goalStepSnapshot(goal);
     const intentBadge = goalIntentBadge(goal);
     const active = snap.active;
-    const isRunning = Boolean(work && items.length);
     const displayItems = work?.items || items || [];
     const ownerBotId = active?.owner && active.owner !== 'user' && botById(active.owner)
       ? active.owner
@@ -4962,9 +4975,11 @@ function renderChatComposer(room, members, liveWorkItems, liveWork) {
   const workBand = renderUnifiedWorkBand(room, items, work, drawerOpen);
   const hasWorkShell = Boolean(workBand || drawer);
   const goal = currentRoomGoal(room);
-  const workStateClass = (work?.hasWaitingInput || goal?.status === 'awaiting_user') ? 'is-waiting'
-    : (work?.isQuiet || goal?.stalled) ? 'is-quiet'
-    : goal?.status === 'completed' ? 'is-completed'
+  const isRunning = Boolean(work && items.length);
+  const goalVisible = Boolean(goal && !(isRunning && (goal.status !== 'active' || goal.stalled)));
+  const workStateClass = (work?.hasWaitingInput || (goalVisible && goal?.status === 'awaiting_user')) ? 'is-waiting'
+    : (work?.isQuiet || (goalVisible && goal?.stalled)) ? 'is-quiet'
+    : (goalVisible && goal?.status === 'completed') ? 'is-completed'
     : '';
 
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];

@@ -295,6 +295,18 @@ fn is_fresh_install_sync(profile: &Path) -> bool {
         .unwrap_or(true)
 }
 
+fn clean_host_path(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(raw) = path.to_str() {
+            if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+        }
+    }
+    path
+}
+
 fn resolve_runtime_paths(app: &AppHandle) -> (PathBuf, PathBuf, PathBuf, bool) {
     let node_name = if cfg!(target_os = "windows") {
         "node.exe"
@@ -303,6 +315,7 @@ fn resolve_runtime_paths(app: &AppHandle) -> (PathBuf, PathBuf, PathBuf, bool) {
     };
 
     if let Ok(res_dir) = app.path().resource_dir() {
+        let res_dir = clean_host_path(res_dir);
         let candidates = [
             res_dir.join("summon-runtime"),
             res_dir.join("resources").join("summon-runtime"),

@@ -1,6 +1,6 @@
 {
   "name": "@summon/web",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Summon Bot user interface and transport facade; no Agent or business storage",

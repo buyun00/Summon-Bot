@@ -22,8 +22,12 @@ const formalDataRoot = 'D:/Relay-Bot-data';
 export const formalOrigin = 'http://127.0.0.1:8787';
 const defaultProfile = () => join(process.platform === 'win32' ? process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
   : join(homedir(), 'Library', 'Application Support'), 'Relay');
+const cleanPath = value => {
+  if (typeof value !== 'string') return value;
+  return resolve(process.platform === 'win32' && value.startsWith('\\\\?\\') ? value.slice(4) : value);
+};
 const samePath = (left, right) => {
-  const norm = value => (process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value));
+  const norm = value => (process.platform === 'win32' ? cleanPath(value).toLowerCase() : cleanPath(value));
   return norm(left) === norm(right);
 };
 
@@ -134,19 +138,23 @@ async function probeLocalInstance(origin, accessToken) {
 
 export async function ensureLocalRunning({ dataRoot = resolveLocalDataRoot(), releaseRoot = packageRoot, onProgress } = {}) {
   onProgress?.({ stage: 'prepare' });
+  releaseRoot = cleanPath(releaseRoot);
   let config = await ensureLocalDeployment({ dataRoot, releaseRoot });
   const file = join(config.dataRoot, 'config', 'deployment.json');
   const desiredRelease = existsSync(releaseRoot)
-    ? resolve(releaseRoot)
-    : (existsSync(config.releaseRoot) ? resolve(config.releaseRoot) : resolve(releaseRoot));
+    ? releaseRoot
+    : (existsSync(cleanPath(config.releaseRoot)) ? cleanPath(config.releaseRoot) : releaseRoot);
   const desiredBuildId = releaseBuildId(desiredRelease);
   const buildChanged = Boolean(desiredBuildId && config.installedBuildId !== desiredBuildId);
   const releaseChanged = !config.releaseRoot || !samePath(config.releaseRoot, desiredRelease);
   const installState = await readInstallationState(config.dataRoot).catch(() => null);
   const stateMismatch = Boolean(installState && installState.phase === 'done' && !samePath(installState.release_root, desiredRelease));
+  const hasVerbatimPrefix = process.platform === 'win32' && Boolean(
+    config.releaseRoot?.startsWith('\\\\?\\') || installState?.release_root?.startsWith('\\\\?\\'),
+  );
   const installInFlight = Boolean(installState && !['runtime_ready', 'done'].includes(installState.phase));
 
-  if (!installInFlight && (releaseChanged || buildChanged || stateMismatch)) {
+  if (!installInFlight && (releaseChanged || buildChanged || stateMismatch || hasVerbatimPrefix)) {
     const webState = await inspectService(config, 'web').catch(() => ({ state: 'stopped' }));
     const gwState = await inspectService(config, 'gateway').catch(() => ({ state: 'stopped' }));
     const watchdog = await inspectServiceLock(config.dataRoot, 'watchdog').catch(() => null);

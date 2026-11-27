@@ -11,8 +11,9 @@ function getArg(name) {
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : '';
 }
 
-const runtimeRoot = resolve(getArg('--runtime') || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
-const profileRoot = resolve(getArg('--profile') || '');
+const stripVerbatim = value => (process.platform === 'win32' && typeof value === 'string' && value.startsWith('\\\\?\\') ? value.slice(4) : value);
+const runtimeRoot = resolve(stripVerbatim(getArg('--runtime')) || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+const profileRoot = getArg('--profile') ? resolve(stripVerbatim(getArg('--profile'))) : '';
 
 function emit(payload) {
   process.stdout.write(JSON.stringify(payload) + '\n');

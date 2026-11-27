@@ -838,6 +838,10 @@ export class BotRuntime {
 
   notifyRoomActivity(roomId, activity) {
     if (!roomId || !activity || this.closed || this.draining) return;
+    // Only actual room messages (send) preempt peer bots' in-flight thinking streams.
+    // Background sessions (open_session) and room/bot config calls stay visible via
+    // room_peer_activities and guardRoomWriteActivity without aborting peers mid-thought.
+    if (activity.tool !== 'send') return;
     const MAX_PREEMPTS_PER_RUN = 3;
     for (const job of this.active.values()) {
       if (job.conversation?.kind !== 'room' || job.conversation?.space?.id !== roomId || job.conversation?.session_id) continue;
@@ -847,7 +851,7 @@ export class BotRuntime {
       job.lastPreemptedSeq = activity.seq;
       job.preemptCount = (job.preemptCount ?? 0) + 1;
       job.preemptedForActivity = true;
-      job.activeStream.controller.abort(runtimeFailure('room_activity_preempted', 'Peer action arrived in the room', 409));
+      job.activeStream.controller.abort(runtimeFailure('room_activity_preempted', 'Peer message arrived in the room', 409));
     }
   }
 
@@ -1234,9 +1238,12 @@ export class BotRuntime {
           revision: activeRoomGoal.revision,
           progress: activeRoomGoal.progress,
           steps: activeRoomGoal.steps,
+          ...(activeRoomGoal.user_replied_at ? { user_replied_at: activeRoomGoal.user_replied_at } : {}),
         },
         ...(activeRoomGoal.status === 'awaiting_user' ? {
-          note: '当前群目标处于 awaiting_user。若本轮宿主消息已回应确认、切到了新问题或旧任务已结束，务必调用 update_goal 更新步骤、标记 completed 或 clear:true，避免旧目标长期滞留；若仍需宿主确认，务必在对应步骤 note 中写清具体需要确认什么。',
+          note: activeRoomGoal.user_replied_at
+            ? '宿主已在此旧目标 awaiting_user 后发出新消息。若本轮需要继续推进或改换计划，请调用 update_goal 更新；若旧目标已结束或换题且不再需要跟踪，可直接调 update_goal(clear:true) 清除（未更新时本轮结束后平台也会自动清理）。'
+            : '当前群目标处于 awaiting_user。若本轮宿主消息已回应确认、切到了新问题或旧任务已结束，务必调用 update_goal 更新步骤、标记 completed 或 clear:true，避免旧目标长期滞留；若仍需宿主确认，务必在对应步骤 note 中写清具体需要确认什么。',
         } : {}),
       }));
     }

@@ -6,7 +6,8 @@ export const installationStatePath = dataRoot => join(resolve(dataRoot), 'config
 const phases = ['prepared', 'draining', 'converting', 'data_ready', 'runtime_ready', 'done'];
 const canStart = new Set(['runtime_ready', 'done']);
 const samePath = (left, right) => {
-  const normalize = path => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+  const strip = value => (process.platform === 'win32' && typeof value === 'string' && value.startsWith('\\\\?\\') ? value.slice(4) : value);
+  const normalize = path => process.platform === 'win32' ? resolve(strip(path)).toLowerCase() : resolve(path);
   return normalize(left) === normalize(right);
 };
 
