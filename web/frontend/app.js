@@ -4584,6 +4584,13 @@ function goalStepSnapshot(goal) {
   return { steps, total, done, active, activeIdx, pct };
 }
 
+function goalIntentBadge(goal) {
+  if (goal?.intent === 'execute') {
+    return { text: '施工执行', cls: 'is-execute', title: '宿主已授权施工执行模式' };
+  }
+  return { text: '调研探讨', cls: 'is-inquiry', title: '只读调研与方案探讨模式（不动线上服务）' };
+}
+
 function renderGoalStepMarker(step, index) {
   if (step.status === 'done') return '<span class="goal-step-marker is-done" aria-label="已完成">✓</span>';
   if (step.status === 'in_progress') return '<span class="goal-step-marker is-progress" aria-label="进行中"><span class="goal-step-pulse"></span></span>';
@@ -4610,6 +4617,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
 
   if (goal && ui.roomDrawerMode !== 'executions') {
     const snap = goalStepSnapshot(goal);
+    const intentBadge = goalIntentBadge(goal);
     const statusMap = {
       active: goal.stalled ? { text: '已暂停', cls: 'warn' } : { text: '进行中', cls: 'live' },
       awaiting_user: { text: '等待确认', cls: 'warn' },
@@ -4651,6 +4659,7 @@ function renderRoomExecutionDrawer(room, liveItems) {
     return `<section class="bot-execution-drawer goal-plan-drawer" role="region" aria-label="当前执行计划">
       <div class="bot-execution-drawer-head">
         <div class="goal-drawer-heading">
+          <span class="goal-intent-pill ${esc(intentBadge.cls)}" title="${esc(intentBadge.title)}">${esc(intentBadge.text)}</span>
           <span class="bot-execution-status ${esc(badge.cls)}">${esc(badge.text)}</span>
           <strong class="goal-drawer-title">${esc(goal.title)}</strong>
           <span class="goal-drawer-count">${snap.done}/${snap.total} 步</span>
@@ -4718,6 +4727,7 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
   const goal = currentRoomGoal(room);
   if (goal) {
     const snap = goalStepSnapshot(goal);
+    const intentBadge = goalIntentBadge(goal);
     const active = snap.active;
     const isRunning = Boolean(work && items.length);
     const displayItems = work?.items || items || [];
@@ -4761,9 +4771,10 @@ function renderUnifiedWorkBand(room, items, work, drawerOpen) {
 
     return `<button type="button" class="composer-work-band ${drawerOpen ? 'drawer-open' : ''}"
         data-action="toggle-room-executions" aria-expanded="${drawerOpen}"
-        title="${esc(goal.title)}（点击${drawerOpen ? '收起' : '展开'}当前计划）">
+        title="${esc(intentBadge.text + ' · ' + goal.title)}（点击${drawerOpen ? '收起' : '展开'}当前计划）">
       <div class="cwb-row">
         ${avatarHtml}
+        <span class="goal-intent-pill ${esc(intentBadge.cls)}" title="${esc(intentBadge.title)}">${esc(intentBadge.text)}</span>
         <span class="cwb-name">${esc(labelText)}</span>
         <span class="cwb-sep">·</span>
         ${stepHtml}

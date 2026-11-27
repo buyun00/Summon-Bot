@@ -478,6 +478,7 @@ export class FastReadRuntime {
         ...(roomGoal && ['active', 'awaiting_user'].includes(roomGoal.status) ? {
           room_goal: {
             title: roomGoal.title,
+            intent: roomGoal.intent || 'inquiry',
             status: roomGoal.status,
             owner_bot_id: roomGoal.owner_bot_id,
             progress: roomGoal.progress,

@@ -5,10 +5,15 @@ import { sessionRecords } from './executions.mjs';
 export const goalRecords = 'room-goals';
 
 const GOAL_STATUSES = new Set(['active', 'awaiting_user', 'completed', 'stopped']);
+const GOAL_INTENTS = new Set(['inquiry', 'execute']);
 const STEP_STATUSES = new Set(['pending', 'in_progress', 'awaiting_user', 'done', 'blocked', 'skipped']);
 const LIVE_SESSION_STATUSES = new Set(['opening', 'running', 'waiting', 'awaiting_input', 'needs_input', 'stopping']);
 const GOAL_IDLE_DEBOUNCE_MS = 12_000;
 const DEFAULT_MAX_CONTINUATIONS = 3;
+
+function normalizeIntent(value, fallback = 'inquiry') {
+  return GOAL_INTENTS.has(value) ? value : fallback;
+}
 
 function cleanText(value, maxLen = 200) {
   if (typeof value !== 'string') return '';
@@ -99,6 +104,7 @@ export class GoalManager {
     const activeIndex = active ? steps.findIndex(s => s.id === active.id) + 1 : total;
     return {
       ...goal,
+      intent: normalizeIntent(goal.intent),
       kind: 'goal',
       progress: {
         done,
@@ -181,6 +187,13 @@ export class GoalManager {
       }
     }
 
+    if (args.intent !== undefined && !GOAL_INTENTS.has(args.intent)) {
+      reject('invalid_goal', `Invalid goal intent: ${args.intent}`);
+    }
+    const intent = args.intent !== undefined
+      ? args.intent
+      : normalizeIntent(base?.intent, 'inquiry');
+
     if (args.status !== undefined && !GOAL_STATUSES.has(args.status)) {
       reject('invalid_goal', `Invalid goal status: ${args.status}`);
     }
@@ -188,6 +201,7 @@ export class GoalManager {
     const status = deriveStatus(args.status, steps);
     const substantiveChange = !existing || isReplacing
       || existing.status !== status
+      || normalizeIntent(existing.intent) !== intent
       || existing.title !== title
       || existing.owner_bot_id !== owner_bot_id
       || (existing.steps?.length || 0) !== steps.length
@@ -201,6 +215,7 @@ export class GoalManager {
       id: roomId,
       room_id: roomId,
       title,
+      intent,
       ...(done_criteria ? { done_criteria } : { done_criteria: '' }),
       status,
       owner_bot_id,
@@ -233,16 +248,10 @@ export class GoalManager {
       return;
     }
     const nowIso = new Date().toISOString();
-    const steps = (goal.steps || []).map(step => (
-      step.status === 'awaiting_user'
-        ? { ...step, status: 'in_progress', updated_at: nowIso }
-        : step
-    ));
-    const nextStatus = goal.status === 'awaiting_user' ? deriveStatus('active', steps) : goal.status;
+    // Do not blindly flip awaiting_user steps or goal.status on arbitrary user messages:
+    // the awakened Bot must read the host's actual message and explicitly call update_goal if approved or replanned.
     this.platform.store.save(goalRecords, {
       id: roomId,
-      status: nextStatus,
-      steps,
       continuation_count: 0,
       stalled: false,
       stall_reason: null,
@@ -448,6 +457,7 @@ export class GoalManager {
       );
       if (nowMs - lastActivityMs < GOAL_IDLE_DEBOUNCE_MS) continue;
 
+      const goalIntent = normalizeIntent(goal.intent);
       const maxAttempts = Number.isSafeInteger(goal.max_continuations) && goal.max_continuations > 0
         ? goal.max_continuations
         : DEFAULT_MAX_CONTINUATIONS;
@@ -475,6 +485,7 @@ export class GoalManager {
             time: nowIso,
             goal_id: goal.id,
             goal_title: goal.title,
+            goal_intent: goalIntent,
             done_criteria: goal.done_criteria || '',
             current_step: currentStep,
             steps,
@@ -502,6 +513,10 @@ export class GoalManager {
         updated_at: nowIso,
       });
 
+      const continueGuidance = goalIntent === 'inquiry'
+        ? `当前群目标「${goal.title}」（意图：调研探讨 inquiry）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请注意：当前属于只读调研/方案探讨阶段，严禁修改或停启线上/远端生产服务、改动系统配置，也严禁私自注册周期性 set_wakeup 定时任务。请：1) 若本步是只读查证或方案评估且尚未查完，立即调工具/open_session 补齐事实并更新 update_goal；2) 若底细与方案利弊已经讲清、正等宿主决定要不要做或选哪套路线，切勿自行施工，直接标记 awaiting_user 静等宿主拍板；3) 若宿主的询问已完整答复且无需后续动作，调用 update_goal 标记 completed 收口；4) 仅在宿主近期消息已明确下达实施授权时，才将 intent 改为 "execute" 并推进施工。绝不能只口头回复“待会儿去查”而不发起真实动作。`
+        : `当前群目标「${goal.title}」（意图：施工执行 execute）仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请围绕宿主已明确批准的交付计划推进：1) 若本步可在授权范围内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若执行中发现原方案存在根本硬伤、前提失效或投入产出比严重失衡，不要硬凑绕路或原地空转，直接向宿主坦诚复盘并重新商量方向（必要时标记 stopped 或改回 intent:"inquiry"）；3) 若遇到超出当前授权范围、需宿主做关键取舍或涉及破坏性/高风险生产变更，先用人话讲清利弊再用 send.prompt 请宿主拍板并标记 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向宿主交付。绝不能只口头回复“下一步会做”而不发起真实动作。`;
+
       const event = this.platform.store.save('platform-events', {
         id: keyOf('goal.continue', room.id, goal.revision, nextCount, nowMs),
         kind: 'event',
@@ -513,12 +528,13 @@ export class GoalManager {
         time: nowIso,
         goal_id: goal.id,
         goal_title: goal.title,
+        goal_intent: goalIntent,
         done_criteria: goal.done_criteria || '',
         current_step: currentStep,
         steps,
         attempt: nextCount,
         max_attempts: maxAttempts,
-        guidance: `当前群目标「${goal.title}」仍在进行中，步骤 [${currentStep.id}]「${currentStep.title}」尚未完成但全群已无在途任务（自动续推 ${nextCount}/${maxAttempts}）。请围绕已对齐的交付计划推进：1) 若本步可在授权内直接推进，立即调用真实工具/open_session 执行并更新 update_goal；2) 若执行中发现原方案存在根本硬伤、前提失效或投入产出比严重失衡，不要硬凑绕路或原地空转，直接向宿主坦诚复盘并重新商量方向（必要时标记 stopped 回归自由讨论）；3) 若确实需要宿主做具体方案取舍或高风险变更确认，先用人话讲清利弊再用 send.prompt 请宿主拍板并标记 awaiting_user；4) 若目标已全部达成，调用 update_goal 标记 completed 并向宿主交付。绝不能只口头回复“下一步会做”而不发起真实动作。`,
+        guidance: continueGuidance,
       });
       this.platform.deliveries.enqueue(
         targetBot.id,

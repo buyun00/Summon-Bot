@@ -1225,6 +1225,7 @@ export class BotRuntime {
         room: { kind: 'room', id: goalRoomId },
         goal: {
           title: activeRoomGoal.title,
+          intent: activeRoomGoal.intent || 'inquiry',
           done_criteria: activeRoomGoal.done_criteria || '',
           status: activeRoomGoal.status,
           owner_bot_id: activeRoomGoal.owner_bot_id,
